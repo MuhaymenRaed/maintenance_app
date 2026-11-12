@@ -88,7 +88,28 @@ function agentScript() {
   return path.join(paths.printAgent, "print-agent.ps1");
 }
 
-/** Starts the shipped agent, hidden, and waits until it answers — up to 15 seconds. */
+/**
+ * Starts the shipped agent, hidden, and waits until it answers — up to 30 seconds.
+ *
+ * ⚠️ Through a launcher, and never as a `detached` child. Node's `detached`
+ * on Windows creates the process with `DETACHED_PROCESS` — no console at all —
+ * and powershell.exe, a console program, exits at once with code 0 without
+ * running a line of the script. Measured: 230ms, nothing in the agent's log,
+ * every time; the bundled agent had never once started, and the desk only
+ * printed because the site's own agent happened to be running on this PC.
+ *
+ * A plain child would start, but libuv puts every non-detached child in a job
+ * that is killed with the app, and the agent is shared — the dashboard open in
+ * a browser on the same PC prints through it too — so it must outlive the desk.
+ * The launcher is a short-lived PowerShell whose `Start-Process` gives the agent
+ * its own hidden console; a grandchild breaks away from that job (libuv's job
+ * allows silent breakaway), so the agent stays up when the desk quits.
+ *
+ * The command travels as `-EncodedCommand` (UTF-16LE, base64), so a path with
+ * spaces — `B:\Programming Projects\…` in development — needs no shell quoting.
+ * 30 seconds, not 15: two PowerShell starts and the agent's one-time C#
+ * compile measured ten on this PC, and a counter PC is rarely faster.
+ */
 async function startBundled(): Promise<boolean> {
   if (process.platform !== "win32") return false;
   const script = agentScript();
@@ -98,13 +119,18 @@ async function startBundled(): Promise<boolean> {
   }
   lastStart = Date.now();
   log.info("starting the bundled print agent");
-  const child = spawn(
+  const quoted = `'"${script.replace(/'/g, "''")}"'`;
+  const command =
+    "Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList " +
+    `@('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',${quoted})`;
+  const launcher = spawn(
     "powershell.exe",
-    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", script],
-    { detached: true, stdio: "ignore", windowsHide: true },
+    ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")],
+    { stdio: "ignore", windowsHide: true },
   );
-  child.unref();
-  for (let waited = 0; waited < 15_000; waited += 500) {
+  launcher.on("error", (error) => log.warn("could not run the print agent's launcher", error));
+  launcher.unref();
+  for (let waited = 0; waited < 30_000; waited += 500) {
     await sleep(500);
     const answer = await request({ path: "/v1/status", timeoutMs: 800 });
     if (answer.reached) {
@@ -121,7 +147,9 @@ async function startBundled(): Promise<boolean> {
 export async function callAgent(call: AgentCall): Promise<AgentAnswer> {
   const first = await request(call);
   if (first.reached || first.code !== "not_running") return first;
-  if (!getSettings().agentAutoStart || Date.now() - lastStart < 20_000) return first;
+  // Longer than `startBundled` waits, so a second press during a slow first
+  // start never launches a second agent to race the first for the port.
+  if (!getSettings().agentAutoStart || Date.now() - lastStart < 35_000) return first;
   if (!(await startBundled())) return first;
   return request(call);
 }
