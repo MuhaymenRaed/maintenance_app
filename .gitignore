@@ -144,3 +144,6 @@ vite.config.ts.timestamp-*
 
 # Electron-Forge
 out/
+
+# Electron Forge packages and installers (forge.config.js outDir)
+release/
