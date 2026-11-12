@@ -9,7 +9,7 @@ import { registerIpc } from "./ipc";
 import { sync } from "./sync/engine";
 import { backupNow, scheduleBackups } from "./backup";
 import { warmAgent } from "./print-agent";
-import { applyLoginItem, getSettings, settingsEvents } from "./settings";
+import { applyLoginItem, getSettings, loadSecrets, settingsEvents } from "./settings";
 import { createWindow, isDark, setChrome } from "./window";
 import { noticeEvents } from "./notify";
 import { words } from "./i18n";
@@ -24,16 +24,12 @@ if (squirrelStartup) app.quit();
 // start Electron as plain Node and the window would never open.
 delete process.env.ELECTRON_RUN_AS_NODE;
 
-app.setAppUserModelId(APP_ID);
+// ⚠️ Installed, the ID must be the one Squirrel gives the Start-menu shortcut —
+// `com.squirrel.<maker name>.<executable>` (forge.config.js) — because Windows
+// only shows a desktop app's notifications when a shortcut with a matching ID
+// exists. With our own ID there, every "new ticket" toast is silently dropped.
+app.setAppUserModelId(app.isPackaged ? "com.squirrel.al_esnad_maintenance.al-esnad-maintenance" : APP_ID);
 app.setName("Al-Esnad Maintenance");
-
-// The queue toolbar's date fields are `<input type="date">`, which Chromium
-// formats in the *application's* locale — on most counter PCs that is en-US,
-// so the range read mm/dd/yyyy beside a board whose every date is dd/mm/yyyy
-// (the dashboard's own rule: `en-GB` for the all-numeric form, in both
-// languages). Every date the desk *writes* passes its locale explicitly, so
-// this changes nothing but those fields.
-app.commandLine.appendSwitch("lang", "en-GB");
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -178,8 +174,11 @@ function buildTray() {
 
 app.on("second-instance", () => show());
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
+  // The account and the session, decrypted once before anything reads them —
+  // see the note above `loadSecrets` in settings.ts.
+  await loadSecrets();
   try {
     store.open(paths.database);
   } catch (error) {

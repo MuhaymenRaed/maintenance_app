@@ -74,34 +74,75 @@ export function applyLoginItem(settings = getSettings()) {
 
 export type StoredAccount = { email: string; password: string };
 
-function seal(text: string): Buffer {
-  if (safeStorage.isEncryptionAvailable()) return Buffer.concat([Buffer.from("E1"), safeStorage.encryptString(text)]);
+/*
+ * ⚠️ Decrypted once, at start-up, and served from memory after that.
+ *
+ * Electron 45 deprecated the synchronous `safeStorage` calls in favour of
+ * `encryptStringAsync` / `decryptStringAsync`, and the account and the session
+ * are read synchronously in a dozen places — the IPC account answer, the sync
+ * engine's status, supabase-js' storage adapter. Rather than turning every one
+ * of those async, the two files are decrypted by `loadSecrets()` before the
+ * window or the sync engine starts (`main.ts`), reads come from the copy in
+ * memory, and every write updates that copy at once and is persisted in order
+ * on a chain behind it. Files written by the old synchronous API are read by
+ * the new one — Electron documents that — and re-sealed when it says so.
+ */
+const sealed = new Map<string, string | null>();
+let writes: Promise<void> = Promise.resolve();
+
+async function seal(text: string): Promise<Buffer> {
+  if (await safeStorage.isAsyncEncryptionAvailable()) {
+    return Buffer.concat([Buffer.from("E1"), await safeStorage.encryptStringAsync(text)]);
+  }
   log.warn("OS encryption is not available; the account file is stored unencrypted");
   return Buffer.concat([Buffer.from("P1"), Buffer.from(text, "utf8")]);
 }
 
-function unseal(buffer: Buffer): string {
+async function unseal(buffer: Buffer): Promise<{ text: string; reseal: boolean }> {
   const tag = buffer.subarray(0, 2).toString();
   const body = buffer.subarray(2);
-  if (tag === "E1") return safeStorage.decryptString(body);
-  if (tag === "P1") return body.toString("utf8");
+  if (tag === "E1") {
+    const { result, shouldReEncrypt } = await safeStorage.decryptStringAsync(body);
+    return { text: result, reseal: shouldReEncrypt };
+  }
+  if (tag === "P1") return { text: body.toString("utf8"), reseal: false };
   throw new Error("unknown account file format");
 }
 
-export function readSealed(file: string): string | null {
-  try {
-    return unseal(fs.readFileSync(file));
-  } catch {
-    return null;
+/** Decrypts the sealed files into memory. Awaited once, before anything reads them. */
+export async function loadSecrets(files: string[] = [paths.account, paths.session]) {
+  for (const file of files) {
+    try {
+      if (!fs.existsSync(file)) {
+        sealed.set(file, null);
+        continue;
+      }
+      const { text, reseal } = await unseal(fs.readFileSync(file));
+      sealed.set(file, text);
+      if (reseal) writeSealed(file, text);
+    } catch (error) {
+      // An unreadable file — another user's, another machine's — is treated as
+      // absent: the desk falls back to the build's account and signs in again.
+      log.warn(`could not read ${file}; starting without it`, error);
+      sealed.set(file, null);
+    }
   }
 }
 
-export function writeSealed(file: string, text: string | null) {
-  if (text === null) {
-    fs.rmSync(file, { force: true });
-    return;
-  }
-  fs.writeFileSync(file, seal(text));
+export function readSealed(file: string): string | null {
+  return sealed.get(file) ?? null;
+}
+
+/** Updates the copy in memory now; resolves once the file on disk agrees. */
+export function writeSealed(file: string, text: string | null): Promise<void> {
+  sealed.set(file, text);
+  writes = writes
+    .then(async () => {
+      if (text === null) fs.rmSync(file, { force: true });
+      else fs.writeFileSync(file, await seal(text));
+    })
+    .catch((error) => log.error(`could not write ${file}`, error));
+  return writes;
 }
 
 /** The account the desk signs in as — the one saved here, else the build's. */
@@ -118,6 +159,6 @@ export function getAccount(): StoredAccount {
   return { email: DEFAULT_EMAIL, password: DEFAULT_PASSWORD };
 }
 
-export function saveAccount(account: StoredAccount) {
-  writeSealed(paths.account, JSON.stringify(account));
+export function saveAccount(account: StoredAccount): Promise<void> {
+  return writeSealed(paths.account, JSON.stringify(account));
 }

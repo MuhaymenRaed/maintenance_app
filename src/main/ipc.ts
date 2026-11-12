@@ -99,7 +99,7 @@ export function registerIpc() {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !input.password) return { ok: false as const, error: "invalid_credentials" };
     const tested = await testAccount(email, input.password);
     if (!tested.ok) return tested;
-    saveAccount({ email, password: input.password });
+    await saveAccount({ email, password: input.password });
     await signOutLocally();
     sync.accountChanged();
     return { ok: true as const };
