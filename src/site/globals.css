@@ -1,0 +1,2878 @@
+@import "tailwindcss";
+
+/* ── The stacking scale ────────────────────────────────────────
+   Written down because it is not derivable from any one file, and
+   because the last arrangement had two different things at z-100
+   and put the site header underneath both of them.
+
+     30  a menu opened from inside a card (subcategories)
+     40  scroll-to-top
+     45  the install banner
+     50  the mobile tab bar; menus opened from inside the header
+     60  a dialog's or drawer's SCRIM
+     70  the sticky site header  ← above the scrim, on purpose
+     80  a dialog's or drawer's CONTENT
+     85  the navigation veil     — a route change is replacing
+         the whole page, so it covers a dialog's content and is
+         itself covered by the tour, whose veil names the destination
+     90  the tour's scrim        95  the tour's card
+     100 portalled listboxes (see lib/hooks/use-popover-anchor)
+     110 "this paper is at the printer" — above a ticket dialog and
+         any picker open inside it, because a print run started from
+         one leaves both on screen behind the browser's own dialog
+     200 the image lightbox
+     210 the blocked-customer gate — the one layer nothing may
+         paint over. It is above the lightbox rather than below it
+         because "nothing covers this" is the whole claim; the
+         lightbox being unreachable from under it is true today and
+         is a fact about the page, not a rule anybody is keeping.
+#ffe818
+   **The header sits between a dialog's scrim and its content, and
+   that is the whole point of the gap.** It used to be at 50, under
+   both, so opening the cart drew `--scrim` at 60% over a bar that
+   is `--surface` at 80% — and the bar's own text is `--ink`, which
+   is dark. Darkening a light bar until its dark text stops reading
+   against it does not produce a dimmed header; it produces a blank
+   slab where the header was, which is exactly how it was reported:
+   "it looks like a bug". Above the scrim the bar keeps its own
+   contrast, and the drawer still slides over it because content is
+   higher again.
+
+   The tour is deliberately the other way round — its scrim is above
+   the header, because half the controls it points at are *in* the
+   header and it highlights by cutting a hole in the dimming.       */
+
+/* next-themes writes `class="dark"` onto <html> */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ── `desk`: the line the site's own chrome switches on ─────────
+   Width AND pointer, because width alone has been wrong in both
+   directions and this codebase has already met each of them.
+
+   Too low, and a laptop gets a phone's header: `lg` was once `xl`,
+   and 1280px is wider than a great many laptops report — a 1920px
+   panel at Windows' 150% scaling is a 1280px viewport at best, and
+   one browser sidebar puts it under. That is why the line came
+   down to `lg` and why it must not go back up.
+
+   Too high, and a tablet gets a desktop's: an iPad Pro is a 1024px
+   viewport, so it lands exactly *on* `lg` and is served the inline
+   nav, no drawer and no bottom tab bar — five destinations moved
+   out of thumb reach on a device held in two hands. That was the
+   shop's report on 2026-09-30.
+
+   Both are answered by the question the 44px field floor further
+   down this file already asks: what is the primary input device.
+   A 1024px viewport driven by a finger is a tablet; a 1024px
+   viewport driven by a mouse is a laptop; and a browser that
+   reports neither falls through to the handheld chrome, which
+   works at every width.
+
+   Mobile-first, like every other switch here: write
+   `hidden desk:flex`, never `flex max-desk:hidden`. */
+@custom-variant desk (@media (min-width: 64rem) and (pointer: fine));
+
+/* ── `held`: a long press, styled like a hover ──────────────────
+   A touch screen has no hover, so every `hover:` on this site is
+   dead on the device most of these customers use. `useHint`
+   already detects the long press — it is how a hint is asked for
+   without a pointer — and it writes `data-held` on the control
+   for exactly as long as the finger is down.
+
+   Write it as a twin: `hover:bg-subtle held:bg-subtle`. The two
+   states then cannot drift, which a separate `[data-held]` rule
+   in this file could not promise — it would have to restate
+   every component's own hover colours and would go stale the
+   first time one of them changed.
+
+   ⚠️ Not on `:active`. That fires on a tap as well as a hold, so
+   every row a finger brushed on the way to scrolling would flash;
+   the hold is the gesture that means "tell me about this one". */
+@custom-variant held (&[data-held]);
+
+/* ── Design tokens ─────────────────────────────────────────────
+   Semantic colors are declared as raw CSS variables below and
+   re-exported through `@theme inline`, so a single `.dark` block
+   re-themes every utility (bg-surface, text-ink, border-line…)
+   without needing a `dark:` variant on each element.           */
+@theme inline {
+  /* Resolved per page from `--site-font` below, because the two locales do
+     not take the same stack. See the note there. */
+  --font-sans: var(--site-font);
+
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-subtle: var(--subtle);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+
+  --color-scrim: var(--scrim);
+
+  /* The ink the shop's own mark is drawn in — see `--mark-ink` below. */
+  --color-mark-ink: var(--mark-ink);
+  --color-mark-red: var(--mark-red);
+
+  --color-media-ground: var(--media-ground);
+  --color-media-plate: var(--media-plate);
+  --color-media-frame: var(--media-frame);
+
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-charcoal: var(--charcoal);
+  --color-invert-surface: var(--invert-surface);
+  --color-on-invert-surface: var(--on-invert-surface);
+  --color-gold: var(--gold);
+  --color-gold-ink: var(--gold-ink);
+  --color-info: var(--info);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-urgent: var(--urgent);
+
+  /* The comparison podium's four levels — see `--tier-*` below. */
+  --color-tier-diamond: var(--tier-diamond);
+  --color-tier-gold: var(--tier-gold);
+  --color-tier-silver: var(--tier-silver);
+  --color-tier-bronze: var(--tier-bronze);
+
+  /* The text colour that reads *on* a gold fill. One accent cannot serve
+     both roles across both themes — see `--on-gold` below. */
+  --color-on-gold: var(--on-gold);
+
+  /* The repair band's accent — see `--repair-accent` below. */
+  --color-repair-accent: var(--repair-accent);
+
+  --radius-chip: 9px;
+  --radius-control: 12px;
+  --radius-card: 14px;
+  --radius-panel: 20px;
+
+  /* ── Elevation ───────────────────────────────────────────────────
+     Indirected through `--elevation-*` rather than written literally
+     here, for the same reason every colour is: `.dark` re-declares the
+     raw token and every `shadow-card` on the site follows, with no
+     `dark:` variant anywhere. They used to be literal ink shadows,
+     which meant a dark page got `rgb(18 20 26 / 0.07)` over a
+     `#0b0c10` canvas — a shadow the same colour as the ground it falls
+     on, so every card on the dark theme was separated by its `--line`
+     border alone and the elevation the light theme has simply was not
+     there.
+
+     The two accent glows exist because four call sites had written
+     their own out of the brand and gold *hex triplets*, and both
+     accents were retuned since — so a "brand" glow was carrying the
+     previous red, on a button filled with the current one. They are
+     mixed from `var(--brand)` / `var(--gold)`, so that cannot drift
+     again: retune the accent and its glow follows. */
+  --shadow-card: var(--elevation-card);
+  --shadow-lift: var(--elevation-lift);
+  --shadow-brand-lift: var(--elevation-brand-lift);
+  --shadow-brand-glow: var(--elevation-brand-glow);
+  --shadow-gold-glow: var(--elevation-gold-glow);
+}
+
+/* ── The type stack ──────────────────────────────────────────────────────
+   One family for both locales: Expo Arabic draws the Arabic *and* the Latin,
+   so an Arabic page's prices and model numbers are set in the same face as
+   the words around them, and an English page is the same typeface rather
+   than a second one. The per-`lang` split that used to live here existed
+   only because Cairo's Latin was weak and Figtree had no Arabic — see the
+   note on `expoArabic` in `app/[locale]/layout.tsx`.
+
+   `--font-sans` is consumed by `@theme inline`, so Tailwind emits
+   `font-family: var(--site-font)` everywhere and nothing at a call site has
+   to know which face it is. The system faces after it catch the three
+   characters the font does not carry (LRM and two arrows).                 */
+:root {
+  --site-font: var(--font-expo), ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  /* ── The greys ─────────────────────────────────────────────────
+     Retuned 2026-09-30 on the shop's instruction: *"change the level
+     of gray for the cards navs the tabs the footer and the surface
+     background to be something different, more elegant and minimal,
+     in a way that fits our site and not very varied from our
+     identity."*
+
+     Two things changed, and only one of them is taste.
+
+     **The hue.** These were a cool blue-grey (#f4f5f7 / #dde0e7 —
+     measurably blue: B is 3 points over R). The shop's identity has
+     exactly two colours in it, the red and the charcoal, and neither
+     is blue. The family is neutral now, a half-step warm, so the page
+     reads as paper rather than as screen — which is what "fits our
+     identity" asks for, and it is a shift of two or three points per
+     channel rather than a new palette.
+
+     **The depth.** That half is arithmetic, not preference, and it was
+     wrong: `--surface` must sit *above* `--canvas` or a card reads as
+     a hole rather than as a card. The dark theme had it backwards —
+     canvas #2b2b2b over surface #282727, so every card on every dark
+     page was fractionally darker than the page behind it. Nobody can
+     name that, and it is most of what "not elegant" meant.
+
+     ⚠️ Every value here is checked by `npm run check:palette`, which
+     asserts the four rules this file states in prose: --muted at 4.5:1
+     on BOTH surfaces in BOTH themes, --line-strong inside 2.2–3.2:1,
+     --ink at 4.5:1, and --surface above --canvas. Change a number and
+     run it; prose cannot fail a build. */
+  --canvas: #f5f5f6;
+  --surface: #ffffff;
+  --subtle: #efeff1;
+  --ink: #1b1b1f;
+  /* Secondary text, not decoration: this carries body copy in dialogs, card
+     meta and nav, so it is held at 4.5:1 against both --surface and --canvas
+     in either theme. The lighter grey it replaced measured 3.2:1 / 2.9:1. */
+  --muted: #67676f;
+  --line: #e5e5e8;
+  /* Hairline for controls that sit on the blurred header — --line all but
+     disappears once the bar is 75% opaque. Held at ~2.6:1 in both themes:
+     enough to read as an edge, quiet enough not to buzz at 1px. The glyph
+     inside carries identification at 4.5:1, so the rim is reinforcement. */
+  --line-strong: #9c9ca5;
+
+  /* Overlay for text sitting on photography. Deliberately NOT re-declared
+     under `.dark`: a scrim's job is to darken an image so white text reads,
+     and `--ink` inverts between themes, which turned it into a pale wash. */
+  --scrim: #0b0c10;
+
+  /* A dark *surface* — the ground of the chat button in the corner and
+     under the rewards card in the home bento.
+
+     ⚠️ Deliberately NOT re-declared under `.dark`, for the reason
+     `--scrim` is not. `--ink` is a text colour and inverts, so a panel
+     painted with it turns white in dark mode and stops being the dark
+     one — which is the whole job here. This is a fixed charcoal and
+     white always reads on it (14.9:1), in either theme.
+
+     A token rather than a literal because two unrelated components
+     draw it; two hand-copied hexes are two values free to drift, which
+     is the lesson the brand mark's three copies already taught. */
+  --charcoal: #23262c;
+
+  /* ── The card that is the opposite of the page ────────────────
+     ⚠️ **This inverts, and `--charcoal` directly above it does not.
+     They are the same hex in light mode and they answer two
+     different questions.**
+
+     `--charcoal` is the chat button's colour, and the
+     avatar beside its answers — so it is fixed in both themes, the
+     same argument `--scrim` makes about darkening a photograph.
+
+     This is a *relationship*: the bento's rewards card is the one
+     tile in eight pitched against everything around it, and "the
+     opposite of the page" is a different colour on a dark page than
+     on a light one. Painted charcoal in both, it was charcoal on
+     charcoal in dark mode — still there, no longer a feature, and
+     reported by the shop on 2026-10-21 as the card that had stopped
+     standing out at all.
+
+     Measured: the ink clears **15.16:1** on the plate in either
+     theme — the pair is symmetric, so it is the same reading twice —
+     and in dark mode the plate itself sits at 16.24:1 against
+     `--surface` and 18.07:1 against `--canvas`, which is what makes
+     it read as lifted off the page rather than as another card.
+
+     ⚠️ Deliberately not `--ink`/`--surface` inverted. That pairing
+     would make this merely *a* card; the whole job is to be pitched
+     past the surface the other six sit on. */
+  --invert-surface: #23262c;
+  --on-invert-surface: #ffffff;
+
+  /* ── The mark's own ink ────────────────────────────────────────
+     ⚠️ **`#333333`, and deliberately not `--ink`.**
+
+     The shop's instruction, 2026-09-30: *"make the letter E of the
+     company logo in the black version of it to be #333333 because in
+     our visual identity we don't have a black version."* That is a
+     statement about the *brand*, not about this page: the identity
+     owns a charcoal and a red, and pure black is not one of its
+     colours — so a mark drawn in `--ink` was the site inventing a
+     treatment the shop does not use.
+
+     It is a separate token rather than a darker `--ink` because the
+     two answer different questions. `--ink` is *body text* and is
+     solved against a background for legibility; this is a fixed value
+     off the shop's own artwork, and it must not drift when the text
+     colour is retuned. That is the same split `--scrim` makes, and
+     the same reason `brandLockups` is not `brandColors`.
+
+     It **does** invert, unlike `--scrim`: the shop has a white
+     version of the mark — it is what `scripts/make-pwa-icons.mjs`
+     draws on the red field — so the dark theme uses that rather than
+     a lightened charcoal, which would be a third version nobody
+     owns.
+
+     The value is not a taste call either: it is read out of the shop's
+     own identity sheet, `grid esnad11.pdf`, whose content stream sets
+     the mark's fill to `0.2 0.2 0.2 scn` — exactly #333333.
+     `scripts/make-pwa-icons.mjs` has used it for the launcher field
+     since the shop rejected the red one, and `signatureSvg` signs every
+     product plate with it. One value, four renderers. */
+  --mark-ink: #333333;
+
+  /* The circle inside the E. It is a graphic fill, never text, so it does
+     not take dark mode's lifted `--brand` (a pink chosen for 4.5:1 as TYPE):
+     the shop's logo has one red, on the charcoal mark and on the white one
+     alike. Deliberately not re-declared under `.dark`. */
+  --mark-red: #e11d2e;
+
+  /* ── Product photography ──────────────────────────────────────
+     The catalogue's photographs do not agree with each other. Measured
+     across the live bucket: of seven phones and accessories, three are
+     shot on near-black (corner luminance 27–43), one on pure white
+     (255), and three are busy lifestyle shots. They are all 1600×1600,
+     so they crop identically — it is only the *ground* that varies.
+
+     A rail of six is therefore a black square, a white square, a photo
+     of a desk, another black square. Worse, each of those merges into
+     the card in one theme and glares in the other: the white shot is a
+     hole punched in a dark page, the black ones dissolve into it.
+
+     These two tokens are the frame the site puts around every product
+     image so the set reads as one catalogue whatever the photo does.
+     `--media-ground` is what shows while the image loads and behind any
+     that does not fill its box; `--media-frame` is the hairline that gives
+     a photograph an edge its own contents do not — so a white shot has a
+     boundary in light mode and a black one has a boundary in dark mode.
+     On a card that hairline is drawn on one side only, where the picture
+     meets the text panel; the gallery, which nothing else frames, draws it
+     on all four. See `components/ui/product-media.tsx` for why.
+
+     Both invert with the theme, unlike `--scrim`, because their job is
+     to relate the photo to the *page* rather than to darken the photo. */
+  --media-ground: #f2f3f6;
+  --media-frame: rgb(18 20 26 / 0.09);
+
+  /* The recess a **product plate** sits in, and — like `--media-plate-ground`
+     below and like `--scrim` — deliberately *not* re-declared under `.dark`.
+
+     `--media-ground` above is the generic one: a news cover, a crew portrait, a
+     banner preview in the back office. Those are ordinary photographs and
+     relating them to the page is exactly its job, so it inverts.
+
+     A product plate is not an ordinary photograph. Every one stands on one
+     known studio ground — drawn by `scripts/lib/product-art.mjs`, or a sourced
+     render stood on the same plate by `scripts/lib/photo-plate.mjs` — baked
+     into the WebP, and it cannot invert. So the box it sits in is *the plate's
+     own corner colour* rather than a value solved against the page, and the
+     loading state stops being a flash: the empty box and the picture that fills
+     it are the same colour.
+
+     ⚠️ It therefore moves with the shoot. On the black cyclorama this is
+     #050507; on the light one it is the value below. Leaving it on the wrong
+     one is a visible flash on every card in every rail, in exactly the theme
+     nobody is testing in.
+
+     Sampled off a rendered plate's top-left corner, so the box and the picture
+     that lands in it are the same colour and the fill is invisible. */
+  --media-plate: #fafcfe;
+
+  /* The studio's own ground, and — like `--scrim` — deliberately *not*
+     re-declared under `.dark`.
+
+     `scripts/lib/product-art.mjs` renders every plate on one wash: a vertical
+     gradient, a soft key light above the object, and a floor shadow across the
+     bottom. That is baked into the WebP and cannot invert, so wherever a plate
+     is shown whole rather than cropped to fill its box, whatever surrounds it
+     has to be the *same* wash or the join shows. The hero is the one place that
+     happens — its stage is nearly twice as wide as it is tall, so a square
+     plate contained inside it leaves a column of ground down either flank.
+
+     ⚠️ **The catalogue is on the LIGHT plate and these are its stops.** The
+     black cyclorama is built, measured and reversible — `plateSvg({ theme:
+     "dark" })`, `node scripts/seed-product-art.mjs --dark`, and the dark stops
+     are kept directly below — and it is **not** what the bucket holds. The
+     shop asked for black on 2026-10-01 and withdrew it on 2026-10-03 in three
+     words: *"I meant leave it as white background."*
+
+     ⚠️ **The stops and the bucket are two halves of one decision**, and the
+     direction that bites is this one: moving these to the dark set while the
+     objects are still light paints a near-black column down either flank of a
+     near-white hero plate, which is not a subtle seam. Change both or neither.
+
+     These stops are **measured off a rendered plate's own left edge**
+     (`node scripts/measure-plate-flanks.mjs`), not copied from the hex values
+     in the SVG's gradient. Those describe one of three layers, and a stage
+     painted with them came out about 3% off the plate at mid-height — which on
+     a light field is a visible vertical line down the middle of the largest
+     picture on the site.
+
+     They line up because `object-contain` fits a square plate by *height*, so
+     the plate's own gradient spans exactly the stage's height and every stop
+     here lands at the same y as its counterpart in the image. */
+  --media-plate-ground: linear-gradient(
+    to bottom,
+    #fafcfe 0%,
+    #f8fafb 20%,
+    #f5f7f9 40%,
+    #f2f3f7 60%,
+    #e9edf0 70%,
+    #e4e5eb 80%,
+    #dce0e6 90%,
+    #d7dae2 100%
+  );
+  /* The black cyclorama's stops, measured the same way with
+     `node scripts/measure-plate-flanks.mjs --dark`. Kept because they cannot be
+     re-derived from a bucket that does not hold a dark plate, and because the
+     studio that draws them is still in the repo:
+     #050507 0%, #0a0a0c 14%, #0f0f13 30%, #141416 46%,
+     #101013 62%, #0b0b0d 76%, #060607 88%, #030303 100%
+     — and `--media-plate` would go to #050507 with them. */
+
+  /* ── Accents ──────────────────────────────────────────────────
+     One declaration each. These were briefly declared twice over — an
+     original set followed by a retuned set a few lines below it — which
+     is not a diff a stylesheet keeps: the first six lines were dead,
+     and reading the file told you the brand was `#e11d2e` when every
+     pixel on screen was `#db1829`. The retuned values won, so they are
+     the values here, with what each one is *for* written beside it.
+
+     Measured against `--surface` (#fff) and `--canvas` (#f4f5f7),
+     because a token that only clears its bar on white fails on half
+     the page — the standard `--muted` above is already held to. */
+
+  /* 5.03:1 on surface, 4.61:1 on canvas, and 5.03:1 for white text on a
+     brand fill — so it passes as text, as a fill and on the canvas. */
+  --brand: #db1829;
+  --brand-hover: #b81222;
+
+  /* Gold carries two jobs — small `text-gold` (star ratings, warranty
+     lines, trade-in value estimates) and a `bg-gold` fill under light
+     text — and it has to clear 4.5:1 in both directions.
+     `#b3821a` cleared neither: 3.43:1 as text on surface, 3.14:1 on
+     canvas, and 3.43:1 for white on the fill. That was a *regression* —
+     the `#a97a20` it replaced measured 3.82:1 — because the retune moved
+     lightness while aiming at hue.
+     So: hue and saturation kept (40.5°, 75%, against the retune's 40.8°,
+     75%), lightness taken down to the lightest value in that family
+     that clears the bar on
+     both grounds — 5.10:1 on surface, 4.67:1 on canvas. Still the warmer,
+     richer amber; now legible at 12px, which is the size it renders at. */
+  --gold: #8f6714;
+
+  /* Gold **as text**, which is a different question from gold as a fill.
+     Everywhere but the trade-in flow the two are the same value and this
+     is a pass-through, so nothing on the rest of the site moved when it
+     was introduced. See `[data-accent="trade"]` for the one place they
+     diverge and the measurements that forced it apart. */
+  --gold-ink: var(--gold);
+
+  /* 5.17:1 on surface, 4.74:1 on canvas. NOTE: not re-declared under
+     `.dark`, unlike every other accent, and as *text* on the dark
+     surface it measures 3.47:1 — see the note in `.dark`. */
+  --info: #2563eb;
+
+  /* Darkened from `#1e9e6b`, which measured 3.41:1 on surface and 3.13:1 on
+     canvas — and it carries the product card's "In stock" line at 12px, which
+     is the smallest text on the card. Darkening improves *both* directions at
+     once, unlike gold: it is also the fill under white text on the order
+     tracker, and white on this reads 5.19:1 where it read 3.41:1.
+     Re-declared under `.dark`, where the original value is already correct. */
+  --success: #187c54;
+  --warning: #c97a16;
+  /* The colour of the *last* unit of something. Brand red already means
+     "discounted" and amber means "running low"; a third hue is needed
+     for "one left", because that is the one fact a shopper cannot wait
+     on, and it must be distinguishable from both beside it in a rail.
+     Crimson-magenta, 5.5:1 as text on `--surface`; the dark value is
+     lifted for the same reason `--brand` is. */
+  --urgent: #c2185b;
+
+  /* ── The comparison podium ──
+     Four levels a ranked device can land on, diamond down to bronze. They
+     are *medal* colours and mean nothing else on the site: a device's place
+     is a fact about the comparison the reader asked for, not a rating (gold
+     under a star) and not a verdict (brand red). Diamond is a cool ice-blue
+     kept apart from `--info`; gold here is a warmer, lighter metal than the
+     rating gold so the two never sit as one. Each is used as a text colour
+     on a 10% tint of itself and as a fill under white, and every light value
+     clears 4.5:1 as text on `--surface`. */
+  --tier-diamond: #0e7c9c;
+  --tier-gold: #9a6a05;
+  --tier-silver: #5f6b7a;
+  --tier-bronze: #8a4b1f;
+
+  /* The ink that goes *on* a gold fill, rather than beside it.
+     `--gold` inverts between themes and the text on it has to invert the
+     other way: white reads at 5.10:1 on the light gold and at **2.35:1**
+     on the dark one, which is why the trade-in call to action was
+     unreadable on the dark theme. A `dark:` variant would do it, and
+     this file's rule is that colour goes through a token so one `.dark`
+     block re-themes everything — so, a token. 8.32:1 in dark. */
+  --on-gold: #ffffff;
+
+  /* ── The repair band's accent ─────────────────────────────────
+     The service band on the home page and the repair page's own header are
+     both trust-blue rather than brand red, so they read as a service and not
+     a promotion. Their **ground** is plain `bg-info/8` on both — one token at
+     one alpha, self-theming, and identical on the two surfaces that lead to
+     the same place. It used to be a bespoke `--repair-band` gradient with a
+     `--repair-line` hairline and a second hand-picked pair under `.dark`: a
+     third ground on this site that had to be maintained by hand, and one that
+     turned out to be a blue you could measure rather than see.
+
+     The *accent* still needs a token, and only because `--info` is not
+     usable on the dark theme (see the note under `.dark`). Text needs
+     nothing: on this ground `--ink` reads 15.4:1 and `--muted` 4.76:1.
+
+     In light the accent *is* `--info` — same blue, 4.6:1 on the wash, which
+     clears the bar. In dark it cannot be: see `.dark`. */
+  --repair-accent: var(--info);
+
+  /* ── Elevation ────────────────────────────────────────────────
+     The raw values behind `--shadow-*` in `@theme inline`. Ink-tinted
+     here; near-black and heavier under `.dark`, where an ink shadow is
+     the colour of the ground it falls on. The accent glows are mixed
+     from the accent itself so they cannot drift away from it. */
+  --elevation-card:
+    0 2px 8px rgb(18 20 26 / 0.07), 0 1px 2px rgb(18 20 26 / 0.04);
+  --elevation-lift:
+    0 8px 24px rgb(18 20 26 / 0.11), 0 2px 6px rgb(18 20 26 / 0.06);
+  --elevation-brand-lift:
+    0 8px 28px color-mix(in srgb, var(--brand) 16%, transparent),
+    0 2px 8px rgb(18 20 26 / 0.08);
+  --elevation-brand-glow: 0 4px 20px
+    color-mix(in srgb, var(--brand) 28%, transparent);
+  --elevation-gold-glow: 0 4px 16px
+    color-mix(in srgb, var(--gold) 28%, transparent);
+}
+
+.dark {
+  /* ── The brand's own grey, replacing the blue-black ──
+   *
+   * `#333333` is not a value anybody picked here: it is the fill the shop's
+   * identity artwork puts the mark on, read straight out of the PDF's content
+   * stream (`0.2 0.2 0.2 scn`). The old ramp was a blue-black — `#0b0c10`,
+   * `#15171d`, `#1e2028` — which is a perfectly good dark theme belonging to
+   * no particular shop. This one is this shop's.
+   *
+   * ⚠️ **Raising the floor from `#0b0c10` to `#2b2b2b` costs contrast on every
+   * accent, and the numbers are not negotiable.** Measured before the change:
+   * the old `--brand` (`#ff3b4e`) clears 4.5:1 only on grounds up to
+   * `#222222`. On `#333333` it lands at 3.60 — fine for the big bold price,
+   * which WCAG scores against 3:1, and under the bar for a small red label.
+   * Each token below was therefore re-solved against **canvas and surface**
+   * by holding its hue and saturation and raising only lightness until it
+   * cleared its target — the method the twelve tile accents already use.
+   * None of them was chosen by eye.
+   *
+   * ⚠️ `--brand` is the one deliberately left short of 4.5:1. Solving it to
+   * the bar puts it at `#ff7c89`, which is a salmon, and a shop whose sign is
+   * that red does not have a salmon in its dark theme. `#ff5f6e` is the
+   * furthest it can lift and still read as the sign's red. It is also a
+   * **fill** colour far more often than a text colour — white on it is what
+   * most buttons need, and lifting it further hurts that too. If small red
+   * text on grey ever needs to be right, the answer is a second token the way
+   * `--on-gold` exists, not a lighter `--brand`.
+   */
+  /* See the note on the light palette above. The canvas is the deepest
+     value here and the surface lifts off it — these were the other way
+     round, so every card sank into the page. Neutral-warm, anchored on
+     the shop's own charcoal rather than on a blue-black. */
+  --canvas: #161618;
+  --surface: #202024;
+  --subtle: #2a2a2f;
+  --ink: #f7f7f8;
+  --muted: #9e9ea8;
+  --line: #313137;
+  --line-strong: #63636e;
+
+  /* The shop's white mark — the version `make-pwa-icons.mjs` already
+     draws on the red field. Not a lightened charcoal: that would be a
+     third version of the logo, and the identity has two. */
+  --mark-ink: #ffffff;
+
+  /* Darker than `--surface`, so a photo that does not fill its box reads
+     as sitting *in* a recess rather than floating on the card. The frame
+     goes light here for the opposite reason it is dark above: on this
+     page the photographs that need an edge are the pale ones. */
+  --media-ground: #101218;
+  --media-frame: rgb(255 255 255 / 0.1);
+
+  /* Red lightens here to hold contrast against #0b0c10 — 5.11:1 as text on
+     `--surface`, 5.57:1 on `--canvas`. The hover goes *down* rather than up:
+     `#ff5f6f` washed to pink, where this keeps the depth. */
+  --brand: #ff5f6e;
+  --brand-hover: #e84a58;
+
+  /* Lightened for the opposite reason the light-mode gold was darkened:
+     7.62:1 as text on `--surface`, 8.32:1 on `--canvas`. */
+  --gold: #d99f26;
+
+  /* White on that gold is 2.35:1 — unreadable — so the ink on a gold fill
+     inverts too. The page's own ground on it reads 8.32:1. */
+  --on-gold: var(--canvas);
+
+  /* The light theme's `--success` is darkened to clear 4.5:1 against white;
+     against #15171d that same value measures 3.42:1, so this theme keeps the
+     original, which already reads 5.25:1 here. */
+  --success: #23bb7f;
+  --urgent: #ff77ae;
+
+  /* Lifted for the dark surface, like every other accent here. */
+  --tier-diamond: #4fc3e6;
+  --tier-gold: #e2b345;
+  --tier-silver: #b3bcc9;
+  --tier-bronze: #d98a4f;
+
+  /* ⚠️ `--info` is deliberately absent here, and that is a gap rather than a
+     decision: at `#2563eb` it measures **3.47:1** as text on `--surface`
+     (3.78:1 on `--canvas`), so the repair status indicators it carries miss
+     4.5:1 on this theme. Lightening it fixes the text and breaks the
+     `bg-info` + white-text buttons in the cart and the wizards, which need
+     an `--on-info` the way gold needed `--on-gold`. Left alone rather than
+     half-moved; the same is true of white on `--brand` here, at 3.51:1. */
+
+  /* `--info` at `#2563eb` measures **3.21:1** on the band's ground here, so
+     the certified-repair badge and the "track service" button sitting on it
+     were both under the bar on the dark theme. This is `--info` lightened
+     until it clears — it measured 5.09:1 against the deep navy the band used
+     to be, and the `bg-info/8` wash that replaced it is darker still, so the
+     margin only grew. It is exactly the correction the global `--info` needs
+     and has not had. */
+  --repair-accent: #5b8bf5;
+
+  /* The inverse of a dark page is a light one. See the note in
+     `:root` — and note that `--charcoal` is NOT re-declared here,
+     which is the whole distinction between the two. */
+  --invert-surface: #ffffff;
+  --on-invert-surface: #23262c;
+
+  /* An ink shadow is the colour of the ground it falls on here, so the
+     light theme's elevation simply did not exist on this one — every card
+     was separated by its `--line` border alone. Near-black and heavier.
+     The two accent glows need no dark copy: they are mixed from
+     `var(--brand)` / `var(--gold)`, which re-resolve inside this block. */
+  /* ⚠️ The `inset` rung is the half that actually separates a card
+     here, and the paragraph above explains why the other two cannot:
+     a shadow is an absence of light, and on a ground this dark there
+     is almost none left to take away. Making it blacker and heavier —
+     which is what the previous values did — buys nothing a reader can
+     see, and the shop said so on 2026-10-21: the bento's quiet cards
+     had no findable edge.
+
+     A real card in a dark room is separated by the light it *catches*,
+     not by the shadow it casts, and the light is above it. So: a 1px
+     white rim along the top edge, at 7%. Inset, so it lands inside the
+     element's own border rather than fighting it, and so a card with
+     an `overflow-hidden` image at its top edge still shows it.
+
+     7% is measured rather than picked: at 5% it is invisible against
+     `--surface`, and past 10% the top edge reads as a highlight
+     somebody applied rather than as an edge. The dark shadows stay —
+     they do the work under the card, against `--canvas`, where there
+     IS something to darken. */
+  --elevation-card:
+    0 2px 8px rgb(0 0 0 / 0.5), 0 1px 2px rgb(0 0 0 / 0.35),
+    inset 0 1px 0 rgb(255 255 255 / 0.07);
+  --elevation-lift:
+    0 10px 28px rgb(0 0 0 / 0.62), 0 2px 8px rgb(0 0 0 / 0.4),
+    inset 0 1px 0 rgb(255 255 255 / 0.09);
+  --elevation-brand-lift:
+    0 8px 28px color-mix(in srgb, var(--brand) 24%, transparent),
+    0 2px 10px rgb(0 0 0 / 0.5);
+}
+
+/* ── This site paints its own dark mode ─────────────────────────────
+   Declaring support for both schemes is what makes a browser's own
+   "dark mode for websites" filter stand down — Chromium's Auto Dark
+   Theme, which Opera and Edge both expose as a switch — instead of
+   repainting our *light* palette and producing a page that looks dark
+   while `<html>` carries no `.dark` at all. Everything downstream of that
+   reads as a bug in this repo: the switch shows a moon, correctly, on a
+   page the reader believes is dark, and the theme reveal runs between two
+   states the filter has already flattened into one another.
+
+   The full argument, and the meta tag that carries it before this
+   stylesheet is even fetched, is on `viewport` in app/[locale]/layout.tsx.
+
+   `ThemeScript` overrides the used value inline before first paint, so
+   the UA's own surfaces — scrollbars, form controls, overscroll canvas —
+   follow the theme on screen rather than the operating system. */
+:root {
+  color-scheme: light dark;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+@keyframes dialog-overlay-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes dialog-content-in {
+  from {
+    opacity: 0;
+    transform: translate(var(--dialog-content-x, -50%), -50%) scale(0.96);
+  }
+}
+
+/* ── Hero slide cross-fade ───────────────────────────────────────
+   Opacity only. It used to also scale from 1.03, which read as the
+   photograph lunging at the frame and settling back — a "pop" rather
+   than a change of slide, and on a wide stage the overscan was visible
+   pushing past the edges before the clip caught it.
+
+   The incoming slide fades in *over* the outgoing one, which stays fully
+   opaque underneath until the animation ends (see `Hero`). That is what
+   keeps the plate from showing through the middle of the transition:
+   fading one out while fading the other in leaves both at ~50% at the
+   halfway point, and 25% of the background shows through the pair. */
+/* ---------------------------------------------------------------------------
+   The tour's travel veil
+   ---------------------------------------------------------------------------
+   Shown while the tour moves between routes. The two fades are separate
+   keyframes rather than one reversed animation because the veil's *exit* is
+   timed against `VEIL_FADE_MS` in `tour-provider.tsx` — the component removes
+   itself when that elapses, and a reversed `animation-direction` would leave
+   the two free to drift apart the first time either is retuned.
+
+   Every one of these is switched off under `prefers-reduced-motion` at the
+   foot of this block. The veil itself still appears — it is information, not
+   decoration, and somebody who has asked for less motion still needs to be
+   told the page is changing.
+   --------------------------------------------------------------------------- */
+@keyframes tour-veil-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes tour-veil-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* The mark lands rather than fades: a slight overshoot reads as arrival. */
+@keyframes tour-veil-mark {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes tour-halo {
+  0% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(1.75);
+  }
+}
+
+/* Indeterminate: nothing knows how far a client-side navigation has got, so
+   the bar reports motion rather than progress. */
+@keyframes tour-track {
+  from {
+    transform: translateX(-130%);
+  }
+  to {
+    transform: translateX(330%);
+  }
+}
+
+/* The track sweeps in the reading direction, so Arabic gets its own pair of
+   offsets. `transform` has no flow-relative form — the same reason the theme
+   reveal's clip-path takes physical coordinates — so this cannot be left to
+   `dir` and has to be stated. */
+@keyframes tour-track-rtl {
+  from {
+    transform: translateX(130%);
+  }
+  to {
+    transform: translateX(-330%);
+  }
+}
+
+.tour-track {
+  animation: tour-track 1.15s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+
+[dir="rtl"] .tour-track {
+  animation-name: tour-track-rtl;
+}
+
+.tour-halo {
+  animation: tour-halo 1.4s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-track,
+  .tour-halo {
+    animation: none;
+  }
+}
+
+@keyframes hero-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/*
+  The hero's plate change: a short directional slide with a fade, in place of
+  the 900ms dissolve that read as "frozen" — two plates on one light wash
+  cross-fading is a phone slowly becoming another phone, with nothing moving.
+
+  `--hero-dx` is set inline by the stage: a signed share of the stage width,
+  positive when the incoming plate should arrive from the right. Both keyframes
+  carry `scale(var(--plate-scale))` through, because the element's static
+  transform *is* that scale and an animation that omitted it would snap the
+  contained plate to 1x for the length of the move. The exit negates the entry
+  so the pair reads as one strip moving, not two plates crossing.
+*/
+@keyframes hero-enter {
+  from {
+    opacity: 0;
+    transform: translateX(var(--hero-dx, 7%)) scale(var(--plate-scale, 1));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(var(--plate-scale, 1));
+  }
+}
+
+@keyframes hero-exit {
+  from {
+    opacity: 1;
+    transform: translateX(0) scale(var(--plate-scale, 1));
+  }
+  to {
+    opacity: 0;
+    transform: translateX(calc(-1 * var(--hero-dx, 7%)))
+      scale(var(--plate-scale, 1));
+  }
+}
+
+/* Drawer slides from the inline start, so it flips with `dir` */
+@keyframes drawer-in {
+  from {
+    transform: translateX(calc(-100% * var(--drawer-dir, 1)));
+  }
+}
+
+/* Same, for sheets anchored to the inline end (the cart). Opposite sign. */
+@keyframes drawer-in-end {
+  from {
+    transform: translateX(calc(100% * var(--drawer-dir, 1)));
+  }
+}
+
+/* A drop-down list unfolding from the word above it — the store menu. No
+   `--dialog-content-x` here: it is positioned by its own top-left, so the
+   centred dialog's transform would throw it across the screen. */
+@keyframes menu-drop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+}
+
+/* A bottom sheet rising from the tab bar — the phone's store menu, the
+   in-app-browser notice, the exit question. */
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+[dir="rtl"] {
+  --drawer-dir: -1;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Motion
+   ═══════════════════════════════════════════════════════════════════
+   A shop that never moves reads as a rendering of a shop. What follows
+   is the whole vocabulary — four durations, three easings, five
+   keyframes and one reveal mechanism — and it is deliberately small.
+
+   ── Why there is no animation library here ──
+   The same argument this codebase already makes about charts. A spring
+   engine is ~34KB in a bundle that is served to every visitor of a
+   prerendered storefront, and every node it animates has to become a
+   Client Component — which several of the home page's sections are
+   not, and should not become for the sake of a fade. Everything below
+   runs on the compositor, costs no JavaScript beyond one shared
+   IntersectionObserver, and cannot turn `/[locale]` dynamic.
+
+   ── The one rule ──
+   Motion here reports *state* — something arrived, something was
+   pressed, something is loading. It never decorates. If an animation
+   cannot be described as "this tells the reader X", it does not ship.
+   -------------------------------------------------------------------- */
+
+:root {
+  /* Four durations, because a fifth is always somebody splitting a hair.
+     `--dur-1` is a control acknowledging a press; `--dur-2` is a panel
+     or a chip changing state; `--dur-3` is an element arriving on
+     screen; `--dur-4` is the longest thing here and belongs to the
+     large staged reveals only. */
+  --dur-1: 120ms;
+  --dur-2: 220ms;
+  --dur-3: 420ms;
+  --dur-4: 620ms;
+
+  /* Entrances decelerate — the element is arriving and should settle.
+     Exits accelerate away. `--ease-spring` overshoots by a hair and is
+     reserved for something the reader *caused*: a confirmation mark, a
+     badge incrementing. Used on an entrance it reads as bounce. */
+  --ease-out-soft: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-in-soft: cubic-bezier(0.55, 0.06, 0.68, 0.19);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, var(--rise-from, 14px), 0);
+  }
+}
+
+/* A page arriving after a client-side navigation — `components/ui/page-enter.tsx`.
+   One compositor layer, gone in a fifth of a second, and absent rather than
+   slowed under reduced motion. */
+.page-enter {
+  --rise-from: 10px;
+  animation: rise-in 220ms var(--ease-out-soft) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-enter {
+    animation: none !important;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+}
+
+/* Slides in from the inline start. `transform` has no flow-relative
+   form — the same reason the theme reveal takes physical coordinates —
+   so the direction travels in a custom property that `[dir]` flips,
+   rather than in two mirrored keyframes. */
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translate3d(
+      calc(var(--slide-from, 18px) * var(--flow-dir, 1)),
+      0,
+      0
+    );
+  }
+}
+
+/* Loading. A sweep rather than a pulse: a pulse reads as a warning
+   light, and this is the page saying it is still working. */
+@keyframes sheen {
+  from {
+    transform: translate3d(calc(-100% * var(--flow-dir, 1)), 0, 0);
+  }
+  to {
+    transform: translate3d(calc(200% * var(--flow-dir, 1)), 0, 0);
+  }
+}
+
+/* Navigation is in flight, and we cannot say how far along it is.
+
+   Deliberately indeterminate rather than a progress bar: the App Router
+   gives no completion figure for a route transition, and a bar that
+   advances on a timer is a number the page invented. A sliding segment
+   says "working" and claims nothing else.
+
+   It travels along the writing direction like `sheen` does, so it does
+   not run backwards on the Arabic build. */
+@keyframes indeterminate {
+  from {
+    transform: translate3d(calc(-100% * var(--flow-dir, 1)), 0, 0);
+  }
+  to {
+    transform: translate3d(calc(300% * var(--flow-dir, 1)), 0, 0);
+  }
+}
+
+.animate-indeterminate {
+  animation: indeterminate 1.1s var(--ease-out-soft) infinite;
+}
+
+/* A picker whose choice is still being acted on.
+
+   The lock on the control is immediate; only the DRAWING waits. 180ms is
+   under the point where a wait registers as one, so an answer that comes
+   back quickly passes with no spinner at all, and a slow one still shows
+   within a blink of the press. The chevron goes as the spinner arrives so
+   the end of the field is never empty. */
+@keyframes picker-busy-out {
+  to {
+    opacity: 0;
+  }
+}
+
+.picker-busy-in {
+  animation: fade-in 140ms ease-out 180ms both;
+}
+
+.picker-busy-out {
+  animation: picker-busy-out 120ms ease-out 180ms both;
+}
+
+/* The navigation veil's mark, breathing.
+
+   Deliberately tiny — 1 to 1.05 over two seconds. It is there so the
+   mark reads as *alive* rather than as a frozen picture of a logo,
+   which is the difference between "loading" and "stuck". Anything
+   larger becomes a thing to watch, and this is a thing to wait
+   through. */
+/* The assistant's typing dots and its caret: a pulse of opacity, offset
+   per dot by an inline delay. */
+@keyframes dot-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.05);
+  }
+}
+
+.animate-breathe {
+  animation: breathe 2s var(--ease-out-soft) infinite;
+}
+
+/* The halo behind it, offset from the breath so the two never peak
+   together — in step they read as one pulsing blob, out of step as a
+   mark sitting in light. */
+@keyframes halo {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(0.94);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+.animate-halo {
+  animation: halo 2.6s var(--ease-out-soft) infinite;
+}
+
+/* The sign-in panel's two background glows.
+
+   ⚠️ This is the one animation on the site that decorates rather than
+   reporting state, and it is allowed on three conditions it actually
+   meets: the elements are `aria-hidden`, they only exist on a column
+   that is `hidden` below `lg`, and it is a transform on an already
+   blurred circle — one compositor layer, no repaint, no JavaScript.
+
+   Eighteen seconds, deliberately. Slow enough that it is never the
+   thing you are looking at; anything under about ten reads as the page
+   fidgeting while somebody is trying to type a password. */
+@keyframes drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(4%, -6%, 0) scale(1.08);
+  }
+}
+
+.animate-drift {
+  animation: drift 18s var(--ease-out-soft) infinite;
+  will-change: transform;
+}
+
+/* A field's error line arriving. Reports state — the form has just
+   refused something — so it moves rather than appearing. Short,
+   because it is attached to the field the reader is already looking
+   at and a slow entrance there reads as lag in the form itself. */
+@keyframes note-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -4px, 0);
+  }
+}
+
+.animate-note-in {
+  animation: note-in var(--dur-2) var(--ease-out-soft) both;
+}
+
+/* ---------------------------------------------------------------------------
+   Why a price is a range — `components/store/price-note.tsx`
+   ---------------------------------------------------------------------------
+   One sequence. The panel lifts in, the ring draws itself round the shop's mark,
+   the lines rise one after another on `--i`, and the marker runs the length of
+   the customer's own price band and settles. It leaves in a third of the time,
+   because going is not an event.
+
+   Radix waits for a closing animation before it unmounts, which is the only
+   reason an exit can be written here at all.
+
+   ⚠️ Keyframes use `transform`, and Tailwind v4's `-translate-x-1/2` writes the
+   separate `translate` property, so the two compose and the panel stays centred.
+   `dialog-content-in` above writes a translate of its own into `transform` and
+   therefore adds a second offset. Do not reuse it for a centred panel. */
+.band-note {
+  animation: band-panel-in 320ms var(--ease-spring) both;
+}
+
+.band-note[data-state="closed"] {
+  animation: band-panel-out 150ms var(--ease-in-soft) both;
+}
+
+.band-note-scrim[data-state="closed"] {
+  animation: band-scrim-out 150ms ease-in both;
+}
+
+.band-note-ring {
+  animation: band-ring-draw 760ms var(--ease-out-soft) 120ms both;
+}
+
+.band-note-mark {
+  animation: band-mark-in 420ms var(--ease-spring) 180ms both;
+}
+
+.band-note-glow {
+  animation:
+    band-glow-in 640ms var(--ease-out-soft) 200ms both,
+    band-glow-rest 3.4s ease-in-out 900ms infinite alternate;
+}
+
+.band-note-line {
+  --rise-from: 10px;
+  animation: rise-in 360ms var(--ease-out-soft) both;
+  animation-delay: calc(240ms + var(--i, 0) * 70ms);
+}
+
+.band-note-fill {
+  transform-origin: left center;
+  animation: band-fill-in 620ms var(--ease-out-soft) 520ms both;
+}
+
+.band-note-marker {
+  animation: band-marker-run 1500ms cubic-bezier(0.45, 0.05, 0.25, 1) 560ms both;
+}
+
+.band-note-dot {
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.28);
+}
+
+/* Opacity and scale on a pseudo-element: the settled marker goes on breathing,
+   and nothing here repaints the panel to do it. */
+.band-note-dot::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: 9999px;
+  background: var(--brand);
+  animation: band-dot-ring 2.4s ease-out 2100ms infinite;
+  opacity: 0;
+  z-index: -1;
+}
+
+@keyframes band-panel-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 18px, 0) scale(0.94);
+  }
+}
+
+@keyframes band-panel-out {
+  to {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0) scale(0.97);
+  }
+}
+
+@keyframes band-scrim-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes band-ring-draw {
+  from {
+    stroke-dashoffset: 100;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes band-mark-in {
+  from {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+}
+
+@keyframes band-glow-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+
+@keyframes band-glow-rest {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.55;
+  }
+}
+
+@keyframes band-fill-in {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+/* Along the track and back, ending at 50%. It marks no particular figure, and
+   stopping anywhere else would imply one. */
+@keyframes band-marker-run {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  42% {
+    transform: translate3d(84%, 0, 0);
+  }
+  74% {
+    transform: translate3d(38%, 0, 0);
+  }
+  100% {
+    transform: translate3d(50%, 0, 0);
+  }
+}
+
+@keyframes band-dot-ring {
+  0% {
+    opacity: 0.32;
+    transform: scale(0.6);
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(1.5);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .band-note,
+  .band-note[data-state="closed"],
+  .band-note-scrim[data-state="closed"],
+  .band-note-ring,
+  .band-note-mark,
+  .band-note-glow,
+  .band-note-line,
+  .band-note-fill,
+  .band-note-dot::after {
+    animation: none;
+  }
+
+  .band-note-marker {
+    animation: none;
+    transform: translate3d(50%, 0, 0);
+  }
+}
+
+/* ── A card the shop wants read first ───────────────────────────────
+   Three cards on the storefront are asking for attention rather than
+   merely being available: one whose price has been cut, one that is
+   running low, and one of which a single unit is left. Each draws a
+   tinted ring *inside* its own border, and each ring pulses.
+
+   ⚠️ **A ring, not `box-shadow`, and not the border itself.** The card
+   already spends both: `interactiveCard` animates `border-color` and
+   `box-shadow` together on hover, so a second rule touching either
+   would fight the lift rather than sit beside it. This is a separate
+   inert box on top, and what it animates is `opacity` — one
+   compositor property, no repaint, which is what makes it affordable
+   on the mid-range Android phones most of this shop's customers use.
+
+   ⚠️ **The ring pulses at rest now, and it used to rest still and flash
+   only under the pointer.** The old note argued that six discounted
+   cards pulsing in a row is the page performing rather than
+   responding. The shop disagreed, deliberately: a customer scanning a
+   rail on a phone has no pointer to reward, and the shop's instruction
+   is that a discount and a last unit should *pull* the eye, not wait
+   for it. What keeps it affordable is unchanged — opacity alone, on a
+   compositor layer, slow (1.8s) and slower still for the discount, so
+   a rail breathes rather than blinks; and the pulse stops under
+   `prefers-reduced-motion`, where the ring holds at full strength.
+
+   Hues: brand red for a discount, because the discount pill in the
+   corner of the same card is brand red and the offers band is framed
+   in it; `--warning` for running low, which is what every "this needs
+   attention" figure in the back office is drawn in; and `--urgent`
+   for the last unit, which pulses fastest and is the one hue nothing
+   else on the card uses. The label under the stars changes with the
+   ring, so the colour is never the only thing carrying the fact. */
+[data-accent-ring]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  /* Follows the card's own corner, so it can never cut a chord across
+     one — the media plate is clipped to the same radius. */
+  border-radius: inherit;
+  border: 2px solid var(--accent-ring);
+  /* Above the media plate (which is positioned, so it would otherwise
+     paint over a static box) and above the badge row at `z-10`, but
+     inert, so the card's stretched link still takes every press. */
+  z-index: 20;
+  pointer-events: none;
+  opacity: 0.55;
+  animation: accent-ring-flash var(--accent-ring-period, 1.8s) ease-in-out
+    infinite;
+}
+
+[data-accent-ring="deal"] {
+  --accent-ring: var(--brand);
+  --accent-ring-period: 2.2s;
+}
+
+[data-accent-ring="low"] {
+  --accent-ring: var(--warning);
+  --accent-ring-period: 1.8s;
+}
+
+[data-accent-ring="last"] {
+  --accent-ring: var(--urgent);
+  --accent-ring-period: 1.1s;
+}
+
+/* Under the pointer the ring holds at full strength: the reader has
+   found it, and a thing that keeps blinking once it has been looked at
+   is nagging. */
+[data-accent-ring]:hover::after {
+  animation: none;
+  opacity: 1;
+}
+
+@keyframes accent-ring-flash {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ── الاستبدال — the replacement flow's own yellow ──────────────────
+   The shop, 2026-10-19: *"change the colors of [the] replacing page (the
+   golden one in the site) to be #ffe818 instead of the old one."*
+
+   ⚠️ Scoped, and a global swap would have been the wrong reading of it.
+   `--gold` is this site's **rating** colour — it is under every star on
+   every product card, it carries the points figures on the rewards panel,
+   and `globals.css` tunes it to 5.10:1 precisely because it renders as
+   12px text in those places. Measured: `#ffe818` is **1.25:1** on
+   `--surface` and **1.15:1** on `--canvas`. Applied site-wide it would not
+   have changed a colour; it would have deleted a dozen labels.
+
+   So the yellow lands where the shop can see it — the replacement flow —
+   and the tokens split along the one line that matters:
+
+   - `--gold` is the **fill**: the hero plate, the stepper's active marker,
+     the call to action, the tints behind a chosen option.
+   - `--on-gold` is the ink **on** that fill. `#15130a` on `#ffe818` is
+     **14.88:1**; the white it replaces here would have been 1.25:1.
+   - `--gold-ink` is gold **as text, beside** the fill. `#7d7100` is the
+     darkest value at this exact hue and saturation (54°, 100%) that
+     clears 4.5:1 on both light grounds — 4.96:1 on surface, 4.55:1 on
+     canvas. Same colour family, legible at the 12px it renders at.
+
+   ⚠️ In dark mode `--gold-ink` is the shop's yellow **itself**, not the
+   dark companion: `#ffe818` measures 12.99:1 on `--surface` and 14.46:1
+   on `--canvas` there, so the companion exists only because white grounds
+   do. That is the same shape as `--on-gold`, which has always inverted
+   while `--gold` did — one accent, two grounds, two answers. */
+[data-accent="trade"] {
+  --gold: #ffe818;
+  --on-gold: #15130a;
+  --gold-ink: #7d7100;
+}
+
+.dark [data-accent="trade"] {
+  /* The fill is bright in both themes, so its ink stays dark in both. */
+  --on-gold: #15130a;
+  --gold-ink: #ffe818;
+}
+
+[dir="rtl"] {
+  --flow-dir: -1;
+
+  /* The outbound arrow on a tile points up-and-away from the card's
+     far top corner — up-right in English, up-left in Arabic — so the
+     direction it *travels* on hover has to mirror with the script.
+     Kept separate from `--flow-dir` even though both are −1 here:
+     that one is "which way does content slide in", this one is "which
+     way does this glyph point", and a future change to either must
+     not silently move the other. */
+  --arrow-dir: -1;
+}
+
+/* ── Arriving on scroll ─────────────────────────────────────────────
+   `[data-reveal]` is **visible by default**. The hidden starting state
+   lives behind `.motion-ready`, which `ThemeScript` adds before first
+   paint and deliberately withholds under `prefers-reduced-motion` — so
+   no-JS, pre-hydration and reduced-motion all render a finished page,
+   and there is no arrangement in which an observer failing to fire
+   leaves a section permanently invisible.
+
+   `--reveal-delay` is what stagger is built from: a rail sets it per
+   card from its index. It is capped by the caller, not here, because
+   the cap depends on how many siblings there are.
+
+   ⚠️ `will-change` is set only while the element is waiting, and
+   dropped the moment it has arrived. Left on permanently it promotes
+   every revealed node to its own compositor layer for the life of the
+   page, which on the mid-range Android phones most of this shop's
+   customers use costs more than the animation was worth. */
+.motion-ready [data-reveal] {
+  opacity: 0;
+  will-change: opacity, transform;
+}
+
+.motion-ready [data-reveal="rise"] {
+  transform: translate3d(0, var(--rise-from, 14px), 0);
+}
+
+.motion-ready [data-reveal="pop"] {
+  transform: scale(0.94);
+}
+
+.motion-ready [data-reveal="slide"] {
+  transform: translate3d(
+    calc(var(--slide-from, 18px) * var(--flow-dir, 1)),
+    0,
+    0
+  );
+}
+
+.motion-ready [data-reveal][data-shown] {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity var(--dur-3) var(--ease-out-soft) var(--reveal-delay, 0ms),
+    transform var(--dur-3) var(--ease-out-soft) var(--reveal-delay, 0ms);
+  will-change: auto;
+}
+
+/* ── Micro-interactions ─────────────────────────────────────────────
+   Two utilities rather than twenty ad-hoc `hover:` triples, so a card
+   in a rail, a card in the dashboard and a card in search results all
+   answer a pointer the same way.
+
+   `hover:` is gated on `(hover: hover)` by Tailwind already, but the
+   *translate* is not something a touch device should inherit on tap —
+   it fires on press and then sticks until the next tap elsewhere. */
+@media (hover: hover) {
+  .lift {
+    transition:
+      transform var(--dur-2) var(--ease-out-soft),
+      box-shadow var(--dur-2) var(--ease-out-soft),
+      border-color var(--dur-2) var(--ease-out-soft);
+  }
+
+  .lift:hover {
+    transform: translate3d(0, -3px, 0);
+  }
+}
+
+/* Every control that commits something acknowledges the press itself,
+   rather than waiting for the network to say so. 120ms and 2% is below
+   the threshold at which it reads as an animation and above the one at
+   which it reads as nothing. */
+.press {
+  transition: transform var(--dur-1) var(--ease-out-soft);
+}
+
+.press:active:not(:disabled) {
+  transform: scale(0.975);
+}
+
+/* ── A tile that grows under the pointer ────────────────────────────
+   `.lift` raises a card 3px and stops there, which is right for a
+   product card in a rail of six: they sit a gutter apart, and a card
+   that also *grew* would crowd its neighbours. The feature bento is
+   the other case — eight cards the shop wants pressed, with real gaps
+   between them — so the shop asked for scale as well as rise.
+
+   ⚠️ Scale and rise in **one** transform, never two rules. Two
+   declarations on the same property do not compose: the second wins
+   and the first silently does nothing, which is how a card ends up
+   rising on hover and scaling on focus but never both.
+
+   ⚠️ `--tile-scale` is a custom property rather than a literal so the
+   feature cards can take a gentler one. A 2% growth on a 160px card is
+   3px; the same 2% on the 2×2 card is 8px, which reads as a lunge.
+
+   Touch parity is the whole reason this is a utility and not a
+   `hover:` triple. A finger has no hover, so the same growth is given
+   to `:active` — which a touch screen holds for the length of the
+   press — and to `[data-held]`, which `useHint` writes during a long
+   press. One rule, three input methods, no breakpoint guessing. */
+.tile {
+  --tile-scale: 1.025;
+  --tile-rise: -4px;
+  transition:
+    transform var(--dur-2) var(--ease-out-soft),
+    box-shadow var(--dur-2) var(--ease-out-soft),
+    border-color var(--dur-2) var(--ease-out-soft);
+}
+
+@media (hover: hover) {
+  .tile:hover {
+    transform: translate3d(0, var(--tile-rise), 0) scale(var(--tile-scale));
+  }
+}
+
+.tile:focus-visible {
+  transform: translate3d(0, var(--tile-rise), 0) scale(var(--tile-scale));
+}
+
+/* The press. Deliberately *smaller* than resting rather than larger:
+   on a touch screen the finger is already on the card, so growing it
+   under the thumb hides the thing being pressed. It settles back to
+   the hover size on a pointer and to rest on a finger, which is what
+   makes one rule read correctly on both. */
+.tile:active {
+  transform: scale(0.985);
+  transition-duration: var(--dur-1);
+}
+
+.tile[data-held] {
+  transform: translate3d(0, var(--tile-rise), 0) scale(var(--tile-scale));
+}
+
+/* The outbound arrow travels the way it points. `--arrow-dir` is +1 in
+   LTR and −1 in RTL (set in the `[dir]` rules beside `--flow-dir`), so
+   one declaration sends it up-and-outward in both scripts rather than
+   two mirrored rule sets. */
+.tile-arrow {
+  transition:
+    transform var(--dur-2) var(--ease-out-soft),
+    background-color var(--dur-2) var(--ease-out-soft),
+    color var(--dur-2) var(--ease-out-soft),
+    border-color var(--dur-2) var(--ease-out-soft);
+}
+
+@media (hover: hover) {
+  .tile:hover .tile-arrow {
+    transform: translate3d(calc(2px * var(--arrow-dir, 1)), -2px, 0);
+  }
+}
+
+.tile:focus-visible .tile-arrow,
+.tile[data-held] .tile-arrow {
+  transform: translate3d(calc(2px * var(--arrow-dir, 1)), -2px, 0);
+}
+
+/* ── The need tile's own glyph ──────────────────────────────────────
+   `interactiveCard` moves the *card*; this moves the picture inside
+   it. The shop supplied the ten "what do you want it for" glyphs as
+   illustrations (2026-11-02) and asked for them to answer a hover and
+   a press, so the well warms and the glyph grows and tips a degree —
+   enough to read as the object being picked up, not enough to read as
+   a bounce.
+
+   ⚠️ All three states in one declaration per selector. Two rules on
+   `transform` do not compose: the second wins and the first silently
+   does nothing, which is how a tile ends up growing on hover and
+   tipping on focus but never both. The `.tile` rule above carries the
+   same warning for the same reason.
+
+   ⚠️ `:active` and `held:` are not extras. A finger has no hover, so
+   without them the device most of this shop's customers use answers a
+   tap with nothing between the press and the next page painting. The
+   press settles the glyph back rather than growing it further — the
+   finger is on top of it, and a glyph that grows under the thumb hides
+   the thing being pressed. */
+.need-art {
+  transition: transform var(--dur-2) var(--ease-out-soft);
+  transform-origin: 50% 62%;
+}
+
+.need-well {
+  transition: background-color var(--dur-2) var(--ease-out-soft);
+}
+
+@media (hover: hover) {
+  .need-tile:hover .need-art {
+    transform: scale(1.09) rotate(-2deg);
+  }
+
+  .need-tile:hover .need-well {
+    background-color: color-mix(in oklab, var(--brand) 7%, var(--subtle));
+  }
+}
+
+.need-tile:focus-visible .need-art,
+.need-tile[data-held] .need-art {
+  transform: scale(1.09) rotate(-2deg);
+}
+
+.need-tile:focus-visible .need-well,
+.need-tile[data-held] .need-well {
+  background-color: color-mix(in oklab, var(--brand) 7%, var(--subtle));
+}
+
+.need-tile:active .need-art {
+  transform: scale(1);
+  transition-duration: var(--dur-1);
+}
+
+/* A card is decoration in motion terms — nothing about it needs to
+   move for the page to work — so it holds completely still for anyone
+   who asked pages to. The colour changes stay: they carry state. */
+@media (prefers-reduced-motion: reduce) {
+  .tile,
+  .tile-arrow {
+    transition-property: box-shadow, border-color, background-color, color;
+  }
+
+  .need-art {
+    transition-property: none;
+  }
+
+  .need-tile:hover .need-art,
+  .need-tile:focus-visible .need-art,
+  .need-tile[data-held] .need-art,
+  .need-tile:active .need-art {
+    transform: none;
+  }
+
+  .tile:hover,
+  .tile:active,
+  .tile:focus-visible,
+  .tile[data-held],
+  .tile:hover .tile-arrow,
+  .tile:focus-visible .tile-arrow,
+  .tile[data-held] .tile-arrow {
+    transform: none;
+  }
+}
+
+/* A skeleton, and the only infinite animation on the storefront.
+
+   ⚠️ The contrast here was raised deliberately, and the old values are
+   worth recording. The block was `--subtle` with a sweep of `--surface`
+   at 55% — a pale grey shape on a pale grey page, with a highlight one
+   step lighter than the thing it was crossing. On a bright screen it
+   was very nearly invisible, so a slow page looked like an *empty* page
+   rather than a loading one, which is the exact reading a skeleton
+   exists to prevent.
+
+   Two changes. The block itself is now a mix of `--line` into
+   `--subtle`, which is a real step darker than the surface it sits on
+   without becoming content — a skeleton must read as a placeholder and
+   never as a filled row. And the sweep is full `--surface` with a wider
+   soft shoulder, so the highlight actually travels rather than
+   shimmering in place.
+
+   `color-mix` rather than a literal, so both halves follow the theme:
+   in dark mode the same rule produces a lighter block on a darker
+   ground, which is the same relationship the other way up. */
+.sheen {
+  position: relative;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--line) 55%, var(--subtle)) !important;
+}
+
+.sheen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--surface) 30%, transparent) 25%,
+    color-mix(in srgb, var(--surface) 92%, transparent) 50%,
+    color-mix(in srgb, var(--surface) 30%, transparent) 75%,
+    transparent 100%
+  );
+  animation: sheen 1.5s var(--ease-out-soft) infinite;
+}
+
+/* One switch for the lot.
+
+   The reveal system is already inert without `.motion-ready` (see
+   `ThemeScript`), so what this block covers is everything that is *not*
+   reveal-driven: the utilities above, and any element carrying an
+   `animate-[…]` arbitrary value. Stated as `!important` on purpose —
+   these have to beat a utility, and a reader who has asked their
+   operating system for less motion has not asked for an exception. */
+@media (prefers-reduced-motion: reduce) {
+  .lift,
+  .lift:hover,
+  .press,
+  .press:active {
+    transition: none !important;
+    transform: none !important;
+  }
+
+  .sheen::after {
+    animation: none !important;
+  }
+
+  /* The bar stops moving and stays drawn. Removing it would take away the
+     one piece of feedback the press produced; the reader asked for less
+     motion, not for less information. */
+  .animate-indeterminate {
+    animation: none !important;
+    width: 100% !important;
+    opacity: 0.55;
+  }
+
+  /* The veil still appears, and stops moving. Same rule: less motion, not
+     less information — a reader who cannot see the mark breathe still has
+     the veil, the mark and the bar. */
+  .animate-breathe,
+  .animate-halo {
+    animation: none !important;
+  }
+
+  /* Stopped outright. The glows say nothing, so nothing is lost. */
+  .animate-drift {
+    animation: none !important;
+  }
+
+  /* The ring stays, at full strength, and stops flashing. Less motion,
+     not less information: the ring is what says "this one is discounted"
+     or "this one is nearly gone", and a reader who asked their operating
+     system to calm pages down did not ask to be told less about the
+     shelf. Held at 1 rather than at the resting 0.45, because the flash
+     was the only thing that took it up there. */
+  [data-accent-ring]::after,
+  [data-accent-ring]:hover::after {
+    animation: none !important;
+    opacity: 1;
+  }
+
+  /* The message still appears — instantly. A reader who asked for less
+     motion did not ask to be told less about why their sign-in failed. */
+  .animate-note-in {
+    animation: none !important;
+  }
+
+  [data-reveal] {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
+
+@layer base {
+  * {
+    border-color: var(--line);
+  }
+
+  body {
+    background-color: var(--canvas);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Nothing may push the page sideways ──────────────────────────
+     Nothing here is meant to be wider than the viewport, but one long
+     unbroken string or one grid that does not fit is enough to make the
+     whole document scroll horizontally. The bottom tab bar is `fixed`, so
+     it stays where it is while the content slides under it — which is
+     exactly how its edges ended up exposed against the page background.
+
+     `clip` rather than `hidden`: `overflow-x: hidden` turns the element
+     into a scroll container, which silently kills `position: sticky` on
+     every descendant and would take the header down with it. `clip` does
+     not, and it does not clip `position: fixed` children either. */
+  html,
+  body {
+    overflow-x: clip;
+    max-width: 100%;
+  }
+
+  /* The scrollbar's space is reserved whether or not there is one.
+
+     Two things stop moving because of this. A short page — `/track`
+     before a lookup, an empty cart, a 404 — no longer sits a few pixels
+     to one side of the long page the reader navigated from. And opening
+     any modal no longer slides the whole document sideways: Radix locks
+     the page's scroll, the scrollbar goes, and every centred container
+     under a `max-w` reflows by half its width. See the pair of rules at
+     the bottom of this file for the other half of that fix.            */
+  html {
+    scrollbar-gutter: stable;
+  }
+
+  /* The site is set at 95% of the browser's size — the shop's own call on
+     2026-10-22: "the site would look better with 95% scale as the default".
+
+     As the root font size and not `zoom`: every Tailwind length here is in
+     `rem` (spacing, type, radii, the arbitrary `text-[0.9rem]`s), so one
+     declaration scales all of it together, while media queries — which are
+     measured against the browser's initial size, never this one — keep
+     their breakpoints, and a reader's own browser zoom still multiplies on
+     top. `zoom` would also have rescaled the pointer maths in the carousel
+     drags and the lightbox. The iOS field rule further down keeps inputs at
+     16px or more, so focusing one still does not zoom the page. */
+  html {
+    font-size: 95%;
+  }
+
+  /* Anything you can press says so under the pointer.
+
+     Tailwind's preflight sets `button { cursor: default }` — a deliberate
+     reset, on the reasoning that a native button is not a link and the arrow
+     is the OS convention. On a page where *every* control is a styled `div`
+     or `button` rather than an `<a>`, the effect is a site where nothing
+     appears clickable: the star on a product card, the pencil, every dialog's
+     save, every pill in the filter panel. Restoring it once here is one rule
+     against a `cursor-pointer` on several hundred elements, each of which is
+     a chance to forget one.
+
+     Disabled controls keep the arrow, because the point of the pointer is that
+     pressing does something. `summary` is included for the spec accordion,
+     which is a native disclosure and gets `cursor: text` from the reset. */
+  button:not(:disabled),
+  summary,
+  label:has(input[type="checkbox"]:not(:disabled)),
+  label:has(input[type="radio"]:not(:disabled)),
+  [role="button"]:not([aria-disabled="true"]),
+  [role="option"]:not([aria-disabled="true"]),
+  [role="menuitem"],
+  [role="menuitemcheckbox"],
+  [role="radio"]:not([aria-disabled="true"]),
+  [role="tab"] {
+    cursor: pointer;
+  }
+
+  /* A long model number, an email or a pasted URL is the usual culprit —
+     it cannot wrap at a space because it has none.
+     `break-word` rather than `anywhere`: `anywhere` also shrinks the
+     intrinsic min-content width, which quietly changes how flex and grid
+     items size themselves everywhere. This only breaks a word that would
+     otherwise overflow. */
+  h1,
+  h2,
+  h3,
+  p,
+  li,
+  a {
+    overflow-wrap: break-word;
+  }
+
+  /* Prices, IMEI and specs read as aligned columns in both scripts.
+     `direction: ltr` is what stops Arabic bidi reordering "512 GB" into
+     "GB 512" — which also means this must only ever wrap a measurement, never
+     a sentence. On a sentence it drags the full stop to the wrong end.
+
+     `unicode-bidi: isolate` is what makes that reliable, and it used to be
+     missing. `direction` alone does not lift an inline run out of the
+     surrounding bidi paragraph — the RTL context can still reorder the run
+     against its neighbours — so the isolation was being provided as a *side
+     effect* of `display: inline-block`, an atomic inline box being its own
+     bidi paragraph by definition. That worked, and it meant the box type was
+     load-bearing for something that has nothing to do with layout. It is the
+     property `<bdi>` is defined in terms of; stating it directly is what makes
+     the exception below safe.
+
+     ⚠️ `display: inline-block` stays, because a genuine inline run has come to
+     depend on it — the quantity steppers (`w-8 text-center`), the price-delta
+     chips (`px-2 py-0.5`) and the lightbox counter (`min-w-12`) are all inline
+     `<span>`s with no display utility of their own, and width and vertical
+     padding do nothing on a plain inline box. It is in `@layer base`, so any
+     element carrying its own Tailwind display utility already overrides it. */
+  [data-numeric] {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+    direction: ltr;
+    unicode-bidi: isolate;
+    display: inline-block;
+  }
+
+  /* ⚠️ A table cell's box type is not decoration — it is how the cell joins
+     its column, and `inline-block` takes it out of the table entirely.
+
+     The comparison table puts `data-numeric` on every value `<td>`, which is
+     right: those cells hold "12 GB" and "6000 mAh". The rule above then made
+     each of them an inline box, so they stopped being laid out by the table,
+     ignored the `<colgroup>` widths, and flowed together as inline content —
+     the two devices a reader is meant to compare sat adjacent in the middle of
+     the table with the third column's width allocated and empty beside them.
+
+     That is *exactly* the symptom `table-fixed` plus a `<colgroup>` was added
+     to `/compare` to cure, and it is why adding them did not cure it: the
+     layout algorithm was never the cause. Any future "the columns do not line
+     up" on a table should check the cells' computed `display` before touching
+     widths. Same fault, same fix, on the design system's spec table. */
+  td[data-numeric],
+  th[data-numeric] {
+    display: table-cell;
+  }
+}
+
+/* ── A price band reads in the page's direction, not the digits' ───
+   `[data-numeric]` pins `direction: ltr` so a figure, a phone number or
+   an IMEI can never be reordered by the Arabic text around it. That is
+   right for ONE number and wrong for a published band, which is two:
+   pinned left-to-right, the low end sits on the left, so the first
+   figure an Arabic reader's eye meets — at the right — is the HIGH one,
+   and the pair reads high-to-low. The shop reported exactly that.
+
+   `data-range` sits BESIDE `data-numeric` rather than replacing it, so
+   the tabular figures, the `tnum` feature and the inline-block box all
+   stay exactly as they were; the one thing it gives back is the
+   direction. Inside an RTL run the bidi algorithm then does the work on
+   its own: each figure is a digit run and stays internally left-to-right,
+   while the two runs and the dash between them are laid out right to
+   left — so the low end lands on the right and the band reads low-to-high
+   in Arabic, and is untouched in English.
+
+   ⚠️ Scoped under `[dir="rtl"]`, so the English build cannot move. And
+   unlayered, for the reason the rule below it is: it has to beat
+   `[data-numeric]` in `@layer base`. */
+[dir="rtl"] [data-range] {
+  direction: rtl;
+}
+
+/* ── Arabic is a joined script ──────────────────────────────────────
+   Every positive `tracking-*` breaks the connections between Arabic
+   letters, and the negative tracking that tightens Latin display type
+   makes them collide. Both are set on shared components that render in
+   either locale, so the fix belongs here rather than in twenty files:
+   Latin keeps its tracking, the RTL tree is pinned to `normal`.
+
+   Deliberately outside `@layer`, so it beats the utility that set it —
+   an unlayered rule wins over any layered one regardless of specificity. */
+[dir="rtl"] * {
+  letter-spacing: normal;
+}
+
+/* ── iOS Safari zooms into any field under 16px ─────────────────────
+   Focus a 13px input on an iPhone and Safari scales the whole page up
+   to make it 16px, then leaves it there — the header off to one side,
+   the tab bar half visible, and the customer pinching their way back
+   out. Every field on this site is set small (`text-[0.82rem]` is the
+   house size) because that is right on every other device.
+
+   So on iOS, and only on iOS, a field is never under 16px. `@supports
+   (-webkit-touch-callout: none)` is true on WebKit-on-iOS and nowhere
+   else — Android Chrome and desktop Safari both fail it. The rule is
+   unlayered for the reason the one above it is: it has to beat the
+   utility class on the element, and an unlayered declaration does.
+
+   `max(16px, 1em)`: 16px, unless the parent is already larger, in which
+   case the field keeps the parent's size. Checkboxes, radios and range
+   sliders have no text to zoom for and keep their own boxes.
+
+   `components/store/ios-fixes.tsx` adds `maximum-scale=1` to the
+   viewport on iOS as the belt to these braces; iOS honours it for the
+   focus zoom and ignores it for pinch, so nobody loses the ability to
+   zoom by hand. */
+/* ── A finger needs a bigger target than a mouse ─────────────────────────
+   The dashboard's fields are `py-2.5` at `text-[0.85rem]`, which lands at
+   about 36px tall. That is fine under a cursor and genuinely hard with a
+   thumb — the shop's report was that "the level of interaction is hard for
+   the mobile users" in the back office, where a long editor is a column of
+   these and every mis-tap is a field opened by accident.
+
+   ⚠️ `(pointer: coarse)`, not a width breakpoint. The primary input device is
+   the question, and it is the only query that answers it: an iPad in
+   landscape is 1024px wide and still a finger, while a 390px browser window
+   on a laptop is a mouse. The shop asked for tablets explicitly.
+
+   44px is the floor every platform's own guidance settles on. It is a
+   `min-height`, so a field that is already taller — a textarea, a two-line
+   control — is untouched.
+
+   Fields only, deliberately. Putting it on every `button` would inflate the
+   chip rows, the quantity steppers and the icon controls that are sized
+   against the text beside them, and a 44px chip in a row of 32px ones is a
+   row that looks broken. Those are already spaced for a thumb.           */
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]):not([type="file"]),
+  select,
+  textarea,
+  /* The site's own listbox and combobox triggers: `components/ui/select.tsx`
+     and `searchable-select.tsx` render a `<button>` wearing the field skin,
+     so they are fields to a reader and have to be fields to a thumb. */
+  [role="combobox"] {
+    min-height: 2.75rem;
+  }
+}
+
+@supports (-webkit-touch-callout: none) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not(
+      [type="file"]
+    ),
+  select,
+  textarea,
+  [contenteditable="true"] {
+    font-size: max(16px, 1em);
+  }
+}
+
+/* ── Switching theme: the palette flips in one frame ────────────────
+   There is deliberately **no** transition on the colours themselves.
+
+   There was: `.theme-shift` put a 300ms `transition-property` on every
+   element and pseudo-element on the page for the length of the change.
+   It dissolved nicely and it was the wrong idea. Hundreds of elements
+   animating their background, border, fill and shadow at once is the most
+   expensive thing this site ever asks a mid-range Android phone to do,
+   and what it buys is a page that spends a third of a second looking
+   *undecided* — which reads as the site being slow, not as the site being
+   polished. A repaint that lands in one frame reads as instant, because
+   it is.
+
+   The whole effect is the shape below: one compositor-friendly clip on a
+   single layer, with a hard edge you can actually see move. That is where
+   the touch of quality is; a slow fade is where the feeling of lag is.
+
+   So: nothing here. The two rules that follow are the switch's own glyphs
+   and the diamond. */
+
+/* ── The switch's glyph: timing only ────────────────────────────────
+   One mark that *morphs* rather than two that swap: the disc shrinks, the
+   shadow biting the crescent out of it slides clear, eight rays open from
+   behind it and the whole thing turns 45°. A moon on the light theme, a
+   sun on the dark one, each naming the theme the press moves *to*.
+
+   **Which state it is in is not decided here.** Every moving part is a
+   number written into an inline style from `resolvedTheme` — no selector,
+   no `dark:` variant, no custom property. This rule contributes nothing
+   but the transition that carries one end into the other, so the worst it
+   can cost is a switch that changes instantly, which is what a switch is
+   allowed to do.
+
+   Both of the arrangements that came before put the *state* in CSS and
+   both failed the same way. It lived here first, as `.theme-glyph-sun` /
+   `.dark .theme-glyph-moon`, on the theory that a `.dark .x` selector
+   outranks a `dark:` utility and so cannot lose a cascade race — true, and
+   beside the point, because a browser holding a stylesheet older than the
+   markup knows *neither* rule. Then it was `dark:` utilities on the
+   button, which fixed the layout half and left the state half: anything
+   reaching the glyph through a `.dark` selector is one stale chunk, or one
+   browser painting its own dark mode over ours, away from a moon on a dark
+   page. A `--theme-glyph` custom property was the same idea one level down
+   and shipped inverted. A literal cannot do any of that.
+
+   The easing overshoots deliberately: the rays spring past full length and
+   settle. See `theme-toggle.tsx`. */
+.theme-glyph {
+  transition:
+    opacity 420ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    transform 420ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-glyph {
+    transition: none;
+  }
+}
+
+/* ── The page cross-fade ────────────────────────────────────────────
+   The theme change is drawn as the browser's own root cross-fade at
+   260ms, started from `components/providers.tsx`. Browsers without view
+   transitions get the same fade from an overlay there, so the effect is
+   the same everywhere.
+
+   ── What this replaced ──
+   It was the brand's diamond opening from the pressed switch: a
+   `clip-path` polygon animated over the page snapshot, plus a hand-drawn
+   overlay reproducing the shape for Firefox. Accurate to the mark, and
+   the wrong effect for the job — a theme switch is a setting, and a
+   setting that announces itself with a half-second shape crossing the
+   whole viewport reads as the site performing rather than responding,
+   especially on the third press in a row. Three rules and ~120 lines of
+   JavaScript have gone with it.
+
+   Nothing is needed here to make the fade happen: it is the default, and
+   the previous code's `animation: none` was there precisely to suppress
+   it. The only thing worth stating is the duration, so it is not the
+   UA's own 250ms by coincidence, and so the value sits next to the
+   `FADE_MS` the fallback path uses.
+
+   ⚠️ Still **no** transition on the colours themselves. What fades is a
+   pair of snapshots — two layers — not several hundred animated
+   properties across every element on the page. That is the rule the
+   deleted `.theme-shift` broke, and it is unchanged. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 260ms;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none;
+  }
+}
+
+/* ── The bar, while a dialog's scrim is up ──────────────────────────
+   ⚠️ Read the stacking note at the top of this file first: the header
+   sits *above* a dialog's scrim on purpose (70 over 60), and that fixed
+   the worst half of this — a scrim painted over the bar darkens a light
+   surface until the dark text on it stops reading.
+
+   It did not fix the other half, because z-order is not opacity. The bar
+   is `--surface` at 80% with a backdrop filter, so the page *behind* it
+   is still visible through it — and while a modal is open that page is
+   being dimmed by the scrim. The bar therefore takes the scrim's tint
+   second-hand, and every control in it is `--surface` at 70% over that,
+   which is how a row of buttons ends up several shades off the colour it
+   is everywhere else on the site. The glyphs are `--muted`, tuned for
+   4.5:1 against `--surface`, so they wash out with it.
+
+   Radix puts `data-scroll-locked` on `<body>` for exactly as long as a
+   modal is open, which is exactly the window this applies to. Both bars
+   go opaque for it — no scrim can reach through an opaque surface — and
+   the controls take `--canvas`, which is the recess they read as on the
+   dialogs and forms elsewhere in the app. The blur is dropped with the
+   transparency: there is nothing left behind them to blur, and a
+   backdrop filter with nothing under it is a compositing layer a
+   mid-range Android phone pays for on every frame of the open animation
+   in exchange for no pixels at all.
+
+   Deliberately outside `@layer`, so it beats the utilities that set the
+   translucent values — the same reason the RTL rule above is unlayered.
+   `--surface` and `--canvas` are read as variables rather than restated,
+   so this follows the theme like everything else.                       */
+body[data-scroll-locked] [data-site-header] {
+  background-color: var(--surface);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* The controls are transparent on the bar (see `glass-control.ts`), so on
+   an opaque bar they need nothing — this only stops a hover tint left over
+   from the press that opened the dialog from sitting there behind it. */
+body[data-scroll-locked] [data-site-header] .glass-control {
+  background-color: transparent;
+}
+
+/* ── The bar must not jump when a dialog opens ──────────────────────
+   ⚠️ Two separate movements were reported as one "header jumping"
+   symptom, and they have different causes. Both are fixed here rather
+   than in the components, because both are things Radix does to
+   `<body>` from outside React.
+
+   **1. The bar stops being sticky, and drops out of view.**
+
+   `react-remove-scroll`, which every Radix modal uses, sets
+   `overflow: hidden` on `<body>` for as long as the dialog is open.
+   That is a shorthand, so it overwrites the `overflow-x: clip` set
+   above — and a `body` with `overflow: hidden` on **both** axes is a
+   scroll container. `position: sticky` resolves against the nearest
+   scrollport, so the header instantly stops sticking to the viewport
+   and starts sticking to `body`, whose top is wherever the document
+   begins. Open the cart having scrolled down and the bar leaves the
+   screen entirely; open it at the top and nothing appears to happen,
+   which is why this reads as intermittent.
+
+   `clip` on one axis and `visible` on the other is the one pairing
+   that clips without creating a scroll container — it is what the rule
+   further up already relies on — so the fix is to give `body` that
+   pairing back and move the actual lock up to `html`. The page still
+   cannot scroll; the header still sticks to the viewport.
+
+   `:has()` rather than a class, because nothing in this app owns the
+   `<html>` element while a Radix dialog is open — the attribute is
+   written onto `<body>` by a library.
+
+   **2. The whole page slides sideways by the width of a scrollbar.**
+
+   Removing the document scrollbar reflows every centred container by
+   half its width, and `react-remove-scroll` compensates by adding
+   `padding-right` to `<body>`. `scrollbar-gutter: stable` reserves that
+   space permanently instead, which is both the fix for the jump *and*
+   the fix for short pages sitting a few pixels off-centre from long
+   ones — so the library's own compensation is now double-counting and
+   is neutralised. `!important` because it is applied through an
+   injected stylesheet with no selector this can outrank otherwise.   */
+/* ⚠️ Both overrides are gated, and the gates are not decoration.
+
+   Moving the lock to `<html>` only works where `:has()` does. Without
+   the gate, a browser that ignored the `html` rule would still apply
+   the `body` rule — handing the page its scroll back *behind an open
+   modal*, which is worse than the jump this fixes. Guarded, such a
+   browser simply keeps the old behaviour.
+
+   The padding is only double-counted where the gutter was actually
+   reserved, so neutralising it is gated on the same feature. Safari
+   does not support `scrollbar-gutter` and uses overlay scrollbars, so
+   it measures no gap, adds no padding, and needs neither rule.        */
+@supports selector(html:has(body)) {
+  html:has(body[data-scroll-locked]) {
+    overflow: hidden;
+  }
+
+  body[data-scroll-locked] {
+    overflow-x: clip !important;
+    overflow-y: visible !important;
+  }
+}
+
+@supports (scrollbar-gutter: stable) {
+  body[data-scroll-locked] {
+    padding-right: 0 !important;
+    margin-right: 0 !important;
+  }
+}
+
+/* ── A list you can scroll with a finger ────────────────────────────
+   The portalled listboxes are `overflow-y: auto`, which on a touch
+   screen is not enough on its own: without `touch-action` the browser
+   may hand the gesture to the page behind, and the drag then does
+   nothing at all inside a dialog whose own scroll is locked. Stated
+   here rather than on `popoverPanel` so a future picker cannot be
+   written without it.                                                */
+[role="listbox"] {
+  touch-action: pan-y;
+}
+
+/* ── The scrollbars are the site's, not the platform's ──────────────
+   Windows draws a 17px grey trough with square arrow buttons; on a
+   dark page it is a white strip down the right edge, and inside a
+   dialog or a listbox it is the one thing on screen that is not in the
+   palette. Both syntaxes, because the standard one (`scrollbar-color`,
+   Firefox and Chromium 121+) and the WebKit pseudo-elements (Safari,
+   older Chromium) do not overlap: a browser honours whichever it knows.
+
+   Thumb in `--line-strong` at rest and `--brand` under the pointer, on a
+   track the colour of the page — the same treatment every hairline
+   control on the site already gets — and rounded to the same radius as
+   a chip. The track keeps the canvas colour rather than going
+   transparent so `scrollbar-gutter: stable` reserves a strip that reads
+   as page, not as a hole. Phones draw overlay scrollbars and ignore all
+   of it, which is right: there is nothing there to theme.
+
+   Unlayered, like `[dir="rtl"] *`, so a utility cannot outrank it.     */
+@media (hover: hover) and (pointer: fine) {
+  html {
+    scrollbar-color: var(--line-strong) var(--canvas);
+    scrollbar-width: thin;
+  }
+  * {
+    scrollbar-color: var(--line-strong) transparent;
+    scrollbar-width: thin;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  html::-webkit-scrollbar-track {
+    background: var(--canvas);
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--line-strong);
+    border: 3px solid transparent;
+    background-clip: padding-box;
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--brand);
+  }
+  ::-webkit-scrollbar-corner,
+  ::-webkit-scrollbar-button {
+    background: transparent;
+    display: none;
+  }
+}
+
+/* ── The cursor carries the mark ─────────────────────────────────────
+   A laptop visitor spends the whole visit looking at the pointer, so it
+   is the one piece of chrome that can be the shop's without costing a
+   pixel of the page: the arrow in charcoal with a white rim (legible on
+   the dark theme and on a photograph), and the diamond with its red dot
+   as a badge at the tail. Over anything that can be pressed the arrow
+   takes the brand red and the badge inverts — the mark's own flip — so
+   "this is a control" is still said, in the shop's colours rather than
+   the OS's hand.
+
+   Only for a fine pointer: a touch screen has no cursor, and a coarse
+   one (a TV remote, a stylus pad) should keep the platform's. The
+   `pointer`/`default` keywords stay as the fallback for a browser that
+   refuses an SVG cursor. Text fields keep the I-beam, and every
+   `cursor-*` utility that means "press" or "arrow" is folded in here —
+   unlayered on purpose, so the utility cannot outrank it.
+
+   ⚠️ The SVGs carry explicit `width`/`height` of 32 and the hotspot is
+   the tip at (2,2); Chromium ignores an SVG cursor without a size and
+   Windows ignores one over 128px.                                       */
+@media (hover: hover) and (pointer: fine) {
+  html,
+  body,
+  .cursor-default,
+  button:disabled,
+  [aria-disabled="true"] {
+    cursor:
+      url("/cursor/arrow.svg") 2 2,
+      default;
+  }
+
+  a,
+  .cursor-pointer,
+  button:not(:disabled),
+  summary,
+  label:has(input[type="checkbox"]:not(:disabled)),
+  label:has(input[type="radio"]:not(:disabled)),
+  input[type="checkbox"]:not(:disabled),
+  input[type="radio"]:not(:disabled),
+  input[type="range"]:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  [role="option"]:not([aria-disabled="true"]),
+  [role="menuitem"],
+  [role="menuitemcheckbox"],
+  [role="radio"]:not([aria-disabled="true"]),
+  [role="tab"],
+  [role="link"] {
+    cursor:
+      url("/cursor/pointer.svg") 2 2,
+      pointer;
+  }
+
+  /* ⚠️ The resting arrow inverts with the theme and the pressed one does
+     not. A charcoal arrow on the dark palette is a hole in the page — the
+     white rim is the only part of it a reader can see, so the mark reads as
+     an outline with nothing inside. It takes the same flip the mark itself
+     takes in the header: white body, charcoal rim, dot still brand red.
+
+     The red arrow stays red in both themes on purpose. It is the one state
+     that means something — "this can be pressed" — and a signal that
+     changes colour with the palette is a signal a reader has to learn
+     twice. Red clears both grounds, which is what `--brand` is chosen for.
+
+     Keyed on `.dark`, the class `ThemeScript` puts on `<html>` before first
+     paint, so the cursor is right on the frame the palette is. */
+  .dark,
+  .dark body,
+  .dark .cursor-default,
+  .dark button:disabled,
+  .dark [aria-disabled="true"] {
+    cursor:
+      url("/cursor/arrow-dark.svg") 2 2,
+      default;
+  }
+}
+
+/* ── The aurora behind the daily diamond ────────────────────────
+   One blurred conic gradient turning behind the mark, so the
+   light comes from *behind* the object rather than being painted
+   onto it — the treatment the shop asked for on 2026-09-30.
+
+   ⚠️ `transform` only. This is a single compositor layer on one
+   page, which is a different thing from the `.theme-shift` rule
+   that animated every element on the site and had to be removed;
+   it is affordable for exactly that reason and must not become a
+   pattern applied broadly. `motion-reduce:hidden` takes it away
+   entirely rather than slowing it down. */
+@keyframes aurora-turn {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── The gift in the corner dock breathes ───────────────────────
+   A gold pool behind the box, so the control reads as worth
+   opening before anybody has hovered it. `opacity` only — the
+   swell on hover is a separate class on the same element, which
+   is why this can run at rest without costing anything. */
+@keyframes gift-shine {
+  0%,
+  100% {
+    opacity: 0.18;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+
+/* ── Page headers centre on a phone ─────────────────────────────────────
+   Every storefront page opens with the same header: an icon plate, a title,
+   a line under it, sometimes an action. From `sm` up it reads from the start
+   edge, beside whatever the row holds; on a phone it is a stack — plate,
+   title, line, action — on one centred axis, which is what a column one
+   thumb wide reads as deliberate. The shop's words (2026-10-22): "make sure
+   every thing is centered responsively for mobile screens".
+
+   One class on each level of the header (the outer row with the action and
+   the inner plate-and-title row), so every page stacks the same way rather
+   than fourteen headers each tuning their own `max-sm:` set. Unlayered, so
+   it outranks the `items-start` / `justify-between` utilities those rows
+   already carry for the wider layout. */
+@media (width < 40rem) {
+  .page-head {
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+  }
+}
+
+/* ── Shop by category (components/store/category-showcase.tsx) ─────
+   The shop's own design, 2026-10-23. Its art is placed in the reference
+   crops' pixel space (`lib/data/category-showcase.ts`); this is everything
+   that moves or changes colour, and none of it needs JavaScript.
+
+   ⚠️ `--showcase-red` is fixed in both themes and is deliberately not
+   `--brand`. Dark mode lifts `--brand` to a pink that holds contrast as
+   TEXT and fails as a FILL under white type (≈3:1) — and here it is a fill:
+   the discs, the pills and the footer a card turns on hover. This is the
+   shop's red as a colour in a picture, the argument `--scrim` makes. */
+:root {
+  --showcase-red: #db1829;
+  --showcase-disc: #26262a;
+  --showcase-disc-hi: #48484f;
+  --showcase-pill: #26262a;
+  --showcase-rule: rgb(24 24 32 / 0.06);
+  --showcase-mark: rgb(24 24 32 / 0.045);
+}
+
+.dark {
+  --showcase-disc: #2d2d33;
+  --showcase-disc-hi: #55555e;
+  --showcase-pill: #2d2d33;
+  --showcase-rule: rgb(255 255 255 / 0.05);
+  --showcase-mark: rgb(255 255 255 / 0.04);
+}
+
+/* Each card's own paper: a finer grid than the panel's, one step lighter. */
+.cat-paper {
+  background-color: var(--canvas);
+  background-image:
+    linear-gradient(var(--showcase-rule) 1px, transparent 1px),
+    linear-gradient(90deg, var(--showcase-rule) 1px, transparent 1px);
+  background-size: 26px 26px;
+  background-position: -1px -1px;
+}
+
+/* The card's Latin tag, huge and faint behind the art. */
+.cat-watermark {
+  position: absolute;
+  inset-inline: 0;
+  top: 50%;
+  translate: 0 -55%;
+  text-align: center;
+  white-space: nowrap;
+  font-weight: 900;
+  font-size: clamp(3rem, 9vw, 7.5rem);
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: var(--showcase-mark);
+}
+
+/* The footer: number, name, tag, arrow. */
+.cat-num {
+  background: var(--showcase-red);
+  color: #fff;
+}
+
+.cat-tag {
+  color: var(--muted);
+}
+
+.cat-arrow {
+  background: var(--subtle);
+  color: var(--ink);
+}
+
+.cat-card,
+.cat-foot,
+.cat-num,
+.cat-tag,
+.cat-arrow {
+  transition:
+    transform var(--dur-2) var(--ease-out-soft),
+    box-shadow var(--dur-2) var(--ease-out-soft),
+    border-color var(--dur-2) var(--ease-out-soft),
+    background-color var(--dur-2) var(--ease-out-soft),
+    color var(--dur-2) var(--ease-out-soft);
+}
+
+/* The art pops: a spring rather than an ease, so it overshoots and settles —
+   the product leaving its frame, which is what the design draws. Origin at
+   the stage's foot, so it rises out of the card instead of swelling in place. */
+.cat-art {
+  transform-origin: 50% 100%;
+  transition: transform 520ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.cat-decor {
+  transition: transform 700ms var(--ease-out-soft);
+  transform-origin: 50% 100%;
+}
+
+.cat-ring {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: cat-spin 28s linear infinite;
+  animation-play-state: paused;
+}
+
+.cat-bar {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+}
+
+@keyframes cat-spin {
+  to {
+    rotate: 1turn;
+  }
+}
+
+@keyframes cat-eq {
+  0%,
+  100% {
+    transform: scaleY(1);
+  }
+  50% {
+    transform: scaleY(0.55);
+  }
+}
+
+/* One set of states for a pointer, a keyboard and a finger. `:hover` is
+   gated on a real hover so a tap on a phone does not leave a card lit; a
+   finger gets the same look for as long as it is down (`:active`). */
+@media (hover: hover) {
+  .cat-card:hover {
+    border-color: var(--showcase-red);
+    transform: translate3d(0, -4px, 0);
+    box-shadow: 0 22px 44px -22px rgb(219 24 41 / 0.55);
+  }
+}
+
+.cat-card:focus-visible {
+  outline: 2px solid var(--showcase-red);
+  outline-offset: 3px;
+  border-color: var(--showcase-red);
+}
+
+.cat-card:active {
+  border-color: var(--showcase-red);
+  transform: scale(0.985);
+  transition-duration: var(--dur-1);
+}
+
+@media (hover: hover) {
+  .cat-card:hover .cat-foot {
+    background: var(--showcase-red);
+    color: #fff;
+  }
+  .cat-card:hover .cat-tag {
+    color: rgb(255 255 255 / 0.78);
+  }
+  .cat-card:hover .cat-num,
+  .cat-card:hover .cat-arrow {
+    background: #fff;
+    color: var(--showcase-red);
+  }
+  .cat-card:hover .cat-arrow {
+    transform: translate3d(calc(3px * var(--arrow-dir, 1)), 0, 0);
+  }
+  .cat-card:hover .cat-art {
+    transform: translate3d(0, var(--cat-pop-y, -6%), 0) scale(var(--cat-pop-s, 1.07));
+  }
+  .cat-card:hover .cat-decor {
+    transform: scale(1.03);
+  }
+  .cat-card:hover .cat-ring {
+    animation-play-state: running;
+  }
+  .cat-card:hover .cat-bar {
+    animation: cat-eq 900ms ease-in-out infinite;
+  }
+}
+
+.cat-card:focus-visible .cat-foot,
+.cat-card:active .cat-foot {
+  background: var(--showcase-red);
+  color: #fff;
+}
+
+.cat-card:focus-visible .cat-tag,
+.cat-card:active .cat-tag {
+  color: rgb(255 255 255 / 0.78);
+}
+
+.cat-card:focus-visible .cat-num,
+.cat-card:focus-visible .cat-arrow,
+.cat-card:active .cat-num,
+.cat-card:active .cat-arrow {
+  background: #fff;
+  color: var(--showcase-red);
+}
+
+.cat-card:focus-visible .cat-art {
+  transform: translate3d(0, var(--cat-pop-y, -6%), 0) scale(var(--cat-pop-s, 1.07));
+}
+
+/* The press: the product dips back into its frame — the click landing. */
+.cat-card:active .cat-art {
+  transform: translate3d(0, -2%, 0) scale(1.02);
+  transition-duration: 160ms;
+}
+
+/* Arriving: the card pops in (`Reveal variant="pop"`), and a beat later the
+   product springs up out of it. Hidden only behind `.motion-ready`, like
+   every reveal, so no JavaScript and reduced motion both get a finished page. */
+.motion-ready [data-reveal] .cat-art-in {
+  opacity: 0;
+  transform: translate3d(0, 16%, 0) scale(0.86);
+}
+
+.motion-ready [data-reveal][data-shown] .cat-art-in {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity 380ms var(--ease-out-soft) calc(var(--reveal-delay, 0ms) + 140ms),
+    transform 760ms cubic-bezier(0.34, 1.56, 0.64, 1) calc(var(--reveal-delay, 0ms) + 140ms);
+}
+
+.cat-art-in {
+  transform-origin: 50% 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cat-card,
+  .cat-art,
+  .cat-decor,
+  .cat-arrow {
+    transition-property: background-color, color, border-color, box-shadow;
+  }
+  .cat-card:hover,
+  .cat-card:active,
+  .cat-card:hover .cat-art,
+  .cat-card:active .cat-art,
+  .cat-card:focus-visible .cat-art,
+  .cat-card:hover .cat-decor,
+  .cat-card:hover .cat-arrow {
+    transform: none;
+  }
+  .cat-ring,
+  .cat-card:hover .cat-bar {
+    animation: none;
+  }
+}
+
+/* ===========================================================================
+   The on-screen keyboard
+   ===========================================================================
+   `KeyboardInset` publishes how much of the screen the keyboard is covering
+   and sets `data-keyboard-open` on `<html>` while it is. Both are inert on a
+   desktop and whenever no keyboard is up.
+
+   ⚠️ The declared default matters. Without it, `calc()` against an unset
+   property resolves to nothing and the whole declaration is dropped — so a
+   footer that lifts correctly on a phone would silently lose its padding
+   everywhere else.
+
+   Outside any layer, so a utility cannot outrank the one rule whose job is
+   to get a navigation bar out of the way of a form. */
+:root {
+  --keyboard-inset: 0px;
+}
+
+/* The bottom tab bar is navigation, and while somebody is typing it is
+   4.5rem of a screen that has just lost 40% of its height to the keyboard.
+   Nothing on it is reachable from inside a form anyway: every entry is a
+   route change that would throw the half-filled form away.
+
+   ⚠️ `display: none` rather than a transform, deliberately. A bar moved
+   off screen still takes its space out of the layout viewport that
+   `resizes-content` just shrank, and the footer padding reserved for it
+   (see the `desk:` padding on the storefront footer) would keep a band of
+   empty page under the keyboard. */
+html[data-keyboard-open] [data-site-tabbar] {
+  display: none;
+}
+
+/* The corner dock — rewards, the assistant, the cart — goes the same way,
+   and for the same reason rather than by analogy: all three are ways to
+   LEAVE what you are doing, and a form is the one moment that is never
+   what somebody wants. On a phone they also sit 8rem up the start edge,
+   which is squarely inside the area a keyboard covers.
+
+   ⚠️ Hidden rather than lifted. Lifting them by `--keyboard-inset` was the
+   first version and it is worse on both platforms: on Android the page has
+   already reflowed, so the inset is 0 and the transform does nothing; on
+   iOS it slides three buttons into the middle of a form the customer is
+   reading. The keyboard is not a reason to rearrange the screen around it.
+
+   The hook is an attribute, not a class: a class string cannot carry the
+   `html[data-keyboard-open]` ancestor this needs. */
+html[data-keyboard-open] [data-corner-dock] {
+  display: none;
+}
+
+/* The about page's album. See `components/content/about-chronicle.tsx`.
+
+   `.era-year` is a hollow numeral: the year is the structure of the page, and
+   a solid one at this size would out-shout the photographs under it.
+
+   `.print` is a photograph that has been handled. ⚠️ The mat is white in both
+   themes, because a print does not have a dark mode, the argument `--scrim`
+   makes about darkening a photograph. It settles when touched, so the tilt is
+   a resting state and never in the way of looking at a picture properly. */
+.era-year {
+  color: transparent;
+  -webkit-text-stroke: 1.5px var(--brand);
+}
+.era-year-light {
+  -webkit-text-stroke-color: #ffffff;
+}
+@media (forced-colors: active) {
+  .era-year {
+    color: CanvasText;
+    -webkit-text-stroke: 0;
+  }
+}
+.print {
+  background: #ffffff;
+  transform: rotate(var(--tilt, 0deg));
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.14),
+    0 10px 24px -12px rgb(0 0 0 / 0.32);
+  transition: transform 320ms var(--ease-out-soft);
+}
+.print:hover,
+.print:focus-within {
+  transform: rotate(0deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .print {
+    transition: none;
+  }
+}
+
+/* ── The home bento's team card, and the gap it leaves ──────────────────────
+   "Our team" is offered to a signed-in Wasit customer and to nobody else —
+   the rule `MoreMenu` and `MobileNav` have always followed, applied to the
+   home page on the shop's instruction (2026-11-04). `BentoGrid` resolves the
+   province in the browser and writes `data-bento="team"` on the <ul>; the
+   cards themselves stay Server Components.
+
+   Two rules, because withholding a card from a grid of eight leaves a hole:
+   the phone grid is two columns and the laptop grid is four, and eight fills
+   both exactly. The About card widens into the empty cell, which is what the
+   shop asked for and what keeps the last line full.
+
+   ⚠️ The default is *withheld*, so the attribute's job is to put the card
+   back rather than to take it away. There is a frame before the session is
+   known, and a card that appears and then vanishes reads as a bug where one
+   that merely arrives reads as the page finishing. `display: none` also
+   takes it out of the tab order and the accessibility tree, so there is no
+   focus ring on an invisible link.
+
+   ⚠️ Unlayered, so it beats the `col-span-*` / `lg:col-start-*` utilities on
+   the card itself — the same reason `[dir="rtl"] *` sits outside `@layer`.
+   Both ends of each track are stated (start *and* span) so the card can
+   never be left half-placed by one rule winning and the other losing.
+
+   This is not a gate: `/team` is public, prerendered and still in the footer,
+   and `staff_rating_eligibility` re-derives the real answer at the RPC. */
+[data-bento] > [data-card="team"] {
+  display: none;
+}
+[data-bento="team"] > [data-card="team"] {
+  display: revert;
+}
+
+/* Two columns on a phone. */
+[data-bento] > [data-card="about"] {
+  grid-column: span 2 / span 2;
+}
+[data-bento="team"] > [data-card="about"] {
+  grid-column: auto / auto;
+}
+
+/* Four from `lg`, where both cards are explicitly placed on row 3. */
+@media (min-width: 64rem) {
+  [data-bento] > [data-card="about"] {
+    grid-column: 1 / span 2;
+  }
+  [data-bento="team"] > [data-card="about"] {
+    grid-column: 1 / span 1;
+  }
+}
+
+/* ── A repair ticket, on paper ───────────────────────────────────────────────
+   `RepairPrintSheet` portals into <body>, and printing hides every other child
+   of <body>: the dashboard, an open dialog, its scrim, the toaster. Off paper
+   it is not drawn at all. The scroll lock a dialog puts on <html> must not
+   reach the page either, or the sheet is clipped to the viewport. The paper's
+   size is the sheet's own, in a <style> beside it: three papers cannot share
+   one `@page`. */
+.print-sheet {
+  display: none;
+}
+@media print {
+  /* `scrollbar-gutter` belongs to the screen. Kept on paper it reserves a strip
+     down one edge, and on a 60 mm label that strip is what gets cut off. */
+  html {
+    scrollbar-gutter: auto !important;
+  }
+  html,
+  body {
+    height: auto !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+  }
+  body > *:not(.print-sheet) {
+    display: none !important;
+  }
+  .print-sheet {
+    display: block !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "Admin": {
+    "psSetupSubtitle": "Saved on this computer only.",
+    "psSetupConnectionHint": "A small program of ours that reads Windows' printers directly and prints to them without a dialog. The desk starts it itself.",
+    "psProblem_not_running": "The print agent isn't running. Restart it from Settings → Printing, then try again — or print with the print dialog.",
+    "psProblem_timeout": "The print agent did not answer in time. Restart it from Settings → Printing, then try again.",
+    "psProblem_listing_failed": "The print agent is running but did not return the installed printers. Restart it from Settings → Printing, then try again.",
+    "psUseDialog": "Print with the print dialog",
+    "psSetupMethodDialog": "The print dialog",
+    "psOutcome_skipped": "Everything that could print was sent. {count} were skipped because their printer isn't available ({printers}) — print them with the print dialog, or retry once it's connected.",
+    "psOutcome_none_available": "No printer is available for these papers right now — print with the print dialog or open the printer setup."
+  }
+}

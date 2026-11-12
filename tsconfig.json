@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/renderer/overrides/*", "src/site/*"],
+      "next/image": ["src/renderer/shims/next-image.tsx"],
+      "next/link": ["src/renderer/shims/next-link.tsx"],
+      "next-intl": ["src/renderer/shims/next-intl.ts"],
+      "server-only": ["src/renderer/shims/server-only.ts"]
+    }
+  },
+  "include": ["src", "electron.vite.config.ts", "test"]
+}

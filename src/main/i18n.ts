@@ -1,0 +1,69 @@
+import { getSettings } from "./settings";
+
+/**
+ * The few sentences the main process says itself — notifications, the tray,
+ * dialogs. Everything inside the window comes from the dashboard's own
+ * `messages/*.json`; these are the words that appear outside it.
+ */
+const WORDS = {
+  ar: {
+    appName: "صيانة الاسناد",
+    trayOpen: "فتح قسم الصيانة",
+    traySync: "مزامنة الآن",
+    trayQuit: "خروج",
+    trayOnline: "متصل",
+    trayOffline: "غير متصل — يعمل محلياً",
+    trayPending: (n: number) => `${n} تعديل بانتظار الرفع`,
+    newTicketTitle: (code: string) => `حجز صيانة جديد ${code}`,
+    newTicketBody: (device: string, name: string) => `${device} — ${name}`,
+    movedTitle: (code: string) => `تحديث على ${code}`,
+    movedBody: (device: string) => `تغيّرت حالة ${device} من لوحة التحكم`,
+    failedTitle: (code: string) => `تعذّر رفع تعديل على ${code}`,
+    failedBody: (reason: string) => `رفض الخادم التعديل (${reason}). افتح لوحة المزامنة لإعادة المحاولة أو الإلغاء.`,
+    onlineTitle: "عاد الاتصال",
+    onlineBody: (n: number) => (n ? `جارٍ رفع ${n} تعديل إلى لوحة التحكم` : "البيانات محدّثة مع لوحة التحكم"),
+    offlineTitle: "انقطع الاتصال",
+    offlineBody: "يستمر العمل محلياً وستُرفع التعديلات عند عودة الاتصال",
+    quitPendingTitle: "تعديلات لم تُرفع بعد",
+    quitPendingBody: (n: number) => `${n} تعديل محفوظ على هذا الجهاز ولم يصل إلى لوحة التحكم بعد. سيُرفع في المرة القادمة التي يُفتح فيها البرنامج مع وجود اتصال.`,
+    quitAnyway: "خروج",
+    stay: "البقاء",
+    restoreTitle: "استعادة نسخة احتياطية",
+    restoreBody: "سيُستبدل كل ما على هذا الجهاز بهذه النسخة. التعديلات التي لم تُرفع بعد وليست في النسخة ستُفقد.",
+    restore: "استعادة",
+    cancel: "إلغاء",
+    importFilter: "قاعدة بيانات الصيانة",
+  },
+  en: {
+    appName: "Al-Esnad Maintenance",
+    trayOpen: "Open the repair desk",
+    traySync: "Sync now",
+    trayQuit: "Quit",
+    trayOnline: "Online",
+    trayOffline: "Offline — working locally",
+    trayPending: (n: number) => `${n} change${n === 1 ? "" : "s"} waiting to upload`,
+    newTicketTitle: (code: string) => `New repair booking ${code}`,
+    newTicketBody: (device: string, name: string) => `${device} — ${name}`,
+    movedTitle: (code: string) => `${code} was updated`,
+    movedBody: (device: string) => `${device} changed status on the dashboard`,
+    failedTitle: (code: string) => `A change to ${code} could not be uploaded`,
+    failedBody: (reason: string) => `The server refused it (${reason}). Open the sync panel to retry or discard it.`,
+    onlineTitle: "Back online",
+    onlineBody: (n: number) => (n ? `Uploading ${n} change${n === 1 ? "" : "s"} to the dashboard` : "Up to date with the dashboard"),
+    offlineTitle: "Connection lost",
+    offlineBody: "Work continues locally; changes upload when the connection returns",
+    quitPendingTitle: "Changes not uploaded yet",
+    quitPendingBody: (n: number) => `${n} change${n === 1 ? " is" : "s are"} saved on this computer and not on the dashboard yet. They upload the next time the app opens with a connection.`,
+    quitAnyway: "Quit",
+    stay: "Stay",
+    restoreTitle: "Restore a backup",
+    restoreBody: "Everything on this computer will be replaced with this backup. Changes not uploaded yet that are not in it will be lost.",
+    restore: "Restore",
+    cancel: "Cancel",
+    importFilter: "Repair desk database",
+  },
+};
+
+export function words() {
+  return WORDS[getSettings().locale];
+}

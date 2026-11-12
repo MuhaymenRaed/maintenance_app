@@ -1,0 +1,209 @@
+/*
+ * The desk's stylesheet is the dashboard's.
+ *
+ * `../site/globals.css` is copied from the site by `scripts/sync-site.mjs` —
+ * every token, both palettes, the cursor, the scrollbars, `data-numeric`,
+ * `[data-range]`, the dialog motion — and it is imported whole, so a board
+ * drawn here and a board drawn on alisnad.iq are one stylesheet. Nothing below
+ * restyles a dashboard component. What is here is only what a window needs
+ * that a web page does not.
+ */
+@import "../site/globals.css";
+
+/*
+ * ⚠️ Tailwind only emits a class it can read in a source file. The copied
+ * components live outside this folder, so both trees are named here rather
+ * than left to automatic detection, which starts from the working directory
+ * and would skip whatever a sync puts somewhere new.
+ */
+@source "../site";
+@source ".";
+
+/*
+ * Expo Arabic, the shop's typeface.
+ *
+ * On the site `next/font/local` declares these four faces and hands the
+ * family over as `--font-expo`, which `globals.css` reads for `--site-font`.
+ * There is no `next/font` here, so the faces are written out — the same four
+ * files, copied by the sync to `public/fonts/`.
+ *
+ * ⚠️ `font-display: block`, unlike the site's `swap`. A web page that swaps
+ * shows text a moment earlier on a slow line; this window reads its fonts from
+ * the disk, and a swap here would only ever be the board's Arabic drawn in the
+ * system face for one frame and re-set in Expo Arabic the next.
+ */
+@font-face {
+  font-family: "Expo Arabic";
+  src: url("/fonts/expo-arabic-400.woff") format("woff");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Expo Arabic";
+  src: url("/fonts/expo-arabic-500.woff") format("woff");
+  font-weight: 500;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Expo Arabic";
+  src: url("/fonts/expo-arabic-600.woff") format("woff");
+  font-weight: 600;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Expo Arabic";
+  src: url("/fonts/expo-arabic-700.woff") format("woff");
+  /* The family stops at 700, so the extrabold and black utilities land here. */
+  font-weight: 700 900;
+  font-style: normal;
+  font-display: block;
+}
+
+:root {
+  --font-expo: "Expo Arabic";
+}
+
+/*
+ * The title bar is the window's own header, drawn by the page.
+ *
+ * Windows paints its minimise / maximise / close buttons over the top corner
+ * (`titleBarOverlay` in `src/main/window.ts`) and reports the free strip as
+ * `titlebar-area-*`. The bar's *content* is fitted to that strip — physical
+ * left and width, never logical, because the buttons are on the right in both
+ * languages and an Arabic bar laid out with `margin-inline-end` would put the
+ * logo underneath them.
+ *
+ * ⚠️ The height is in pixels, never rem: the overlay is 56 device-independent
+ * pixels tall whatever the reader's text size, and a bar in rem would come out
+ * 53px at the dashboard's 95% and leave a stripe of the wrong colour under the
+ * buttons.
+ */
+.desk-titlebar {
+  height: env(titlebar-area-height, 56px);
+  -webkit-app-region: drag;
+  app-region: drag;
+  user-select: none;
+}
+/*
+ * ⚠️ `margin-right: auto` is what makes the left margin mean anything in
+ * Arabic. A block with a fixed width is over-constrained, and CSS resolves that
+ * by ignoring the margin on the *end* side — in a right-to-left page, the left
+ * one. Without it the box hugged the right edge and the page's controls sat
+ * under Windows' caption buttons. Measured: content at 117–1516px against a
+ * reported free area of 0–1399px. With an `auto` right margin there is exactly
+ * one free value, and it absorbs the slack in either direction.
+ */
+.desk-titlebar-content {
+  margin-left: env(titlebar-area-x, 0px);
+  margin-right: auto;
+  width: env(titlebar-area-width, 100%);
+  height: 100%;
+}
+.desk-titlebar :is(a, button, input, select, textarea, label, [role="button"], [data-no-drag]) {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/*
+ * ⚠️ The title bar stays put while a dialog is open.
+ *
+ * `globals.css` already moves Radix's scroll lock from `<body>` up to `<html>`
+ * so `position: sticky` keeps working — and in this window its rule lost.
+ * `react-remove-scroll-bar` injects `body[data-scroll-locked] { overflow:
+ * hidden !important; margin-right: <gap>px !important }` in a `<style>` it
+ * appends to `<head>` at run time. Same specificity as the dashboard's rule,
+ * both `!important`, so the later one wins, and an injected tag is always
+ * later than the stylesheet. `body` became a scroll container, the sticky
+ * title bar started sticking to it, and opening the printers dialog from a
+ * scrolled board took the whole bar off the top of the window — the page
+ * showing dimmed where the bar had been, beside Windows' bright caption
+ * buttons. Reported, with a screenshot, as "weird fading".
+ *
+ * One `html` in front is (0,1,2) against the library's (0,1,1): specificity
+ * outranks order, so these hold whatever is injected after them. Gated the
+ * same way the dashboard gates them — see its note on why the gate matters.
+ */
+@supports selector(html:has(body)) {
+  html:has(> body[data-scroll-locked]) {
+    overflow: hidden;
+  }
+  html body[data-scroll-locked] {
+    overflow-x: clip !important;
+    overflow-y: visible !important;
+  }
+}
+@supports (scrollbar-gutter: stable) {
+  html body[data-scroll-locked] {
+    padding-right: 0 !important;
+    margin-right: 0 !important;
+  }
+}
+
+/*
+ * Dialogs centre in the window *below* the title bar.
+ *
+ * The dashboard centres a dialog in the viewport and caps it at 92% of the
+ * height, which in a browser is the page under the address bar. Here the top
+ * 56 pixels are the window's own frame, and a tall dialog — the printers
+ * setup is one — rose into it, under Windows' buttons. Every centred dialog is
+ * `top-1/2` with a `-translate-y-1/2`, so moving its centre down by half the
+ * bar and taking the bar out of its height is all it needs. Unlayered, so it
+ * outranks the utilities without `!important`.
+ */
+:is([role="dialog"], [role="alertdialog"]).top-1\/2 {
+  top: calc(50% + 28px);
+  max-height: min(92dvh, calc(100dvh - 56px - 2rem));
+}
+
+/*
+ * "Reduce motion", as a setting rather than only as the system's.
+ *
+ * The dashboard honours `prefers-reduced-motion`, which is Windows' own
+ * "Animation effects" switch — off on a lot of counter PCs and on in a lot of
+ * others for reasons nobody at the desk chose. The setting forces it either
+ * way for this window. Durations go to almost-nothing rather than to `none`
+ * so `animationend` / `transitionend` still fire and nothing waiting on one
+ * hangs — the print panel and the toasts both do.
+ */
+html.desk-reduce-motion *,
+html.desk-reduce-motion *::before,
+html.desk-reduce-motion *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+
+/*
+ * ⚠️ No background until the theme is known.
+ *
+ * The page's palette depends on a setting the main process holds, and the
+ * first frame is painted before that answer is back — so in the dark theme the
+ * window flashed the light canvas for a moment on every start. Until
+ * `lib/appearance.ts` marks the root `desk-ready`, the page paints nothing and
+ * the window's own background shows through: the main process set that to the
+ * right `--canvas` before the page loaded. Unlayered, so it outranks the
+ * dashboard's `body` rule in `@layer base`.
+ */
+html:not(.desk-ready),
+html:not(.desk-ready) body {
+  background-color: transparent;
+}
+
+/* The splash the window shows while the first page is read. */
+@keyframes desk-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.desk-rise {
+  animation: desk-rise 260ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}

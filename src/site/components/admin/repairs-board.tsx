@@ -1,0 +1,1462 @@
+"use client";
+
+import { useRef, useState, useSyncExternalStore, useTransition } from "react";
+import Image from "next/image";
+import { useLocale, useTranslations } from "next-intl";
+import {
+  ChevronLeft,
+  Cpu,
+  Eye,
+  ImageOff,
+  ImagePlus,
+  Loader2,
+  MapPin,
+  Printer,
+  ShieldCheck,
+  Smartphone,
+  Store,
+  Timer,
+  UserCheck,
+  UserX,
+  Wrench,
+} from "lucide-react";
+import { StatusPill } from "@/components/account/status-pill";
+import {
+  EntityDialog,
+  Field,
+  input,
+  NumberInput,
+  Section,
+  SelectField,
+  MoneyInput,
+} from "@/components/admin/form-kit";
+import {
+  ContactPanel,
+  WhatsAppButton,
+} from "@/components/admin/contact-actions";
+import { DayRule } from "@/components/admin/day-rule";
+import { RecordDelete } from "@/components/admin/record-delete";
+import toast from "react-hot-toast";
+import {
+  RepairWarrantyDialog,
+  TICKET_RUN,
+  type RepairPrintFacts,
+} from "@/components/admin/repair-print";
+import { toRepairPrintFacts } from "@/lib/data/repair-print-facts";
+import { isPrinting, printStation, startPrint } from "@/lib/print/station";
+import { ImageLightbox } from "@/components/ui/image-lightbox";
+import { addRepairPhotos, updateRepair } from "@/lib/actions/sections";
+import { assignRepair, updateRepairFinance } from "@/lib/actions/repair-desk";
+import { groupByDay } from "@/lib/data/queue-window";
+import {
+  repairMoney,
+  repairTotal,
+  warrantyEnd,
+  type DeskRank,
+  type PaymentTerms,
+} from "@/lib/data/repair-desk";
+import { uploadPhotos } from "@/lib/upload";
+import { REPAIR_FLOW } from "@/lib/data/orders";
+import { StatusHistory } from "@/components/admin/status-history";
+import { statusTone, TONE_VAR } from "@/lib/data/status-tone";
+import { formatPrice } from "@/lib/format";
+import type { DeskRow } from "@/lib/queries/repair-desk";
+
+type RepairCard = DeskRow;
+import type { RepairStatus } from "@/lib/data/orders";
+import { cn } from "@/lib/utils";
+import { formatDayNumeric, formatDayTime } from "@/lib/data/datetime";
+
+/** Somebody a ticket may be handed to. */
+export type DeskHolder = { id: string; name: string; rank: DeskRank };
+
+/**
+ * The repair bench.
+ *
+ * The busiest queue in the shop and the one with the most state: a ticket
+ * carries a device, a fault list, a customer waiting on a price, a person it
+ * belongs to, and photographs taken before and after.
+ *
+ * Eight statuses is too many for a row of buttons, so the flow is a stepper:
+ * where the ticket is, and the one place it usually goes next.
+ *
+ * ---------------------------------------------------------------------------
+ * Every row says what this reader may do to it
+ * ---------------------------------------------------------------------------
+ * `control` arrives on the row from the server, worked out once from who holds
+ * the ticket: `full` is a manager's everything, `own` is a technician working a
+ * ticket in their name, `none` is reading it. This board only decides what to
+ * draw; the actions ask again and the database decides.
+ */
+export function RepairsBoard({
+  rows: initial,
+  holders,
+  viewerId,
+  manages,
+  seesMoney,
+  isTechnician,
+  financeAvailable = false,
+  warrantyAvailable = false,
+  canDelete = false,
+  showDays = false,
+  todayDay,
+  initialOpenId = null,
+  flow = REPAIR_FLOW.filter((step) => step !== "waiting_parts"),
+}: {
+  /**
+   * The steps this deployment can store, in order — the page passes
+   * `liveFlow(REPAIR_FLOW, …)`. Without 20261107_status_steps.sql
+   * "waiting for parts" is not offered, because the database would refuse it.
+   */
+  flow?: readonly RepairStatus[];
+  rows: RepairCard[];
+  /** Who this reader may hand a ticket to. Empty for a technician. */
+  holders: DeskHolder[];
+  viewerId: string;
+  /** Prints the card, and everything a ticket's `control` then allows. */
+  manages: boolean;
+  /** Never a technician. */
+  seesMoney: boolean;
+  isTechnician: boolean;
+  /** `repair_ticket_finance` exists — the staff-only money can be saved. */
+  financeAvailable?: boolean;
+  /** `warranty_price` exists on this deployment. */
+  warrantyAvailable?: boolean;
+  /** `records.delete` — owner roles only. Absent, the control is not drawn. */
+  canDelete?: boolean;
+  /** Draw a rule where the day changes — the window spans more than today. */
+  showDays?: boolean;
+  /** Today's Baghdad day, from the server: the day rule, a warranty's first day. */
+  todayDay: string;
+  /**
+   * `?open=<id>` — the dialog to open on arrival. A new-work alert links here,
+   * so pressing it lands on the item rather than on a list to find it in.
+   */
+  initialOpenId?: string | null;
+}) {
+  const t = useTranslations("Admin");
+  const tTrack = useTranslations("Track");
+  const locale = useLocale();
+
+  const [rows, setRows] = useState(initial);
+  // A fresh read wins: after a save, a live update or a colleague's change the
+  // server hands down new rows, and an edit made by somebody else must not sit
+  // behind what this tab remembers. Set during render, not in an effect, so the
+  // stale list is never painted.
+  const [held, setHeld] = useState(initial);
+  if (initial !== held) {
+    setHeld(initial);
+    setRows(initial);
+  }
+  const [openId, setOpenId] = useState<string | null>(initialOpenId);
+  const [error, setError] = useState<string | null>(null);
+  const [warrantyId, setWarrantyId] = useState<string | null>(null);
+  /*
+   * The print station's run — read only to show which ticket is printing. The
+   * run itself lives in `lib/print/station.ts`, outside this board, so closing
+   * the ticket or leaving the page cannot tear it out from under the printer.
+   */
+  const station = useSyncExternalStore(printStation.subscribe, printStation.snapshot, printStation.server);
+  const [, startTransition] = useTransition();
+
+  const open = rows.find((row) => row.id === openId) ?? null;
+  const warrantyRow = rows.find((row) => row.id === warrantyId) ?? null;
+
+  /**
+   * One press: both receipts to the A5 printer, then the label to the label
+   * printer — no dialog on a machine with QZ Tray, the browser's dialog on one
+   * without. The station reads the ticket fresh before printing, so the facts
+   * here are only what the dialog path falls back to.
+   *
+   * The date on the paper is stamped by the press — reading the clock during
+   * render is impure, and it is when the desk asked for it.
+   */
+  function printTicket(row: RepairCard) {
+    const started = startPrint({
+      ticketId: row.id,
+      facts: printFacts(row),
+      printedAt: Date.now(),
+      papers: TICKET_RUN,
+      locale,
+    });
+    if (started === "busy") toast(t("psBusy"));
+  }
+  const printingCode = station.run && isPrinting() ? station.run.code : null;
+
+  function patch(id: string, next: Partial<RepairCard>) {
+    setRows((current) =>
+      current.map((row) => (row.id === id ? { ...row, ...next } : row)),
+    );
+  }
+
+  /** Optimistic, reverted in place from the snapshot taken before the call. */
+  function apply(
+    id: string,
+    next: Partial<RepairCard>,
+    send: () => Promise<{ ok: boolean; error?: string }>,
+  ) {
+    const before = rows.find((row) => row.id === id);
+    if (!before) return;
+    setError(null);
+    patch(id, next);
+    startTransition(async () => {
+      const result = await send();
+      if (!result.ok) {
+        patch(id, before);
+        setError(result.error ?? "updateFailed");
+      }
+    });
+  }
+
+  return (
+    <div className="space-y-3">
+      {error && (
+        <p
+          role="alert"
+          className="rounded-card bg-brand/10 px-4 py-2.5 text-[0.8rem] font-bold text-brand"
+        >
+          {t.has(error) ? t(error as "updateFailed") : t("updateFailed")}
+        </p>
+      )}
+
+      {rows.length === 0 ? (
+        <p className="rounded-panel border border-dashed border-line px-6 py-16 text-center text-[0.9rem] font-bold text-muted">
+          {t("noData")}
+        </p>
+      ) : (
+        <div className="space-y-2.5">
+          {groupByDay(rows, (row) => row.createdAt).map((group) => (
+          <section key={group.day} className="space-y-2.5">
+          {showDays && (
+            <DayRule
+              day={group.day}
+              locale={locale}
+              count={t("dayCount", { count: group.rows.length })}
+              todayDay={todayDay}
+              todayLabel={t("dayToday")}
+              yesterdayLabel={t("dayYesterday")}
+            />
+          )}
+        <ul className="space-y-2.5">
+          {group.rows.map((row) => (
+            <li key={row.id}>
+              <article className="relative flex items-center gap-3 rounded-panel border border-line bg-surface p-3.5 shadow-card sm:gap-4 sm:px-4">
+                <span
+                  className="h-12 w-1.5 shrink-0 rounded-full"
+                  style={{ background: TONE_VAR[statusTone(row.status)] }}
+                  aria-hidden
+                />
+
+                {row.photosBefore[0] ? (
+                  <span className="relative size-11 shrink-0 overflow-hidden rounded-card border border-line max-sm:hidden">
+                    <Image
+                      src={row.photosBefore[0]}
+                      alt=""
+                      fill
+                      sizes="44px"
+                      className="object-cover"
+                    />
+                  </span>
+                ) : (
+                  <span className="flex size-11 shrink-0 items-center justify-center rounded-card bg-subtle text-muted max-sm:hidden">
+                    {row.service === "software" ? <Cpu className="size-4" aria-hidden /> : <Smartphone className="size-4" aria-hidden />}
+                  </span>
+                )}
+
+                {/* ⚠️ The row's button is a **stretched overlay**, not a wrapper,
+                    so the controls at the end of the row can stay real buttons
+                    beside it rather than nested inside it — a `<button>` inside
+                    a `<button>` is unnested by the parser, and that is a
+                    hydration error rather than a style bug. */}
+                <button
+                  type="button"
+                  onClick={() => setOpenId(row.id)}
+                  aria-label={row.code}
+                  className="absolute inset-0 z-0 rounded-panel focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+                />
+                <div className="pointer-events-none relative z-1 min-w-0 flex-1 text-start">
+                  <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                    <span
+                      className="text-[0.85rem] font-extrabold text-info"
+                      data-numeric
+                    >
+                      {row.code}
+                    </span>
+                    <span
+                      className="text-[0.7rem] font-medium text-muted"
+                      dir="ltr"
+                    >
+                      {formatDayNumeric(locale, row.createdAt)}
+                    </span>
+                  </span>
+
+                  <span className="mt-0.5 block truncate text-[0.85rem] font-extrabold text-ink">
+                    {row.deviceModel}
+                  </span>
+
+                  <span className="mt-0.5 block truncate text-[0.74rem] font-medium text-muted">
+                    {row.customerName}
+                    {/* ⚠️ The margin is on a wrapper. On the `dir="ltr"` span itself
+                        `ms-` resolves to that span's own start, the far side of
+                        the number on an Arabic page, and the name ran into it. */}
+                    {row.customerPhone && (
+                      <span className="ms-2">
+                        <span dir="ltr" data-numeric>
+                          {row.customerPhone}
+                        </span>
+                      </span>
+                    )}
+                    {(row.issues.length > 0 || row.customFaults.length > 0) && (
+                      <span className="ms-2">
+                        · {[...row.issues, ...row.customFaults].join("، ")}
+                      </span>
+                    )}
+                  </span>
+                  <span className="mt-1.5 block">
+                    <HolderChip row={row} viewerId={viewerId} />
+                  </span>
+                </div>
+
+                <span className="flex shrink-0 flex-col items-end gap-1.5">
+                  <StatusPill
+                    status={row.status}
+                    label={tTrack(`status_${row.status}` as "status_received")}
+                  />
+                  {repairCost(row) != null && (
+                    <span
+                      className="text-[0.8rem] font-black text-brand"
+                      data-numeric
+                    >
+                      {formatPrice(repairCost(row)!)}
+                    </span>
+                  )}
+                  {/* Cash or deferred, and what is still owed — the desk's own
+                      bookkeeping, never shown to the customer or a technician. */}
+                  {seesMoney && financeAvailable && (
+                    <TermsChip
+                      terms={row.paymentTerms}
+                      remaining={
+                        repairMoney({
+                          price: row.price,
+                          warranty: row.warrantyPrice,
+                          cost: row.costPrice,
+                          collected: row.collected,
+                          terms: row.paymentTerms,
+                        }).remaining
+                      }
+                      cashLabel={t("termsCash")}
+                      deferredLabel={t("termsDeferred")}
+                    />
+                  )}
+                  {seesMoney && (row.warrantyPrice ?? 0) > 0 && (
+                    <span className="inline-flex items-center gap-1 rounded-chip bg-info/10 px-2 py-0.5 text-[0.64rem] font-extrabold text-info">
+                      <ShieldCheck className="size-3" aria-hidden />
+                      {t("warrantyTitle")} <span data-numeric>{formatPrice(row.warrantyPrice!)}</span>
+                    </span>
+                  )}
+                </span>
+
+                {manages && (
+                  <button
+                    type="button"
+                    onClick={() => printTicket(row)}
+                    disabled={printingCode !== null}
+                    aria-busy={printingCode === row.code}
+                    aria-label={`${t("deskPrint")} — ${row.code}`}
+                    title={t("deskPrint")}
+                    className="press relative z-1 flex size-9 shrink-0 items-center justify-center rounded-control border border-line text-muted transition-colors hover:border-brand hover:text-brand disabled:cursor-wait disabled:opacity-60 max-sm:hidden"
+                  >
+                    {printingCode === row.code ? (
+                      <Loader2 className="size-4 animate-spin" aria-hidden />
+                    ) : (
+                      <Printer className="size-4" aria-hidden />
+                    )}
+                  </button>
+                )}
+
+                {/* Ringing the customer is the most common thing anyone does
+                    from this queue, so it does not cost opening the ticket.
+                    Absent where the number was not sent to this reader. */}
+                {row.customerPhone && (
+                  <WhatsAppButton
+                    phone={row.customerPhone}
+                    message={repairMessage(
+                      row,
+                      t,
+                      tTrack(`status_${row.status}` as "status_received"),
+                    )}
+                    label={`${t("whatsappContact")} — ${row.customerName}`}
+                    variant="icon"
+                    className="max-sm:hidden"
+                  />
+                )}
+
+                <ChevronLeft
+                  className="size-4 shrink-0 text-muted rtl:rotate-180"
+                  aria-hidden
+                />
+              </article>
+            </li>
+          ))}
+        </ul>
+          </section>
+          ))}
+        </div>
+      )}
+
+      {open && (
+        <RepairDialog
+          key={open.id}
+          repair={open}
+          flow={flow}
+          holders={holders}
+          viewerId={viewerId}
+          manages={manages}
+          seesMoney={seesMoney}
+          isTechnician={isTechnician}
+          financeAvailable={financeAvailable}
+          warrantyAvailable={warrantyAvailable}
+          canDelete={canDelete}
+          error={error}
+          onClose={() => setOpenId(null)}
+          onApply={(next, send) => apply(open.id, next, send)}
+          onPrint={() => printTicket(open)}
+          printing={printingCode !== null}
+          onWarranty={() => setWarrantyId(open.id)}
+          onDeleted={() => {
+            /*
+             * The row and the dialog go on the same frame — see the note on
+             * the orders board.
+             *
+             * ⚠️ `held` is deliberately **not** touched. It holds the *props*
+             * this board last saw, and the "a fresh read wins" check above is
+             * `initial !== held` by reference — so writing a filtered copy
+             * into it would make that comparison true on the very next
+             * render and restore `initial`, putting the deleted ticket
+             * straight back. Leaving it alone keeps the check false until the
+             * server genuinely hands down a new list, which by then no longer
+             * contains the row.
+             */
+            setRows((current) => current.filter((row) => row.id !== open.id));
+            setOpenId(null);
+          }}
+        />
+      )}
+
+      {warrantyRow && (
+        <RepairWarrantyDialog
+          facts={printFacts(warrantyRow)}
+          ticketId={warrantyRow.id}
+          canEdit={warrantyRow.control === "full"}
+          warrantyAvailable={warrantyAvailable}
+          today={todayDay}
+          onClose={() => setWarrantyId(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------- shared wording ---------------------------- */
+
+/** What the papers print, from one ticket — the mapping every printer of a ticket shares. */
+function printFacts(row: RepairCard): RepairPrintFacts {
+  return toRepairPrintFacts({
+    code: row.code,
+    customerName: row.customerName,
+    deviceModel: row.deviceModel,
+    issues: row.issues,
+    customFaults: row.customFaults,
+    price: row.price,
+    warrantyPrice: row.warrantyPrice,
+    costPrice: row.costPrice,
+    collected: row.collected,
+    paymentTerms: row.paymentTerms,
+    createdAt: row.createdAt,
+    warrantyDays: row.warrantyDays,
+    warrantyStart: row.warrantyStart,
+  });
+}
+
+/** Who holds a ticket. Amber while it waits with a manager for a technician. */
+function HolderChip({ row, viewerId }: { row: RepairCard; viewerId: string }) {
+  const t = useTranslations("Admin");
+  const waiting = row.holderId && row.holderRank !== "technician";
+  const Icon = !row.holderId ? UserX : waiting ? Timer : UserCheck;
+  const label = !row.holderId
+    ? t("unassigned")
+    : row.holderId === viewerId
+      ? t("workMine")
+      : waiting
+        ? t("deskHeldTemp", { name: row.holderName ?? t("workColleague") })
+        : (row.holderName ?? t("workColleague"));
+
+  return (
+    <span
+      className={cn(
+        "inline-flex max-w-full items-center gap-1 rounded-chip px-2 py-0.5 text-[0.64rem] font-extrabold",
+        !row.holderId
+          ? "bg-subtle text-muted"
+          : waiting
+            ? "bg-warning/14 text-warning"
+            : "bg-success/12 text-success",
+      )}
+    >
+      <Icon className="size-3 shrink-0" aria-hidden />
+      <span className="truncate">{label}</span>
+    </span>
+  );
+}
+
+/** نقد / آجل on the row, with what is still owed when anything is. */
+function TermsChip({
+  terms,
+  remaining,
+  cashLabel,
+  deferredLabel,
+}: {
+  terms: PaymentTerms;
+  remaining: number;
+  cashLabel: string;
+  deferredLabel: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-chip px-2 py-0.5 text-[0.64rem] font-extrabold",
+        terms === "deferred" ? "bg-warning/12 text-warning" : "bg-success/10 text-success",
+      )}
+    >
+      {terms === "deferred" ? deferredLabel : cashLabel}
+      {remaining > 0 && (
+        <span data-numeric>· {formatPrice(remaining)}</span>
+      )}
+    </span>
+  );
+}
+
+/** A worked-out figure in the money section — remaining, profit. */
+function MoneyFact({
+  label,
+  value,
+  tone,
+  empty,
+  hint,
+}: {
+  label: string;
+  value: number | null;
+  tone: "warning" | "success" | "brand" | "muted";
+  empty?: string;
+  /** What the figure is measured on, where the name alone cannot say it. */
+  hint?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-card border px-3 py-2",
+        tone === "warning" && "border-warning/40 bg-warning/6",
+        tone === "success" && "border-success/35 bg-success/6",
+        tone === "brand" && "border-brand/35 bg-brand/6",
+        tone === "muted" && "border-line bg-subtle",
+      )}
+    >
+      <dt className="text-[0.68rem] font-bold text-muted">{label}</dt>
+      <dd
+        className={cn(
+          "text-[1rem] font-black",
+          tone === "warning" && "text-warning",
+          tone === "success" && "text-success",
+          tone === "brand" && "text-brand",
+          tone === "muted" && "text-muted",
+        )}
+      >
+        {value == null ? (
+          <span className="text-[0.74rem] font-bold">{empty}</span>
+        ) : (
+          <span data-numeric>{formatPrice(value)}</span>
+        )}
+      </dd>
+      {hint && <p className="mt-0.5 text-[0.64rem] font-bold leading-tight text-muted">{hint}</p>}
+    </div>
+  );
+}
+
+/**
+ * What the repair comes to: the figure the bench entered, or — for a ticket
+ * written before the quote step was removed (2026-10-26) — the figure it was
+ * quoted. The same `coalesce(actual_cost, quote_amount)` `pay_repair` settles,
+ * so the board, the tracker and the till can never show three numbers.
+ */
+function repairCost(repair: RepairCard): number | null {
+  return repair.actualCost ?? repair.quoteAmount ?? null;
+}
+/**
+ * One submitted fact.
+ *
+ * A `<dl>` rather than stacked `<div>`s so a screen reader announces
+ * "Appointment: Tuesday 15:30" as one thing. `wide` spans both columns for the
+ * two fields that are prose — the problem the customer described and a street
+ * address — because wrapping those into a half-width column turns four words
+ * into four lines.
+ *
+ * ⚠️ `data-numeric` wraps the *value*, never the `<dd>`: it sets
+ * `direction: ltr` and `display: inline-block`, so on a block it shrink-wraps
+ * and on an Arabic sentence it drags the full stop to the wrong edge.
+ */
+function Fact({
+  label,
+  value,
+  numeric,
+  wide,
+}: {
+  label: string;
+  value: string;
+  numeric?: boolean;
+  wide?: boolean;
+}) {
+  return (
+    <div className={cn("min-w-0", wide && "sm:col-span-2")}>
+      <dt className="text-[0.68rem] font-bold text-muted">{label}</dt>
+      <dd className="text-[0.82rem] font-bold leading-snug text-ink">
+        {numeric ? <span data-numeric>{value}</span> : value}
+      </dd>
+    </div>
+  );
+}
+
+/**
+ * What the customer is about to read: the ticket's status, built from the row
+ * rather than typed so the code is the one on the ticket, and pre-filled
+ * rather than sent — see `contact-actions.tsx`.
+ */
+function repairMessage(
+  repair: RepairCard,
+  t: ReturnType<typeof useTranslations<"Admin">>,
+  statusLabel: string,
+): string {
+  return t("waRepair", {
+    name: repair.customerName,
+    code: repair.code,
+    device: repair.deviceModel,
+    status: statusLabel,
+  });
+}
+
+/* ------------------------------ the ticket ------------------------------- */
+
+function RepairDialog({
+  repair,
+  flow,
+  holders,
+  viewerId,
+  manages,
+  seesMoney,
+  isTechnician,
+  financeAvailable,
+  warrantyAvailable,
+  canDelete,
+  error,
+  onClose,
+  onApply,
+  onPrint,
+  printing,
+  onWarranty,
+  onDeleted,
+}: {
+  repair: RepairCard;
+  flow: readonly RepairStatus[];
+  holders: DeskHolder[];
+  viewerId: string;
+  manages: boolean;
+  seesMoney: boolean;
+  isTechnician: boolean;
+  financeAvailable: boolean;
+  warrantyAvailable: boolean;
+  canDelete: boolean;
+  /** A refused save, drawn inside the dialog — the board's copy is behind it. */
+  error: string | null;
+  onClose: () => void;
+  onApply: (
+    next: Partial<RepairCard>,
+    send: () => Promise<{ ok: boolean; error?: string }>,
+  ) => void;
+  onPrint: () => void;
+  /** A print run is going; the button waits rather than starting a second. */
+  printing: boolean;
+  /** Opens the warranty paper, which asks for a length and a start date. */
+  onWarranty: () => void;
+  onDeleted: () => void;
+}) {
+  const t = useTranslations("Admin");
+  const tTrack = useTranslations("Track");
+  const tRepair = useTranslations("Repair");
+  const locale = useLocale();
+
+  /** A manager's everything. */
+  const full = repair.control === "full";
+  /** A manager, or a technician on a ticket in their own name. */
+  const handles = repair.control !== "none";
+
+  // `quote_notes` is the column, and it has always been the one note the
+  // customer reads on their ticket — so it is what became of the device, now
+  // that there is no quote for it to accompany.
+  const [note, setNote] = useState(repair.quoteNotes ?? "");
+  const [base, setBase] = useState<number | null>(repair.basePrice);
+  const [warranty, setWarranty] = useState<number | null>(repair.warrantyPrice);
+  const [warrantyDays, setWarrantyDays] = useState<number | null>(repair.warrantyDays);
+  const [warrantyStart, setWarrantyStart] = useState(repair.warrantyStart ?? "");
+  const [costPrice, setCostPrice] = useState<number | null>(repair.costPrice);
+  const [collected, setCollected] = useState<number | null>(repair.collected);
+  const total = repairTotal(base, warranty);
+  const money = repairMoney({
+    price: total,
+    warranty,
+    cost: costPrice,
+    collected,
+    terms: repair.paymentTerms,
+  });
+  const [uploading, setUploading] = useState(false);
+  const [lightbox, setLightbox] = useState<{
+    urls: string[];
+    at: number;
+  } | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  const step = flow.indexOf(repair.status);
+  const statusLabel = tTrack(`status_${repair.status}` as "status_received");
+  const rankLabel = (rank: DeskRank) => t(`rank_${rank}`);
+
+  function addPhotos(files: FileList | null) {
+    if (!files?.length) return;
+    setUploading(true);
+    void (async () => {
+      const urls = await uploadPhotos(Array.from(files), "repair");
+      setUploading(false);
+      if (urls.length === 0) return;
+      onApply({ photosAfter: [...repair.photosAfter, ...urls] }, () =>
+        addRepairPhotos(repair.id, urls),
+      );
+    })();
+  }
+
+  function assign(value: string) {
+    const holderId = value || null;
+    const person = holders.find((holder) => holder.id === holderId);
+    onApply(
+      {
+        holderId,
+        holderName: person?.name ?? null,
+        holderRank: person?.rank ?? null,
+        technicianName: person?.name ?? null,
+      },
+      () => assignRepair(repair.id, holderId),
+    );
+  }
+
+  // Whoever holds it stays in the list even if they have left this reader's
+  // reach, or the picker would show nothing and read as nobody holding it.
+  const holderOptions = [
+    { value: "", label: t("unassigned") },
+    ...holders.map((holder) => ({
+      value: holder.id,
+      label:
+        holder.id === viewerId
+          ? t("deskAssignSelf", { rank: rankLabel(holder.rank) })
+          : `${holder.name} — ${rankLabel(holder.rank)}`,
+    })),
+    ...(repair.holderId && !holders.some((holder) => holder.id === repair.holderId)
+      ? [{ value: repair.holderId, label: repair.holderName ?? t("workColleague") }]
+      : []),
+  ];
+
+  return (
+    <>
+      <EntityDialog
+        // A programming job is not a repair — "مركز الصيانة" over a system
+        // install read as the wrong desk.
+        title={`${repair.service === "software" ? t("programmingJob") : tRepair("title")} · ${repair.code}`}
+        subtitle={repair.deviceModel}
+        closeLabel={t("close")}
+        onClose={onClose}
+        width={660}
+        accent={TONE_VAR[statusTone(repair.status)]}
+        footer={
+          <>
+            <p className="text-[0.72rem] font-medium text-muted" dir="ltr">
+              {formatDayTime(locale, repair.createdAt)}
+            </p>
+            {/* ⚠️ On the far side of the footer from "print" and "WhatsApp",
+                which are the two controls pressed on nearly every ticket. A
+                destructive control next to a routine one is how a mis-click
+                becomes a deleted record. Owners only, and absent otherwise. */}
+            <RecordDelete
+              kind="repair"
+              id={repair.id}
+              label={repair.code}
+              canDelete={canDelete}
+              onDeleted={onDeleted}
+            />
+            <div className="ms-auto flex items-center gap-2">
+              {manages && (
+                <>
+                  {/* One press: the customer's two receipts, then the label.
+                      The warranty is the one paper that asks a question, so
+                      it keeps a control of its own. */}
+                  <button
+                    type="button"
+                    onClick={onPrint}
+                    disabled={printing}
+                    aria-busy={printing}
+                    className="press inline-flex items-center gap-2 rounded-control border border-line px-3.5 py-2 text-[0.78rem] font-extrabold text-ink transition-colors hover:border-brand hover:text-brand disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {printing ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Printer className="size-4" aria-hidden />}
+                    {t("deskPrint")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onWarranty}
+                    className="press inline-flex items-center gap-2 rounded-control border border-line px-3.5 py-2 text-[0.78rem] font-extrabold text-ink transition-colors hover:border-info hover:text-info"
+                  >
+                    <ShieldCheck className="size-4" aria-hidden />
+                    {t("printWarrantyPaper")}
+                  </button>
+                </>
+              )}
+              {repair.customerPhone && (
+                <WhatsAppButton
+                  phone={repair.customerPhone}
+                  message={repairMessage(repair, t, statusLabel)}
+                  label={t("whatsappContact")}
+                />
+              )}
+            </div>
+          </>
+        }
+      >
+        {error && (
+          <p role="alert" className="rounded-card bg-brand/10 px-3.5 py-2.5 text-[0.78rem] font-bold text-brand">
+            {t.has(error) ? t(error as "updateFailed") : t("updateFailed")}
+          </p>
+        )}
+
+        {/* A ticket this reader cannot change says so first, so the greyed
+            controls below read as a decision and not as a fault. */}
+        {!handles && (
+          <p className="flex items-center gap-2 rounded-card border border-line bg-subtle px-3.5 py-2.5 text-[0.78rem] font-bold text-muted">
+            <Eye className="size-4 shrink-0" aria-hidden />
+            {t(isTechnician ? "deskReadOnlyTech" : "deskReadOnlyManager")}
+          </p>
+        )}
+
+        {/*
+          Who holds it. A manager hands a ticket to anybody in reach, to
+          themselves included, and moves it again at any time; nothing here is
+          automatic and nobody takes one. Everybody else reads the name.
+        */}
+        <Section title={t("workTitle")} hint={full ? t("deskAssignChangeHint") : undefined}>
+          {full ? (
+            <Field label={t("deskHolder")}>
+              <SelectField
+                value={repair.holderId ?? ""}
+                onChange={assign}
+                options={holderOptions}
+                ariaLabel={t("deskHolder")}
+              />
+            </Field>
+          ) : (
+            <HolderChip row={repair} viewerId={viewerId} />
+          )}
+        </Section>
+
+        {/*
+          What the customer actually sent, before anything staff can change.
+
+          ⚠️ Every field below was already on `RepairCard` and none of it was on
+          screen. The dialog opened straight onto the status stepper, so the
+          person deciding what to do with a ticket could see where it was in the
+          process and not *what was wrong with the phone* — the problem the
+          customer typed, the slot they picked, which branch they are coming to,
+          or the second number to try when the first does not answer. All of it
+          was one query away and none of it was drawn.
+
+          It goes first because it is what the reader came for. The controls
+          below are what they do *after* reading it, and a form that opens on
+          its own inputs asks somebody to decide before they have the facts.
+        */}
+        <Section title={t("repairSubmission")}>
+          <dl className="grid gap-x-4 gap-y-2.5 sm:grid-cols-2">
+            <Fact label={t("repairDevice")} value={repair.deviceModel} />
+            {repair.issues.length > 0 && (
+              <Fact
+                label={t("repairIssues")}
+                value={repair.issues.join(" · ")}
+              />
+            )}
+            {repair.customFaults.length > 0 && (
+              <Fact
+                label={t("repairCustomIssues")}
+                value={repair.customFaults.join(" · ")}
+              />
+            )}
+            {repair.notes && (
+              <Fact
+                label={t("repairProblem")}
+                value={repair.notes}
+                wide
+              />
+            )}
+            {repair.preferredAt && (
+              <Fact
+                label={t("repairAppointment")}
+                numeric
+                value={formatDayTime(locale, repair.preferredAt)}
+              />
+            )}
+            {repair.branchName && (
+              <Fact label={t("repairBranch")} value={repair.branchName} />
+            )}
+            {repair.addressLine && (
+              <Fact label={t("repairAddress")} value={repair.addressLine} wide />
+            )}
+            <Fact label={t("repairCustomer")} value={repair.customerName} />
+            {repair.customerPhone && (
+              <Fact
+                label={t("repairPhone")}
+                value={repair.customerPhone}
+                numeric
+              />
+            )}
+            {repair.customerPhone2 && (
+              <Fact
+                label={t("repairPhoneAlt")}
+                value={repair.customerPhone2}
+                numeric
+              />
+            )}
+          </dl>
+        </Section>
+
+        {/*
+          Where the ticket is, and anywhere it needs to go.
+
+          ── ⚠️ Every step is reachable, deliberately ──
+
+          This used to be `Math.abs(index - step) === 1` — only the immediate
+          neighbours were enabled, on the reasoning that a ticket does not jump
+          from "received" to "ready". True of the happy path and wrong as a
+          *rule*, because the bench does not only move forwards:
+
+          - A device marked "ready" that fails its final check has to go back to
+            "in_repair", which is four steps back from "completed" and two from
+            "ready".
+          - A ticket advanced by a mis-click could only be undone one step per
+            save, and not at all once two had stacked up.
+          - `cancelled` is not in `REPAIR_FLOW`, so `step` was `-1` for a
+            cancelled ticket and the only enabled button was "received" —
+            reinstating a ticket meant walking it forward one save at a time.
+
+          The stepper still *says* where the ticket is and which step is next;
+          it simply no longer refuses the rest. Guidance, not a gate — the
+          person holding the screwdriver knows more about the device than an
+          array index does.
+        */}
+        <Section title={t("setStatus")} hint={handles ? t("setStatusHint") : undefined}>
+          <ol className="flex flex-wrap gap-1.5">
+            {flow.map((status, index) => {
+              const active = repair.status === status;
+              // The one the happy path goes to next. Marked, never enforced.
+              const suggested = handles && index === step + 1;
+              return (
+                <li key={status}>
+                  <button
+                    type="button"
+                    disabled={!handles || active}
+                    onClick={() =>
+                      onApply({ status }, () =>
+                        updateRepair(repair.id, { status }),
+                      )
+                    }
+                    aria-current={active ? "step" : undefined}
+                    className={cn(
+                      "press rounded-control border px-2.5 py-1.5 text-[0.7rem] font-extrabold transition-colors",
+                      active
+                        ? "border-transparent text-white"
+                        : suggested
+                          ? "border-brand/60 text-brand hover:bg-brand/8"
+                          : "border-line text-muted hover:border-brand hover:text-brand",
+                      !handles && !active && "cursor-not-allowed opacity-45",
+                    )}
+                    style={
+                      active
+                        ? { background: TONE_VAR[statusTone(status)] }
+                        : undefined
+                    }
+                  >
+                    {tTrack(`status_${status}` as "status_received")}
+                  </button>
+                </li>
+              );
+            })}
+            {/*
+              The state that ends the story rather than sitting on the path,
+              kept apart by a rule because drawing it in line would imply it
+              is a step. `declined` went with the quote (2026-10-26): it was
+              only ever the customer refusing a price.
+            */}
+            <li aria-hidden className="mx-1 w-px self-stretch bg-line" />
+            {(["cancelled"] as const).map((status) => (
+              <li key={status}>
+                <button
+                  type="button"
+                  disabled={!handles || repair.status === status}
+                  onClick={() =>
+                    onApply({ status: status as RepairStatus }, () =>
+                      updateRepair(repair.id, { status }),
+                    )
+                  }
+                  aria-current={repair.status === status ? "step" : undefined}
+                  className={cn(
+                    "press rounded-control border px-2.5 py-1.5 text-[0.7rem] font-extrabold transition-colors disabled:opacity-40",
+                    repair.status === status
+                      ? "border-transparent text-white disabled:opacity-100"
+                      : "border-brand/35 text-brand hover:bg-brand/8",
+                  )}
+                  style={
+                    repair.status === status
+                      ? { background: TONE_VAR[statusTone(status)] }
+                      : undefined
+                  }
+                >
+                  {tTrack(`status_${status}` as "status_received")}
+                </button>
+              </li>
+            ))}
+          </ol>
+        </Section>
+
+        {/* How it got here, with when — the answer to "you told me it was
+            ready on Tuesday". */}
+        <StatusHistory
+          kind="repair"
+          id={repair.id}
+          status={repair.status}
+          label={(status) =>
+            tTrack.has(`status_${status}`)
+              ? tTrack(`status_${status}` as "status_received")
+              : status
+          }
+        />
+
+        {/* What the job comes to, and what became of the device. Both save on
+            blur rather than per keystroke — a price is a decision, not a live
+            figure. A technician types the price here and never sees what a
+            manager adds to it. */}
+        {handles ? (
+          <Section title={t("repairCostTitle")} hint={t("repairCostHint")}>
+            {/* A technician is never told about the warranty, so to them this
+                is simply the amount. A manager reads it as the part before it. */}
+            <Field label={t(seesMoney ? "financeBasePrice" : "financePrice")}>
+              <MoneyInput
+                value={base}
+                clearable
+                onChange={setBase}
+                onCommit={() =>
+                  base !== repair.basePrice &&
+                  onApply({ basePrice: base, actualCost: total, price: total }, () =>
+                    updateRepair(repair.id, { price: base }),
+                  )
+                }
+                min={0}
+              />
+            </Field>
+            <Field label={t("repairResult")}>
+              <textarea
+                rows={2}
+                value={note}
+                placeholder={t("repairResultPlaceholder")}
+                onChange={(event) => setNote(event.target.value)}
+                onBlur={() =>
+                  note !== (repair.quoteNotes ?? "") &&
+                  onApply({ quoteNotes: note }, () =>
+                    updateRepair(repair.id, { quoteNotes: note }),
+                  )
+                }
+                className={cn(input, "resize-y")}
+              />
+            </Field>
+          </Section>
+        ) : (
+          (repair.quoteNotes || (seesMoney && repair.basePrice != null)) && (
+            <Section title={t("repairCostTitle")}>
+              <dl className="grid gap-x-4 gap-y-2.5 sm:grid-cols-2">
+                {seesMoney && repair.basePrice != null && (
+                  <Fact label={t("financeBasePrice")} value={formatPrice(repair.basePrice)} numeric />
+                )}
+                {repair.quoteNotes && (
+                  <Fact label={t("repairResult")} value={repair.quoteNotes} wide />
+                )}
+              </dl>
+            </Section>
+          )
+        )}
+
+        {/*
+          The warranty, in a block of its own because it is a separate decision
+          with its own price. It is added to what the customer pays — everything
+          downstream counts the total — and only a manager ever sees the split.
+        */}
+        {seesMoney && (
+          <section className="space-y-2.5 rounded-card border-2 border-info/40 bg-info/6 p-3.5">
+            <h3 className="flex items-center gap-2 text-[0.85rem] font-black text-ink">
+              <ShieldCheck className="size-4 text-info" aria-hidden />
+              {t("warrantyTitle")}
+            </h3>
+            <p className="text-[0.74rem] font-medium leading-relaxed text-muted">
+              {t("warrantyHint")}
+            </p>
+            {!warrantyAvailable ? (
+              <p className="rounded-card border border-dashed border-warning/50 bg-warning/6 px-3 py-2.5 text-[0.78rem] font-bold text-warning">
+                {t("warrantyUnavailable")}
+              </p>
+            ) : (
+              <>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <Field label={t("warrantyPrice")}>
+                    <MoneyInput
+                      value={warranty}
+                      clearable
+                      onChange={setWarranty}
+                      onCommit={() =>
+                        warranty !== repair.warrantyPrice &&
+                        onApply({ warrantyPrice: warranty, actualCost: total, price: total }, () =>
+                          updateRepair(repair.id, { warranty }),
+                        )
+                      }
+                      min={0}
+                      disabled={!full}
+                    />
+                  </Field>
+                  <Field label={t("warrantyDurationField")}>
+                    <NumberInput
+                      value={warrantyDays}
+                      clearable
+                      onChange={setWarrantyDays}
+                      onCommit={() =>
+                        warrantyDays !== repair.warrantyDays &&
+                        onApply({ warrantyDays }, () => updateRepair(repair.id, { warrantyDays }))
+                      }
+                      min={1}
+                      max={3650}
+                      disabled={!full}
+                    />
+                  </Field>
+                  <Field label={t("warrantyFrom")}>
+                    <input
+                      type="date"
+                      value={warrantyStart}
+                      onChange={(event) => setWarrantyStart(event.target.value)}
+                      onBlur={() =>
+                        warrantyStart !== (repair.warrantyStart ?? "") &&
+                        onApply({ warrantyStart: warrantyStart || null }, () =>
+                          updateRepair(repair.id, { warrantyStart: warrantyStart || null }),
+                        )
+                      }
+                      disabled={!full}
+                      dir="ltr"
+                      className={input}
+                    />
+                  </Field>
+                </div>
+                {warrantyStart && warrantyDays != null && warrantyDays > 0 && (
+                  <p className="text-[0.76rem] font-bold text-ink">
+                    {t("warrantyTo")}: <span data-numeric>{warrantyEnd(warrantyStart, warrantyDays)}</span>
+                  </p>
+                )}
+                <dl className="grid grid-cols-3 gap-2 text-center">
+                  <div className="rounded-control bg-surface px-2 py-1.5">
+                    <dt className="text-[0.64rem] font-bold text-muted">{t("warrantyBase")}</dt>
+                    <dd className="text-[0.84rem] font-black text-ink" data-numeric>{formatPrice(base ?? 0)}</dd>
+                  </div>
+                  <div className="rounded-control bg-surface px-2 py-1.5">
+                    <dt className="text-[0.64rem] font-bold text-muted">{t("warrantyTitle")}</dt>
+                    <dd className="text-[0.84rem] font-black text-info" data-numeric>{formatPrice(warranty ?? 0)}</dd>
+                  </div>
+                  <div className="rounded-control bg-surface px-2 py-1.5">
+                    <dt className="text-[0.64rem] font-bold text-muted">{t("warrantyTotal")}</dt>
+                    <dd className="text-[0.84rem] font-black text-brand" data-numeric>{formatPrice(total ?? 0)}</dd>
+                  </div>
+                </dl>
+                {base == null && (warranty ?? 0) > 0 && (
+                  <p className="text-[0.72rem] font-bold text-warning">{t("warrantyNeedsPrice")}</p>
+                )}
+              </>
+            )}
+          </section>
+        )}
+
+        {/*
+          The desk's own bookkeeping — what the part cost, what the customer
+          has paid, cash or deferred. Saved to `repair_ticket_finance`, which a
+          customer can never read and a technician is refused. Remaining and
+          profit are worked out here, never typed.
+        */}
+        {seesMoney && (
+          <Section title={t("financeTitle")} hint={t("financeHint")}>
+            {!financeAvailable ? (
+              <p className="rounded-card border border-dashed border-warning/50 bg-warning/6 px-3 py-2.5 text-[0.78rem] font-bold text-warning">
+                {t("financeUnavailable")}
+              </p>
+            ) : (
+              <>
+                <Field label={t("financeTerms")}>
+                  <div className="inline-flex rounded-control border border-line p-0.5" role="radiogroup" aria-label={t("financeTerms")}>
+                    {(["cash", "deferred"] as PaymentTerms[]).map((terms) => (
+                      <button
+                        key={terms}
+                        type="button"
+                        role="radio"
+                        aria-checked={repair.paymentTerms === terms}
+                        disabled={!full}
+                        onClick={() =>
+                          repair.paymentTerms !== terms &&
+                          onApply({ paymentTerms: terms }, () => updateRepairFinance(repair.id, { paymentTerms: terms }))
+                        }
+                        className={cn(
+                          "rounded-[calc(var(--radius-control)-2px)] px-3.5 py-1.5 text-[0.76rem] font-extrabold transition-colors",
+                          repair.paymentTerms === terms
+                            ? terms === "deferred"
+                              ? "bg-warning text-white"
+                              : "bg-success text-white"
+                            : "text-muted hover:text-ink",
+                        )}
+                      >
+                        {t(terms === "cash" ? "termsCash" : "termsDeferred")}
+                      </button>
+                    ))}
+                  </div>
+                </Field>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label={t("financeCost")}>
+                    <MoneyInput
+                      value={costPrice}
+                      clearable
+                      onChange={(value) => setCostPrice(value)}
+                      onCommit={() =>
+                        costPrice !== repair.costPrice &&
+                        onApply({ costPrice }, () => updateRepairFinance(repair.id, { costPrice }))
+                      }
+                      min={0}
+                      disabled={!full}
+                    />
+                  </Field>
+                  <Field label={t("financeCollected")}>
+                    <MoneyInput
+                      value={collected}
+                      clearable
+                      onChange={(value) => setCollected(value)}
+                      onCommit={() =>
+                        collected !== repair.collected &&
+                        onApply({ collected }, () => updateRepairFinance(repair.id, { collected }))
+                      }
+                      min={0}
+                      disabled={!full}
+                    />
+                  </Field>
+                </div>
+                <dl className="grid grid-cols-2 gap-2">
+                  <MoneyFact label={t("financeRemaining")} value={money.remaining} tone={money.remaining > 0 ? "warning" : "success"} />
+                  <MoneyFact
+                    label={t("financeProfit")}
+                    value={money.settled ? money.profit : null}
+                    tone={money.profit == null || !money.settled ? "muted" : money.profit < 0 ? "brand" : "success"}
+                    empty={money.settled ? t("financeNoCost") : t("financeProfitWaits")}
+                    hint={money.warranty > 0 ? t("financeProfitHint") : undefined}
+                  />
+                </dl>
+              </>
+            )}
+          </Section>
+        )}
+
+        {repair.customerPhone && (
+          <Section title={t("customer")}>
+            <ContactPanel
+              name={repair.customerName}
+              phone={repair.customerPhone}
+              phone2={repair.customerPhone2}
+              whatsappMessage={repairMessage(repair, t, statusLabel)}
+              whatsappLabel={t("whatsappContact")}
+              callLabel={t("callCustomer")}
+            >
+              <div className="space-y-1.5 border-t border-line/70 pt-3">
+                {(repair.branchName || repair.addressLine) && (
+                  <p className="flex items-start gap-1.5 text-[0.8rem] font-medium text-ink">
+                    {repair.branchName ? (
+                      <Store className="mt-0.5 size-3.5 shrink-0 text-brand" aria-hidden />
+                    ) : (
+                      <MapPin className="mt-0.5 size-3.5 shrink-0 text-brand" aria-hidden />
+                    )}
+                    <span>{repair.branchName ?? repair.addressLine}</span>
+                  </p>
+                )}
+                {(repair.issues.length > 0 || repair.customFaults.length > 0) && (
+                  <p className="flex items-start gap-1.5 text-[0.8rem] font-medium text-muted">
+                    <Wrench className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                    {[...repair.issues, ...repair.customFaults].join("، ")}
+                  </p>
+                )}
+                {repair.preferredAt && (
+                  <p className="text-[0.78rem] font-medium text-muted" dir="ltr">
+                    {formatDayTime(locale, repair.preferredAt)}
+                  </p>
+                )}
+                {repair.notes && (
+                  <p className="text-[0.75rem] italic text-muted">
+                    “{repair.notes}”
+                  </p>
+                )}
+              </div>
+            </ContactPanel>
+          </Section>
+        )}
+
+        {/* Damage photos belong to a broken device. A programming job has
+            none to send, and an always-empty "damage" frame on every one of
+            them is noise — so the section is drawn only when there are some. */}
+        {(repair.service !== "software" || repair.photosBefore.length > 0) && (
+        <PhotoGrid
+          label={tRepair("damagePhotos")}
+          urls={repair.photosBefore}
+          emptyLabel={t("noPhotos")}
+          onOpen={(at) => setLightbox({ urls: repair.photosBefore, at })}
+        />
+        )}
+
+        <Section title={t("photosAfter")}>
+          <div className="flex flex-wrap gap-2.5">
+            {repair.photosAfter.map((url, index) => (
+              <button
+                key={url}
+                type="button"
+                onClick={() =>
+                  setLightbox({ urls: repair.photosAfter, at: index })
+                }
+                className="relative size-20 overflow-hidden rounded-card border border-line transition-opacity hover:opacity-85"
+              >
+                <Image
+                  src={url}
+                  alt=""
+                  fill
+                  sizes="80px"
+                  className="object-cover"
+                />
+              </button>
+            ))}
+
+            {handles && (
+              <button
+                type="button"
+                onClick={() => fileInput.current?.click()}
+                disabled={uploading}
+                className="flex size-20 flex-col items-center justify-center gap-1 rounded-card border-2 border-dashed border-line text-muted transition-colors hover:border-brand hover:text-brand disabled:opacity-50"
+              >
+                {uploading ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden />
+                ) : (
+                  <ImagePlus className="size-4" aria-hidden />
+                )}
+                <span className="text-[0.58rem] font-bold">
+                  {uploading ? t("uploading") : t("addPhotos")}
+                </span>
+              </button>
+            )}
+
+            <input
+              ref={fileInput}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(event) => {
+                addPhotos(event.target.files);
+                event.target.value = "";
+              }}
+            />
+          </div>
+        </Section>
+      </EntityDialog>
+
+      {lightbox && (
+        <ImageLightbox
+          images={lightbox.urls.map((url) => ({
+            url,
+            alt: repair.deviceModel,
+          }))}
+          startIndex={lightbox.at}
+          onClose={() => setLightbox(null)}
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * The customer's photographs, and — when there are none — the fact that there
+ * are none.
+ *
+ * This used to return `null` on an empty set, so a ticket with no photos had no
+ * photo section at all. From behind the counter those two states look
+ * identical: "the customer sent nothing" and "this dialog does not show
+ * photos". Staff read it as the second, which is how a feature that works ends
+ * up reported as broken — and it is not a rare state either, because
+ * `book_repair` rejects a non-empty `p_photos` outright and the wizard has to
+ * attach them in a second write that can fail on its own.
+ *
+ * So the heading is always drawn, and an empty set says so in the frame where
+ * the pictures would be.
+ */
+function PhotoGrid({
+  label,
+  urls,
+  emptyLabel,
+  onOpen,
+}: {
+  label: string;
+  urls: string[];
+  emptyLabel: string;
+  onOpen: (index: number) => void;
+}) {
+  if (urls.length === 0) {
+    return (
+      <Section title={label}>
+        <p className="flex items-center gap-2 rounded-card border border-dashed border-line px-4 py-5 text-[0.8rem] font-medium text-muted">
+          <ImageOff className="size-4 shrink-0" aria-hidden strokeWidth={1.5} />
+          {emptyLabel}
+        </p>
+      </Section>
+    );
+  }
+
+  return (
+    <Section title={label}>
+      <div className="flex flex-wrap gap-2.5">
+        {urls.map((url, index) => (
+          <button
+            key={url}
+            type="button"
+            onClick={() => onOpen(index)}
+            className="relative size-20 cursor-zoom-in overflow-hidden rounded-card border border-line transition-opacity hover:opacity-85"
+          >
+            <Image
+              src={url}
+              alt=""
+              fill
+              sizes="80px"
+              className="object-cover"
+            />
+          </button>
+        ))}
+      </div>
+    </Section>
+  );
+}

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <!-- Over something that can be pressed: the arrow takes the brand red and the mark inverts to white on its charcoal rim — the mark's own light-on-dark flip. -->
+  <path d="M2 2 L2 23.5 L7.6 18.6 L11.2 26.6 L15 24.9 L11.4 17 L18.8 17 Z" fill="#E11D2E" stroke="#ffffff" stroke-width="1.6" stroke-linejoin="round"/>
+  <g transform="translate(17.2 17.2) scale(0.3)">
+    <path d="M24 0 L48 24 L24 48 L0 24 Z M20.808 15.876 L22.769 17.836 L32.302 8.302 L30.342 6.342 Z M30.164 25.232 L32.124 27.192 L41.658 17.658 L39.698 15.698 Z" fill-rule="evenodd" fill="#ffffff" stroke="#1b1b1f" stroke-width="3.4" stroke-linejoin="round" paint-order="stroke"/>
+    <circle cx="20.669" cy="27.326" r="6.426" fill="#E11D2E"/>
+  </g>
+</svg>
