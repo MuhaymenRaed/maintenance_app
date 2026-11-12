@@ -527,12 +527,21 @@ function Backups() {
 
       <Section title={t("backupMirror")} hint={t("backupMirrorHint")}>
         <div className="flex flex-wrap items-center gap-2">
-          <span
-            dir="ltr"
-            className="min-w-0 max-w-full truncate rounded-control border border-line bg-canvas px-3 py-2 font-mono text-[0.74rem] text-ink"
-          >
-            {settings.backupMirror ?? t("backupMirrorNone")}
-          </span>
+          {/* A path is set in a fixed-width face so its separators line up; the
+              Arabic "not set" is not, because a monospace face pulls joined
+              letters apart. */}
+          {settings.backupMirror ? (
+            <span
+              dir="ltr"
+              className="min-w-0 max-w-full truncate rounded-control border border-line bg-canvas px-3 py-2 font-mono text-[0.74rem] text-ink"
+            >
+              {settings.backupMirror}
+            </span>
+          ) : (
+            <span className="rounded-control border border-dashed border-line px-3 py-2 text-[0.76rem] font-bold text-muted">
+              {t("backupMirrorNone")}
+            </span>
+          )}
           <ActionButton
             busy={busy === "mirror"}
             onClick={() =>
