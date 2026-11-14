@@ -74,6 +74,20 @@ export default defineConfig({
     publicDir: path.join(root, "public"),
     plugins: [siteAlias(true), react(), tailwindcss()],
     resolve: { alias: shims },
+    /**
+     * ⚠️ What Next.js inlines into the dashboard's client bundle at build time.
+     * The window has no `process`: one bare `process.env.X` in a copied module
+     * throws while the module graph loads, before React mounts, and the desk
+     * opens on an empty dark window. `test/renderer-env.test.mts` fails when a
+     * sync brings in one that is not listed here.
+     *
+     * `NEXT_PUBLIC_SITE_URL` feeds only `SITE_ORIGIN` (the site's JSON-LD),
+     * which the desk never renders; left unset, as the site's own code expects
+     * of a deployment without one, it reads as `null`.
+     */
+    define: {
+      "process.env.NEXT_PUBLIC_SITE_URL": "undefined",
+    },
     build: {
       outDir: path.join(root, "out/renderer"),
       emptyOutDir: true,
