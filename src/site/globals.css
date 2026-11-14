@@ -366,9 +366,15 @@
      one is a visible flash on every card in every rail, in exactly the theme
      nobody is testing in.
 
-     Sampled off a rendered plate's top-left corner, so the box and the picture
-     that lands in it are the same colour and the fill is invisible. */
-  --media-plate: #fafcfe;
+     ⚠️ **Pure white since 2026-11-13**, on the shop's instruction that a
+     product picture sits on white "even the png images". It used to be
+     #fafcfe, sampled off a plate's top-left corner so the loading box and the
+     plate were one colour. The plate still fills its box (it is square and
+     drawn `object-cover`/`contain` to the edge), so the difference is a
+     1.5% flash while loading — and what the box now shows *behind* a
+     transparent PNG or a non-square upload is white, which is what those
+     were shot on. */
+  --media-plate: #ffffff;
 
   /* The studio's own ground, and — like `--scrim` — deliberately *not*
      re-declared under `.dark`.
@@ -377,9 +383,13 @@
      gradient, a soft key light above the object, and a floor shadow across the
      bottom. That is baked into the WebP and cannot invert, so wherever a plate
      is shown whole rather than cropped to fill its box, whatever surrounds it
-     has to be the *same* wash or the join shows. The hero is the one place that
-     happens — its stage is nearly twice as wide as it is tall, so a square
-     plate contained inside it leaves a column of ground down either flank.
+     has to be the *same* wash or the join shows. The hero was the one place
+     that happened — its stage is nearly twice as wide as it is tall, so a
+     square plate contained inside it leaves a column of ground down either
+     flank. ⚠️ **Since 2026-11-13 the stage itself is white** and this wash is
+     drawn only behind a *studio plate*, solid across the plate and faded to
+     the white beyond it (`StageFrame` in `components/store/hero.tsx`): as
+     the whole stage it put every white-ground *upload* in a grey box.
 
      ⚠️ **The catalogue is on the LIGHT plate and these are its stops.** The
      black cyclorama is built, measured and reversible — `plateSvg({ theme:
@@ -849,6 +859,14 @@
   to {
     opacity: 1;
     transform: translateX(0) scale(var(--plate-scale, 1));
+  }
+}
+
+/* A studio plate's ground leaving with its plate — see `StageFrame` in
+   components/store/hero.tsx. Opacity only: the ground does not slide. */
+@keyframes hero-ground-out {
+  to {
+    opacity: 0;
   }
 }
 

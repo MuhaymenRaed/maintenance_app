@@ -2,12 +2,16 @@ import { loadRepairPrintFacts } from "@/lib/actions/print-station";
 import type { RepairPrintFacts } from "@/lib/data/repair-print-facts";
 import {
   AgentError,
+  agentEverSeen,
   agentStatus,
   cancelJob,
   jobState,
   listPrinters,
   lostContact,
   sendJob,
+  waitForAgent,
+  wakeAgent,
+  AGENT_START_MS,
   type AgentPayload,
   type JobState,
 } from "@/lib/print/agent-client";
@@ -92,7 +96,13 @@ export type StationJob = {
 };
 
 export type RunProblem =
-  | { code: "not_running" | "blocked" | "timeout" | "unsupported" }
+  /*
+   * ⚠️ `not_installed` is a conclusion, never a transport failure. The agent
+   * answers or it does not; what separates these two is whether it has EVER
+   * answered this browser (`agentEverSeen`). It is not on `AgentFailure` for
+   * that reason — nothing in `agent-client` can produce it.
+   */
+  | { code: "not_running" | "not_installed" | "blocked" | "timeout" | "unsupported" }
   | { code: "facts_failed"; detail: string }
   | { code: "listing_failed"; detail: string }
   /** The session ended, so the server will not read the ticket. */
@@ -107,7 +117,7 @@ export type PrinterState = { statusText: string; severity: "INFO" | "WARN" | "FA
 export type StationRun = {
   id: string;
   code: string;
-  stage: "starting" | "printing" | "confirming" | "settled" | "dialog";
+  stage: "starting" | "waking" | "printing" | "confirming" | "settled" | "dialog";
   problem: RunProblem | null;
   jobs: StationJob[];
   printerStatus: Record<string, PrinterState>;
@@ -334,8 +344,39 @@ async function execute(runId: string) {
   try {
     await agentStatus();
   } catch (error) {
-    stop(runId, connectionProblem(error));
-    return;
+    /*
+     * ⚠️ **A dead agent is started, not reported.** "The print agent is not
+     * running — go and run start.cmd" is a true sentence and a useless one at
+     * a counter with a customer waiting, and it was the commonest thing this
+     * panel said. `wakeAgent` opens the protocol the installer registers,
+     * which runs the same watchdog script the scheduled task runs; the port
+     * is then asked until it answers.
+     *
+     * ⚠️ Only for `not_running`. `blocked` is the browser refusing to reach
+     * this device and `unsupported` is a browser that cannot, and starting a
+     * program would change neither — it would spend fourteen seconds to repeat
+     * the same refusal with a longer wait in front of it.
+     */
+    const problem = connectionProblem(error);
+    if (problem.code !== "not_running") {
+      stop(runId, problem);
+      return;
+    }
+    patchRun(runId, (run) => ({ ...run, stage: "waking" }));
+    wakeAgent();
+    if (!(await waitForAgent(AGENT_START_MS))) {
+      /*
+       * ⚠️ **Thirty seconds of asking and nothing answered, so say which
+       * kind of nothing it is.** A browser that has reached the agent before
+       * is looking at one that stopped; a browser that never has is looking
+       * at a PC where `install.cmd` has never run — and on that PC every
+       * press has silently done nothing, because an unregistered protocol
+       * neither launches nor complains.
+       */
+      stop(runId, agentEverSeen() ? problem : { code: "not_installed" });
+      return;
+    }
+    patchRun(runId, (run) => ({ ...run, stage: "starting" }));
   }
 
   if (refresh) {
@@ -624,6 +665,15 @@ export function retryJobs({ includeUncertain = false }: { includeUncertain?: boo
       ),
     },
   });
+  /*
+   * ⚠️ **Forced here, and only here.** This runs inside the press on "try
+   * again", so the browser has the user activation a protocol launch wants,
+   * and the reader has just asked for exactly this. The automatic attempt in
+   * `execute` is rate-limited for the opposite reason.
+   */
+  if (run.problem?.code === "not_running" || run.problem?.code === "not_installed") {
+    wakeAgent({ force: true });
+  }
   logPrint({ level: "info", ticket: run.code, message: `retry${includeUncertain ? " (including uncertain)" : ""}` });
   void execute(run.id);
 }

@@ -2,7 +2,7 @@ import { qrMatrix } from "@/lib/print/qr";
 import { bytesToBase64, canvasToPngBase64, CSS_PX_PER_MM, rasterizeElement } from "@/lib/print/rasterize";
 import type { PaperPayload } from "@/lib/print/station";
 import type { StationSettings } from "@/lib/print/station-settings";
-import { tsplDirection } from "@/lib/print/station-settings";
+import { SHEET_PAGES, tsplDirection } from "@/lib/print/station-settings";
 import { DOTS_PER_MM, encodeTsplLabel, fitToHead, thresholdToDots, type DotBitmap } from "@/lib/print/tspl";
 
 /**
@@ -14,38 +14,43 @@ import { DOTS_PER_MM, encodeTsplLabel, fitToHead, thresholdToDots, type DotBitma
 
 /** 300 dpi: what the Canon prints text sharply at, in pixels per millimetre. */
 const A5_PX_PER_MM = 300 / 25.4;
-const A5 = { widthMm: 210, heightMm: 148 };
 
 /**
- * An A5 paper — the receipt or the warranty — as a 300 dpi picture of the
- * whole landscape page, the sheet centred on it exactly as `@page` centres it
- * in the dialog path.
+ * The receipt or the warranty, as a 300 dpi picture of the whole landscape
+ * page with the sheet centred on it.
  *
- * ⚠️ **The paper is A5 as every driver defines it — 148 x 210, portrait —
- * with landscape set**, never a custom 210 x 148: a driver that knows A5
- * matches the size by name and feeds the right tray, where a custom size is
- * a "user-defined paper" some drivers refuse or put on A4.
+ * ⚠️ **The paper is named, never a custom size** — see {@link SHEET_PAGES}.
+ *
+ * ⚠️ **Centred, where the dialog path puts the sheet at the top.** On A5 the
+ * two are the same picture, because the sheet is the page; they part only on
+ * A4, and each is doing the best its own medium allows. A raster can be
+ * placed anywhere on the page for nothing, so it is centred. CSS cannot
+ * centre a block on a page box — a margin would be truncated at the forced
+ * break before the second copy and the two copies would not match — so the
+ * dialog path leaves it at the top and keeps the two copies identical.
  *
  * `fit: "page"` lets the agent fit the picture to what the printer can reach:
  * a printer that cannot print to the edge shrinks it a few per cent instead
- * of cutting the edge off. `actual` prints at exactly A5 and trusts the
- * sheet's own 7 – 10 mm of padding to clear the printer's margins.
+ * of cutting the edge off. `actual` prints at exactly the page size and
+ * trusts the sheet's own 7 – 10 mm of padding to clear the printer's margins.
  */
 export async function a5Paper(sheet: HTMLElement, settings: StationSettings): Promise<PaperPayload> {
+  const page = SHEET_PAGES[settings.a5.page];
   const rect = sheet.getBoundingClientRect();
   const canvas = await rasterizeElement(sheet, {
-    ...A5,
+    widthMm: page.widthMm,
+    heightMm: page.heightMm,
     pxPerMm: A5_PX_PER_MM,
     offsetMm: {
-      x: (A5.widthMm - rect.width / CSS_PX_PER_MM) / 2,
-      y: (A5.heightMm - rect.height / CSS_PX_PER_MM) / 2,
+      x: (page.widthMm - rect.width / CSS_PX_PER_MM) / 2,
+      y: (page.heightMm - rect.height / CSS_PX_PER_MM) / 2,
     },
   });
   return {
     kind: "image",
     data: await canvasToPngBase64(canvas),
-    widthMm: 148,
-    heightMm: 210,
+    widthMm: page.driverWidthMm,
+    heightMm: page.driverHeightMm,
     landscape: true,
     fit: settings.a5.fit,
     mono: false,

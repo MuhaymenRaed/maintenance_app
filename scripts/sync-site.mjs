@@ -52,7 +52,7 @@ const ENTRIES = [
   "lib/data/queue-window.ts",
   "lib/data/date-window.ts",
   "lib/data/datetime.ts",
-  "lib/data/compact.ts",
+  "lib/data/stat-money.ts",
   "lib/data/device-name.ts",
   "lib/data/device-catalogue.ts",
   "lib/data/whatsapp.ts",

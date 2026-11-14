@@ -18,6 +18,37 @@ export type LabelMode = "tspl" | "driver";
 /** `gap` is die-cut labels on a liner; `continuous` is one long strip. */
 export type LabelMedia = "gap" | "continuous";
 
+/** Which page the receipt and the warranty are printed on. */
+export type SheetPage = "a5" | "a4";
+
+/**
+ * The two pages those papers may land on, landscape, as both halves of the
+ * world need them stated.
+ *
+ * ⚠️ **`driver*` is the PORTRAIT size with the landscape flag set, and that
+ * is not a tidying-up.** A driver matches a paper **by name**: ask for A5 as
+ * 148 x 210 portrait and it finds its own A5 and feeds the right tray, where
+ * a custom 210 x 148 is a "user-defined paper" some drivers refuse outright
+ * and others quietly put on A4. `css` is the same statement for `@page`.
+ *
+ * ⚠️ **A4 is a fallback, not an equal.** The sheets are drawn at 209 x 147
+ * mm and stay that size on either page — every type size, the notes grid and
+ * the measured fits belong to that rectangle, and scaling the design to fill
+ * A4 would mean re-measuring all of it. On A4 the sheet is simply placed on a
+ * bigger piece of paper, which is what a shop whose printer has no A5 tray
+ * wants: the same receipt, cut or filed.
+ */
+export const SHEET_PAGES = {
+  a5: { widthMm: 210, heightMm: 148, driverWidthMm: 148, driverHeightMm: 210, css: "A5 landscape" },
+  a4: { widthMm: 297, heightMm: 210, driverWidthMm: 210, driverHeightMm: 297, css: "A4 landscape" },
+} as const satisfies Record<SheetPage, {
+  widthMm: number;
+  heightMm: number;
+  driverWidthMm: number;
+  driverHeightMm: number;
+  css: string;
+}>;
+
 export type LabelSettings = {
   /**
    * How the label reaches the printer. `tspl` sends the printer's own
@@ -65,6 +96,17 @@ export type StationSettings = {
      * cutting it. `actual` prints at exactly A5, trusting the margins.
      */
     fit: "page" | "actual";
+    /**
+     * The page the receipt and the warranty go on.
+     *
+     * ⚠️ **It exists because most office printers have no A5 tray**, and the
+     * setup dialog has been able to *say* so — "this printer does not list
+     * A5" — without offering anything to do about it. Left to substitute, a
+     * driver puts an A5 job on A4 with no say in where, which is what makes
+     * a test print look wrong in ways nobody can name. Choosing A4 here
+     * makes it a decision instead: the same sheet, placed deliberately.
+     */
+    page: SheetPage;
   };
 };
 
@@ -89,7 +131,7 @@ export const DEFAULT_SETTINGS: StationSettings = {
     threshold: 165,
     invert: false,
   },
-  a5: { fit: "page" },
+  a5: { fit: "page", page: "a5" },
 };
 
 type Bag = Record<string, unknown>;
@@ -151,7 +193,10 @@ export function parseSettings(raw: unknown): StationSettings {
       threshold: number(label.threshold, 1, 254, d.threshold, true),
       invert: flag(label.invert, d.invert),
     },
-    a5: { fit: choice(a5.fit, ["page", "actual"] as const, DEFAULT_SETTINGS.a5.fit) },
+    a5: {
+      fit: choice(a5.fit, ["page", "actual"] as const, DEFAULT_SETTINGS.a5.fit),
+      page: choice(a5.page, ["a5", "a4"] as const, DEFAULT_SETTINGS.a5.page),
+    },
   };
 }
 

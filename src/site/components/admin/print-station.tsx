@@ -17,6 +17,7 @@ import {
 import { LabelSheet, ReceiptSheet, RepairPrintRun, WarrantySheet } from "@/components/admin/repair-print";
 import { PrinterSetupDialog } from "@/components/admin/printer-setup";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { useAgentPresence } from "@/lib/print/agent-presence";
 import { summarise } from "@/lib/print/job-status";
 import {
   cancelStuckJob,
@@ -42,6 +43,13 @@ import { cn } from "@/lib/utils";
  * person chooses it — the old browser-dialog run for whatever is left.
  */
 export function PrintStationHost() {
+  /*
+   * The dashboard looks for the print agent itself, and starts it if it is
+   * not there — which is what replaced a scheduled task spawning PowerShell
+   * every three minutes on the counter PC. See `lib/print/agent-presence.ts`.
+   */
+  useAgentPresence();
+
   const { run, raster, dialog, setup } = useSyncExternalStore(
     printStation.subscribe,
     printStation.snapshot,
@@ -258,7 +266,18 @@ function StationPanel({ run }: { run: StationRun }) {
                 className="press inline-flex items-center gap-1.5 rounded-control bg-brand px-3 py-2 text-[0.74rem] font-extrabold text-white hover:bg-brand-hover"
               >
                 <RotateCcw className="size-3.5" aria-hidden />
-                {run.problem ? t("psRetry") : t("psRetryFailed", { count: String(failed) })}
+                {/*
+                  ⚠️ A stopped agent gets its own words. "Try again" on a run
+                  that stopped because nothing was listening reads as "ask the
+                  same dead port once more"; the press now starts the agent
+                  first (`retryJobs` forces the wake), so the label has to say
+                  so or it promises less than it does.
+                */}
+                {run.problem?.code === "not_running"
+                  ? t("psRetryStart")
+                  : run.problem
+                    ? t("psRetry")
+                    : t("psRetryFailed", { count: String(failed) })}
               </button>
             )}
             {uncertain && (

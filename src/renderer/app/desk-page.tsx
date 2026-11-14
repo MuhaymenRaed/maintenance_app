@@ -25,7 +25,7 @@ import { StatPress, type StatDetail } from "@/components/admin/stat-detail";
 import { formatDayNumeric } from "@/lib/data/datetime";
 import { worksTheBench, type DeskTotals } from "@/lib/data/repair-desk";
 import { formatPrice } from "@/lib/format";
-import { compactMoney } from "@/lib/data/compact";
+import { statMoney } from "@/lib/data/stat-money";
 import { cn } from "@/lib/utils";
 import type { DeskPageData } from "../../shared/desk-types";
 import { alignBasePath, useRoute } from "../lib/router";
@@ -497,14 +497,14 @@ function Figures({
       ]
     : [
         { Icon: Wrench, label: labels.tickets, value: formatPrice(totals.tickets), sub: labels.ticketsSub, tone: "info" },
-        { Icon: CircleDollarSign, label: labels.revenue, value: compactMoney(totals.revenue), sub: money(totals.revenue), tone: "brand" },
+        { Icon: CircleDollarSign, label: labels.revenue, value: statMoney(totals.revenue), sub: money(totals.revenue), tone: "brand" },
       ];
 
   if (seesMoney && warranty) {
     tiles.push({
       Icon: ShieldCheck,
       label: labels.warranty,
-      value: compactMoney(totals.warranty),
+      value: statMoney(totals.warranty),
       sub: labels.warrantySub,
       tone: "info",
       detail: warrantyDetail,
@@ -512,26 +512,26 @@ function Figures({
   }
   if (seesMoney && finance) {
     tiles.push(
-      { Icon: Receipt, label: labels.cost, value: compactMoney(totals.cost), sub: money(totals.cost), tone: "muted" },
-      { Icon: Banknote, label: labels.collectedCash, value: compactMoney(totals.collectedCash), sub: money(totals.collectedCash), tone: "success" },
+      { Icon: Receipt, label: labels.cost, value: statMoney(totals.cost), sub: money(totals.cost), tone: "muted" },
+      { Icon: Banknote, label: labels.collectedCash, value: statMoney(totals.collectedCash), sub: money(totals.collectedCash), tone: "success" },
       {
         Icon: CalendarClock,
         label: labels.collectedDeferred,
-        value: compactMoney(totals.collectedDeferred),
+        value: statMoney(totals.collectedDeferred),
         sub: totals.partialHeld > 0 ? labels.partialHeld : money(totals.collectedDeferred),
         tone: "info",
       },
       {
         Icon: HandCoins,
         label: labels.outstanding,
-        value: compactMoney(totals.outstanding),
+        value: statMoney(totals.outstanding),
         sub: labels.deferred,
         tone: totals.outstanding > 0 ? "warning" : "success",
       },
       {
         Icon: TrendingUp,
         label: labels.profit,
-        value: compactMoney(totals.profit),
+        value: statMoney(totals.profit),
         sub: labels.profitSub,
         tone: totals.profit < 0 ? "brand" : "success",
       },

@@ -1,7 +1,10 @@
 @echo off
-rem Makes the Al-Esnad print agent start with Windows for this user, then starts it.
-rem Needs no administrator rights: it is a shortcut in this user's Startup folder.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$link = Join-Path ([Environment]::GetFolderPath('Startup')) 'Al-Esnad print agent.lnk'; $shell = New-Object -ComObject WScript.Shell; $shortcut = $shell.CreateShortcut($link); $shortcut.TargetPath = '%~dp0start.cmd'; $shortcut.WorkingDirectory = '%~dp0'; $shortcut.WindowStyle = 7; $shortcut.Save(); Write-Host ('Will start with Windows: ' + $link)"
-call "%~dp0start.cmd"
-echo The print agent is running. You can close this window.
+rem Sets this PC up to print from the repair desk with no dialog: a task that
+rem starts the agent when you sign in, the alesnad-print: handler so the
+rem dashboard can start it again on your press if it ever stops, and the agent
+rem itself, started now. Needs no administrator rights. Run it ONCE per PC.
+rem Nothing here runs on a timer. status.cmd says whether it worked.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
+echo.
+echo You can close this window.
 pause

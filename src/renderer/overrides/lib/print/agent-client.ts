@@ -152,3 +152,76 @@ export async function cancelJob(printer: string, jobId: number) {
 export function lostContact(error: unknown): boolean {
   return error instanceof AgentError;
 }
+
+/* ── Starting it, when it is not running ─────────────────────────────────── */
+
+/**
+ * The site's half of this hands Windows an `alesnad-print:` URL and hopes a
+ * protocol handler is registered — the only way a *web page* can start a
+ * program on the PC it is being read on. This window has no such limit: the
+ * main process starts the agent the app ships with, hidden, with no browser
+ * question to answer and no handler to install. `callAgent` in
+ * `src/main/print-agent.ts` already does it on the first request that finds
+ * nothing listening, and `warmAgent` does it when the window opens.
+ *
+ * ⚠️ So this is a **no-op that answers yes**, and the "yes" is not a lie: the
+ * ask has been made, by `waitForAgent` below, whose first probe is the request
+ * that triggers the start. The names and types are the site's, because
+ * `lib/print/station.ts` and `lib/print/agent-presence.ts` are copied from it
+ * unchanged and import all three.
+ */
+export function wakeAgent(_options: { force?: boolean } = {}): boolean {
+  return true;
+}
+
+/**
+ * ⚠️ Longer than the site's fourteen seconds, and it has to be: the main
+ * process waits up to thirty for a start that must run two PowerShell
+ * processes and, the first time after an update, compile the agent's C#.
+ * Measured on this PC at ten. The site can be shorter because a page only
+ * ever *asks* Windows to start it and then polls; here the first poll IS the
+ * start, so this budget has to cover the start itself.
+ */
+export const AGENT_START_MS = 32_000;
+
+/**
+ * Polls until the agent answers, or `ms` have passed.
+ *
+ * The first `agentStatus` is what starts the bundled agent, so this returns
+ * true on its first pass in the ordinary case rather than after a wait.
+ */
+export async function waitForAgent(ms: number): Promise<boolean> {
+  const until = Date.now() + ms;
+  for (;;) {
+    try {
+      await agentStatus(3000);
+      logPrint({ level: "info", message: "the print agent answered after being started" });
+      return true;
+    } catch {
+      if (Date.now() >= until) return false;
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    }
+  }
+}
+
+/**
+ * Whether the agent has ever answered — the site's test for "was this PC set
+ * up at all", and **always true here**.
+ *
+ * ⚠️ The question the site asks with this cannot arise in the desk app. There
+ * a browser reaches a program somebody had to install on the counter PC, so a
+ * silence may mean the installer never ran, and the site tells those two
+ * apart to avoid sending a counter to press retry for ever on a machine that
+ * was never prepared. This app **ships the agent inside itself**
+ * (`resources/print-agent`) and starts it from the main process, so there is
+ * no install to have been skipped and no protocol to have gone unregistered.
+ *
+ * Answering yes is what keeps the shared `station.ts` honest here: a failure
+ * in this window is the agent failing to **start**, which is a real fault
+ * worth reporting as itself, and dressing it up as "this computer is not set
+ * up for printing" would send somebody looking for an installer that is not
+ * theirs to run.
+ */
+export function agentEverSeen(): boolean {
+  return true;
+}

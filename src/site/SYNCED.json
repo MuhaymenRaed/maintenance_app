@@ -1,6 +1,6 @@
 {
   "site": "B:\\Programming Projects\\Next JS\\Al_Isnad",
-  "syncedAt": "2026-11-12T07:22:16.735Z",
+  "syncedAt": "2026-11-14T06:19:33.906Z",
   "files": [
     "components/account/status-pill.tsx",
     "components/admin/contact-actions.tsx",
@@ -28,7 +28,6 @@
     "components/ui/searchable-select.tsx",
     "components/ui/select.tsx",
     "lib/brand/mark.ts",
-    "lib/data/compact.ts",
     "lib/data/date-window.ts",
     "lib/data/datetime.ts",
     "lib/data/delivery-zones.ts",
@@ -40,6 +39,7 @@
     "lib/data/repair-desk.ts",
     "lib/data/repair-print-facts.ts",
     "lib/data/site.ts",
+    "lib/data/stat-money.ts",
     "lib/data/status-tone.ts",
     "lib/data/whatsapp.ts",
     "lib/format.ts",
@@ -47,7 +47,9 @@
     "lib/hooks/use-scroll-under-lock.ts",
     "lib/hooks/use-world-models.ts",
     "lib/permissions.ts",
+    "lib/print/agent-presence.ts",
     "lib/print/job-status.ts",
+    "lib/print/label-fit.ts",
     "lib/print/papers.ts",
     "lib/print/print-log.ts",
     "lib/print/printer-match.ts",

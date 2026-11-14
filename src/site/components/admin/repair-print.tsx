@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, useTransition, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore, useTransition, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import Image from "next/image";
 import { useLocale, useTranslations } from "next-intl";
-import { Loader2, Printer, ShieldCheck } from "lucide-react";
+import { Loader2, Printer, ShieldCheck, type LucideIcon } from "lucide-react";
 import { EntityDialog, Field, input, NumberInput } from "@/components/admin/form-kit";
 import { updateRepair } from "@/lib/actions/sections";
 import { MARK_DOT, MARK_MONO_PATH, MARK_PATH, MARK_VIEWBOX } from "@/lib/brand/mark";
@@ -13,8 +13,11 @@ import { daysBetween, warrantyEnd } from "@/lib/data/repair-desk";
 import type { RepairPrintFacts } from "@/lib/data/repair-print-facts";
 import { site } from "@/lib/data/site";
 import { formatPrice } from "@/lib/format";
+import { SHEET_PAGES, type SheetPage } from "@/lib/print/station-settings";
+import { stationSettingsStore } from "@/lib/print/station-store";
 import { startPrint } from "@/lib/print/station";
 import { cn } from "@/lib/utils";
+import { fitLabelText } from "@/lib/print/label-fit";
 
 /**
  * The three papers a manager prints from a ticket.
@@ -133,11 +136,26 @@ const WARRANTY_RUN: readonly PrintJob[] = [{ paper: "warranty", copies: 1 }];
  * driver setting, not a CSS one — see README if the driver has no matching
  * paper size.
  */
-const PAGE: Record<Paper, string> = {
-  label: "@page { size: 57mm 39mm; margin: 0; }",
-  receipt: "@page { size: A5 landscape; margin: 0; }",
-  warranty: "@page { size: A5 landscape; margin: 0; }",
-};
+/**
+ * ⚠️ **The two A5 papers follow the station's own page setting**, which is
+ * usually A5 and is A4 on a PC whose printer has no A5 tray — most office
+ * lasers. Left to the driver to substitute, an A5 job lands on A4 wherever
+ * the driver decides, which is what makes a test print look wrong in ways
+ * nobody can name. Stated here, it is the same sheet on a bigger page.
+ *
+ * The sheet keeps its own 209 x 147 mm either way: the design is measured to
+ * that rectangle, and `mx-auto` centres it across the page. ⚠️ It is NOT
+ * centred vertically, and a margin is the wrong way to try — a block's top
+ * margin is truncated at a forced break, so the first copy of the receipt
+ * would sit centred and the second at the top. The agent path centres it,
+ * because a raster can be placed anywhere for nothing; see `a5Paper`.
+ *
+ * The label's page is the roll and has nothing to do with this.
+ */
+const page = (paper: Paper, sheetPage: SheetPage): string =>
+  paper === "label"
+    ? "@page { size: 57mm 39mm; margin: 0; }"
+    : `@page { size: ${SHEET_PAGES[sheetPage].css}; margin: 0; }`;
 
 /** A second copy starts a new page; a single copy never draws a break at all. */
 const COPY_BREAK = ".print-paper + .print-paper { break-before: page; }";
@@ -270,6 +288,18 @@ function RepairPrintSheet({
 }) {
   const sheet = useRef<HTMLDivElement>(null);
   /*
+   * Read through the store rather than from storage during render — the
+   * shape `lib/cart` and `lib/auth/session-store` already use, and the
+   * reason is the same: reading `localStorage` while rendering is impure.
+   * The snapshot is synchronous in the browser, so the `@page` rule is in
+   * the DOM before the print effect below ever runs.
+   */
+  const station = useSyncExternalStore(
+    stationSettingsStore.subscribe,
+    stationSettingsStore.snapshot,
+    stationSettingsStore.server,
+  );
+  /*
    * Held in a ref so the print effect below runs exactly once on mount without
    * a changing callback identity re-running it. A second run is a second print
    * dialog, which is the one thing this component must never produce.
@@ -316,7 +346,7 @@ function RepairPrintSheet({
 
   return createPortal(
     <div ref={sheet} className="print-sheet">
-      <style>{`${PAGE[paper]} ${COPY_BREAK}`}</style>
+      <style>{`${page(paper, station.a5.page)} ${COPY_BREAK}`}</style>
       {Array.from({ length: copies }, (_, copy) => (
         <Sheet key={copy} facts={facts} printedAt={printedAt} />
       ))}
@@ -543,13 +573,13 @@ function CompanyMark({ className }: { className?: string }) {
 function CompanyLockup({ markClass }: { markClass: string }) {
   const brand = useTranslations("Brand");
   return (
-    <div className="flex shrink-0 items-center gap-[3.2mm]">
+    <div className="flex shrink-0 items-center gap-[3.6mm]">
       <CompanyMark className={markClass} />
       <div className="min-w-0">
-        <p className="whitespace-nowrap text-[14pt] font-bold leading-[1.1] text-[#333333]">
+        <p className="whitespace-nowrap text-[15pt] font-bold leading-[1.1] text-[#333333]">
           {brand("name")}
         </p>
-        <p className="mt-[1mm] whitespace-nowrap text-[8.8pt] font-bold leading-[1.15] text-[#e11d2e]">
+        <p className="mt-[1mm] whitespace-nowrap text-[9.4pt] font-bold leading-[1.15] text-[#e11d2e]">
           {brand("trade")}
         </p>
       </div>
@@ -570,6 +600,15 @@ function CompanyLockup({ markClass }: { markClass: string }) {
  * one lockup, and a lockup belongs at an edge of a letterhead, not in the
  * middle of it.
  *
+ * ⚠️ **The lockup is held off the outer edge, not flush to it.** `me-[10mm]`
+ * is margin on its *end* — the left of an Arabic page — so `justify-between`
+ * stops it a thumb's width short of the margin and it reads as part of the
+ * header rather than as something pinned to the corner. The shop asked for it
+ * on 2026-11-12, in those words: slightly bigger, and closer to the middle.
+ * It is a nudge and deliberately **not** centring: a mark centred on the page
+ * with the title on one side and nothing on the other is a letterhead with a
+ * hole in it, which is why the old `1fr auto 1fr` grid was taken out.
+ *
  * The mark's size is passed as a whole class string, written out at the call
  * site: Tailwind only emits a class it can read in the source.
  */
@@ -577,8 +616,102 @@ function Letterhead({ children, markClass }: { children: ReactNode; markClass: s
   return (
     <header className="flex items-center justify-between gap-[6mm]">
       <div className="min-w-0 flex-1">{children}</div>
-      <CompanyLockup markClass={markClass} />
+      <div className="me-[10mm] shrink-0">
+        <CompanyLockup markClass={markClass} />
+      </div>
     </header>
+  );
+}
+
+/**
+ * The letterhead's three parts, shared by both A5 papers.
+ *
+ * ⚠️ **They exist because the two sheets had drifted into two identities**,
+ * and a customer is handed both at one counter on one day. The receipt wore a
+ * filled red tab, a red title and its facts on tinted chips under a red rule;
+ * the warranty wore red type with a glyph, a **charcoal** title, its ticket
+ * code as a plain line and no rule at all. Nothing about that was a decision —
+ * it is what two headers written a week apart look like, and it is exactly the
+ * difference a reader notices and cannot name.
+ *
+ * What is deliberately NOT shared is each paper's body and the warranty's own
+ * 0.5 mm frame: a certificate the customer keeps and may bring back should
+ * look like a certificate, and the two papers carry genuinely different
+ * content. Unity is the letterhead, the palette and the closing gesture.
+ */
+function PaperEyebrow({ Icon, children }: { Icon?: LucideIcon; children: ReactNode }) {
+  return (
+    <p className="inline-flex items-center gap-[1.4mm] rounded-full bg-[#e11d2e] px-[3.6mm] py-[1mm] text-[8pt] font-bold leading-none tracking-wide text-white">
+      {Icon && <Icon className="size-[3.4mm]" aria-hidden />}
+      {children}
+    </p>
+  );
+}
+
+/** The paper's own title: brand red on both sheets, at one size. */
+function PaperTitle({ children }: { children: ReactNode }) {
+  return <h1 className="mt-[1.6mm] text-[21pt] font-bold leading-[1.1] text-[#e11d2e]">{children}</h1>;
+}
+
+/**
+ * The facts that identify the paper — a ticket code, a printing time — on the
+ * tint every other panel on these sheets stands on.
+ *
+ * ⚠️ Nothing in a chip wraps. Each was its own chip once and the pair had no
+ * room, so each was squeezed until its own *value* broke in two — a date is
+ * not a date once it is split across a line.
+ */
+function PaperStamps({ stamps }: { stamps: { label: string; value: string }[] }) {
+  return (
+    <dl className="mt-[2mm] flex flex-wrap gap-[1.8mm]">
+      {stamps.map((stamp) => (
+        <div
+          key={stamp.label}
+          className="flex shrink-0 items-baseline gap-[1.6mm] rounded-[1.4mm] border-[0.25mm] border-[#f2c4ca] bg-[#fdeff1] px-[2.6mm] py-[1mm]"
+        >
+          <dt className="whitespace-nowrap text-[7.6pt] font-bold leading-none text-[#a90f1d]">{stamp.label}</dt>
+          <dd className="whitespace-nowrap text-[9pt] font-bold leading-none text-[#111]" data-numeric>
+            {stamp.value}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+/**
+ * The rule that closes the letterhead.
+ *
+ * ⚠️ Two flat blocks, never a gradient: a laser bands a gradient across 190 mm
+ * and a photocopier turns the band into stripes. The charcoal tail is the
+ * mark's own colour, so the rule closes under the lockup rather than running
+ * out of the page.
+ */
+function PaperRule() {
+  return (
+    <div className="flex h-[0.9mm] overflow-hidden rounded-full" aria-hidden>
+      <span className="flex-1 bg-[#e11d2e]" />
+      <span className="w-[30mm] bg-[#333333]" />
+    </div>
+  );
+}
+
+/**
+ * How a sheet signs off: the mark's own plate either side of one line.
+ *
+ * ⚠️ **One line, and the diamonds are why.** They are a pair bracketing a
+ * sentence; let the sentence wrap and the opening diamond sits beside the
+ * first line while the closing one sits beside the second, which reads as two
+ * unrelated marks rather than as a bracket. The warranty's own line carries
+ * both shop numbers and is the long one, so it sets the size.
+ */
+function PaperThanks({ children }: { children: ReactNode }) {
+  return (
+    <p className="flex w-fit items-center gap-[2.6mm] whitespace-nowrap rounded-full bg-[#fdeff1] px-[4mm] py-[1.4mm] text-[8pt] font-bold leading-none text-[#a90f1d]">
+      <span className="size-[1.6mm] shrink-0 rotate-45 bg-[#e11d2e]" aria-hidden />
+      {children}
+      <span className="size-[1.6mm] shrink-0 rotate-45 bg-[#e11d2e]" aria-hidden />
+    </p>
   );
 }
 
@@ -633,6 +766,23 @@ export type LabelLayout = { widthMm: number; heightMm: number | null };
 /** The shop's 57 x 39 mm roll, less 1 mm of paper on each side. */
 export const LABEL_SHEET: LabelLayout = { widthMm: 55, heightMm: 37 };
 
+/*
+ * The pool the name and the fault share, and the arithmetic behind it, live in
+ * `lib/print/label-fit.ts` — measured on this sheet, so a change to the
+ * lockup, the footer, the fixed rows or any row's leading means re-measuring
+ * it there.
+ *
+ * ⚠️ **Both free-text fields are fitted, and fitting only the fault is what
+ * broke it.** The first cut sized the fault and let the name wrap freely; a
+ * four-part name then took a second line, the `dl` is `justify-between`, and
+ * a flex row with negative free space **overlaps its own items rather than
+ * growing** — so «زبون آجل» printed straight across the thanks line while
+ * `scrollHeight` still reported the sheet as fitting exactly. An overflow
+ * probe cannot see that at all; only one that compares each row against the
+ * next can. There is no third free-text field on this sheet, and one added
+ * later needs its own share of the pool.
+ */
+
 export function LabelSheet({
   facts,
   layout = LABEL_SHEET,
@@ -642,12 +792,23 @@ export function LabelSheet({
 }) {
   const t = useTranslations("Admin");
   const fits = layout.heightMm === null;
+
+  /*
+   * ⚠️ **The name and the fault are set to fit rather than cut to fit**, and
+   * that is the whole of what the shop reported on 2026-11-13. See
+   * {@link fitLabelText}: a die-cut sticker cannot grow, so a nine-fault
+   * ticket for a four-part name either loses words to a clamp, prints across
+   * its own footer, or is set smaller. Only the third keeps the bench's list
+   * and the customer's name whole.
+   *
+   * On continuous paper the sheet grows instead, so there is no pool and
+   * nothing to fit: both fields keep their full size.
+   */
+  const sized = fits ? null : fitLabelText(facts.customerName, facts.fault);
+
   const rows = [
-    { label: t("printName"), value: facts.customerName },
-    // The one row allowed to wrap: it is what was wrong with the phone, and
-    // three faults cut to one and an ellipsis is the bench guessing. Three
-    // lines now that the device and warranty rows are gone.
-    { label: t("printFault"), value: facts.fault, wrap: true },
+    { label: t("printName"), value: facts.customerName, pt: sized?.name.pt },
+    { label: t("printFault"), value: facts.fault, pt: sized?.fault.pt },
     { label: t("printAmount"), value: formatPrice(facts.amount), numeric: true, strong: true },
     {
       label: t("printPayment"),
@@ -663,53 +824,139 @@ export function LabelSheet({
       style={{ width: `${layout.widthMm}mm`, height: fits ? undefined : `${layout.heightMm}mm` }}
       className="print-paper mx-auto my-[1mm] flex flex-col overflow-hidden bg-white px-[1.5mm] text-[#000]"
     >
-      <header className="flex items-center gap-[1.5mm] pb-[0.75mm] pt-[0.25mm]">
-        <svg viewBox={MARK_VIEWBOX} className="size-[5.5mm] shrink-0" aria-hidden>
+      {/*
+       * The letterhead, in the receipt's own proportions: the lockup leads and
+       * the name is the largest thing above the rule. It was a 5.5 mm mark
+       * beside 7.6 pt, which on a sticker read as a caption rather than as the
+       * shop signing the paper.
+       */}
+      <header className="flex items-center gap-[1.75mm] pt-[0.5mm]">
+        <svg viewBox={MARK_VIEWBOX} className="size-[6.25mm] shrink-0" aria-hidden>
           <path d={MARK_MONO_PATH} fillRule="evenodd" fill="#000" />
         </svg>
+        {/*
+         * ⚠️ `whitespace-nowrap`, never `truncate`. Both keep the lockup on two
+         * lines; only the second adds `overflow: hidden`, and an Arabic line
+         * box is shorter than the ink inside it — measured on this sheet, the
+         * glyphs reach 1 px above their own box, so hidden clipped the tops
+         * off the shop's own name. If one of these two strings is ever long
+         * enough to overrun, the sheet's own `overflow-hidden` is what cuts
+         * it, which is the right place for that decision.
+         */}
         <div className="min-w-0 flex-1">
-          <p className="truncate text-[7.6pt] font-bold leading-[1.1]">{t("printBadge")}</p>
-          <p className="truncate text-[6.4pt] font-semibold leading-[1.2]">{t("printDept")}</p>
+          <p className="whitespace-nowrap text-[8.2pt] font-bold leading-[1.25]">{t("printBadge")}</p>
+          <p className="whitespace-nowrap text-[6.2pt] font-semibold leading-[1.3]">{t("printDept")}</p>
         </div>
       </header>
 
-      <hr className={rule} />
+      {/*
+       * ⚠️ **The receipt's two-weight rule, in the one ink this head has.**
+       * There the rule is brand red with a charcoal tail, so the lockup closes
+       * on a colour change; a thermal head has no second colour, so the change
+       * is **thickness** — 4 dots under the mark falling to 2 across the rest.
+       * Both are whole dots (0.5 and 0.25 mm at 8 dots/mm): a rule measured in
+       * between is rounded per edge, which is what made the old 0.2 mm rules
+       * print one dot in places and two in others and read as unevenly inked.
+       *
+       * The heavy segment is the row's first child, so it sits at the reader's
+       * start — under the mark — in both scripts, with no logical property to
+       * get the wrong way round.
+       */}
+      <div className="mt-[0.75mm] flex items-start" aria-hidden>
+        <span className="h-[0.5mm] w-[11mm] shrink-0 bg-[#000]" />
+        <span className="h-[0.25mm] flex-1 bg-[#000]" />
+      </div>
 
-      <div className={cn("flex py-[0.5mm]", fits ? "items-start" : "min-h-0 flex-1 items-center")}>
-        <dl className="flex min-w-0 flex-1 flex-col justify-center gap-[0.5mm]">
-          {rows.map((row) => (
-            <div
-              key={row.label}
-              className="grid grid-cols-[auto_1fr] items-baseline gap-[1.25mm]"
-            >
-              <dt className="whitespace-nowrap text-[6.4pt] font-semibold leading-[1.05]">{row.label}</dt>
+      {/*
+       * ⚠️ **A ruled table that fills the label, where this was four lines
+       * floating in the middle of it.** The old body was `justify-center` with a
+       * 0.5 mm gap, so on an ordinary ticket a third of the sticker was empty
+       * above the rows and a third below, and the four facts had nothing
+       * holding them together — which is most of what "ugly compared to the
+       * receipt" meant. `justify-between` spreads the rows and the hairlines
+       * between them across whatever height is going, so the rules land at
+       * even intervals and the table reads as the body of the label.
+       *
+       * ⚠️ It must stay `min-h-0`: a flex item's default `min-height: auto`
+       * refuses to shrink below its content, so a three-line fault would push
+       * the footer off the bottom edge instead of eating the slack — which is
+       * exactly how the phone line came to be cut off the printed label.
+       *
+       * On continuous paper there is no free space to spread, so the same
+       * markup flows naturally and `justify-between` does nothing.
+       */}
+      <dl
+        className={cn(
+          "flex flex-col",
+          fits ? "gap-[1.25mm] py-[1.25mm]" : "min-h-0 flex-1 justify-between py-[0.75mm]",
+        )}
+      >
+        {rows.map((row, index) => (
+          <Fragment key={row.label}>
+            {index > 0 && !fits && <hr className={cn(rule, "w-full")} />}
+            <div className="grid grid-cols-[auto_1fr] items-baseline gap-[1.75mm] py-[0.375mm]">
+              <dt
+                className={cn(
+                  "whitespace-nowrap font-semibold",
+                  row.strong ? "text-[6.8pt]" : "text-[6.4pt]",
+                  "leading-[1.3]",
+                )}
+              >
+                {row.label}
+              </dt>
               <dd
                 className={cn(
                   "min-w-0 font-bold",
-                  row.strong ? "text-[8.8pt]" : "text-[7.4pt]",
                   /*
-                   * ⚠️ After the size, never before it. `cn` is tailwind-merge,
-                   * which reads a later `text-[…]` size as overriding an earlier
-                   * `leading-*` and drops it — the rows then took the page's 1.5,
-                   * six of them no longer fit 37 mm, and the first and last sat
-                   * on the two rules. Measured: 14.8 px of line for a 9.87 px font.
+                   * ⚠️ **The amount sits beside its label, not at the far
+                   * edge**, and the shop asked for that in those words on
+                   * 2026-11-13. The receipt's own split — facts adjacent,
+                   * money at opposite ends — is right on a 210 mm page, where
+                   * the eye travels a long way and the two ends are columns.
+                   * On a 55 mm sticker the far end is two centimetres away,
+                   * so the figure read as belonging to nothing: there is not
+                   * enough width for the gap to mean "this is the total"
+                   * rather than "these two are unrelated". It is still the
+                   * hero — 12 pt against 7.6 is the hierarchy — and now the
+                   * hierarchy and the reading order agree.
+                   *
+                   * ⚠️ **Nothing here may carry `overflow: hidden`.** That is
+                   * what `truncate` and `line-clamp` add, and an Arabic line box
+                   * is shorter than its own ink: measured on this sheet, every
+                   * value's glyphs reach 2 px above their box, so hidden
+                   * sliced the tops off — «الشاشة» printed as «التاشة», which
+                   * is what the shop photographed. The ink paints into the row
+                   * gap instead, where there is nothing to collide with, and
+                   * the words stay whole. The fault's own size is what keeps
+                   * the sheet from overflowing; see {@link fitLabelText}.
                    */
-                  "leading-[1.05]",
-                  fits ? "break-words" : "wrap" in row && row.wrap ? "line-clamp-3 break-words" : "truncate",
+                  row.strong ? "text-[12pt]" : "text-[7.6pt]",
+                  "leading-[1.3] break-words",
                 )}
+                style={row.pt ? { fontSize: `${row.pt}pt` } : undefined}
               >
                 {row.numeric ? <span data-numeric>{row.value}</span> : row.value}
               </dd>
             </div>
-          ))}
-        </dl>
-      </div>
+          </Fragment>
+        ))}
+      </dl>
 
       <hr className={rule} />
 
-      <footer className="pb-[0.25mm] pt-[0.75mm] text-center">
-        <p className="truncate text-[5.4pt] font-bold leading-[1.25]">{t("printThanksShort")}</p>
-        <p className="truncate text-[5.8pt] font-bold leading-[1.25]">
+      {/*
+       * The receipt closes on ◆ thanks ◆ and so does this, at a size a thermal
+       * head can hold: a 1 mm square turned 45° is 8 dots across, which keeps
+       * its points. The phones are the heavier of the two lines because they
+       * are the reason a customer keeps the sticker.
+       */}
+      <footer className="pb-[0.5mm] pt-[0.75mm]">
+        <div className="flex items-center justify-center gap-[1.25mm]">
+          <span className="size-[1mm] shrink-0 rotate-45 bg-[#000]" aria-hidden />
+          <p className="truncate text-[5.4pt] font-bold leading-[1.25]">{t("printThanksShort")}</p>
+          <span className="size-[1mm] shrink-0 rotate-45 bg-[#000]" aria-hidden />
+        </div>
+        <p className="truncate text-center text-[6pt] font-bold leading-[1.25]">
           {t("printPhoneLine", { phones: site.repairCardPhones.join(" - ") })}
         </p>
       </footer>
@@ -770,7 +1017,7 @@ export function ReceiptSheet({ facts, printedAt }: { facts: RepairPrintFacts; pr
   const columns = [
     { label: t("receiptCustomer"), value: facts.customerName, lines: "line-clamp-3" },
     { label: t("receiptDevice"), value: facts.device, lines: "line-clamp-3" },
-    { label: t("receiptFault"), value: facts.fault, lines: "line-clamp-4" },
+    { label: t("receiptFault"), value: facts.fault, lines: "line-clamp-3" },
     /*
      * The total alone. It carried «منها الضمان» under it, and the shop struck it
      * off on 2026-11-05: the warranty has a paper of its own, and the receipt
@@ -780,11 +1027,26 @@ export function ReceiptSheet({ facts, printedAt }: { facts: RepairPrintFacts; pr
     { label: t("receiptDate"), value: `${baghdadDay(received)}  ${clock(received)}`, numeric: true },
   ];
 
-  /* The code, then when it was printed — one chip each. */
+  /*
+   * The code, then when it was printed — **two** chips, where there were
+   * three.
+   *
+   * ⚠️ **The date and the time are one value, and the chips never wrap.** They
+   * were a chip each and the pair had no room: the stamps sit in the title
+   * block beside the lockup, so each chip was squeezed until its own value
+   * broke over two lines — «2026-11-» above «12», «8.41.31» above «AM». A date
+   * split across a line break is not a date, and a reader seeing one asks
+   * which of the two numbers the paper means. Joined, they are one fact said
+   * once; `whitespace-nowrap` on the value and `shrink-0` on the chip are what
+   * make the row size to its content instead of the content to the row.
+   *
+   * The `dl` keeps `flex-wrap`, so if a longer code ever takes the pair past
+   * the block's width the second chip drops to its own line whole — which is
+   * the failure worth having, where breaking inside a value is not.
+   */
   const stamps = [
     { label: t("counterTicketCode"), value: facts.code },
-    { label: t("receiptPrintDate"), value: baghdadDay(printedAt) },
-    { label: t("receiptTime"), value: clock(printedAt) },
+    { label: t("receiptPrintDate"), value: `${baghdadDay(printedAt)}  ${clock(printedAt)}` },
   ];
 
   const money = [
@@ -809,10 +1071,26 @@ export function ReceiptSheet({ facts, printedAt }: { facts: RepairPrintFacts; pr
     },
   ];
 
-  const notes = [t("receiptNote1"), t("receiptNote2"), t("receiptNote3"), t("receiptNote4")];
+  /*
+   * ⚠️ **Five notes now, and the fifth is why the leading tightened.** The
+   * shop added «لا يسلم الجهاز للزبون دون تسليم الوصل» on 2026-11-12 — the
+   * counter's own rule, and the one note on this paper addressed to the
+   * counter as much as to the customer. Five in two columns is three rows
+   * where four was two, and this page has about 6 mm of slack on an ordinary
+   * ticket: the row it adds is paid for by the box's own leading and padding
+   * below, not by the terms or the foot, which are what `overflow-hidden`
+   * eats first when the page runs over.
+   */
+  const notes = [
+    t("receiptNote1"),
+    t("receiptNote2"),
+    t("receiptNote3"),
+    t("receiptNote4"),
+    t("receiptNote5"),
+  ];
 
   return (
-    <article className="print-paper mx-auto flex h-[147mm] w-[209mm] flex-col gap-[3mm] overflow-hidden bg-white px-[10mm] py-[5mm] text-[#111]">
+    <article className="print-paper mx-auto flex h-[147mm] w-[209mm] flex-col gap-[2mm] overflow-hidden bg-white px-[10mm] py-[4.5mm] text-[#111]">
       {/*
        * The rule sits close under the stamps, as the shop marked it: the
        * header and its rule are one group with their own small gap rather
@@ -820,7 +1098,7 @@ export function ReceiptSheet({ facts, printedAt }: { facts: RepairPrintFacts; pr
        * the title block's own height, so it never pushes the rule down.
        */}
       <div className="flex flex-col gap-[1.8mm]">
-        <Letterhead markClass="size-[17mm]">
+        <Letterhead markClass="size-[19mm]">
           {/*
            * The department as a filled pill rather than a line of red type.
            * Two red lines stacked — the eyebrow and the title — read as one
@@ -829,39 +1107,12 @@ export function ReceiptSheet({ facts, printedAt }: { facts: RepairPrintFacts; pr
            * letterhead wants and the strongest single note of colour on the
            * sheet for the least ink.
            */}
-          <p className="inline-flex rounded-full bg-[#e11d2e] px-[3.6mm] py-[1mm] text-[8pt] font-bold leading-none tracking-wide text-white">
-            {t("receiptEyebrow")}
-          </p>
-          <h1 className="mt-[1.6mm] text-[21pt] font-bold leading-[1.1] text-[#e11d2e]">
-            {t("receiptTitle")}
-          </h1>
-          <dl className="mt-[2mm] flex flex-wrap gap-[1.8mm]">
-            {stamps.map((stamp) => (
-              <div
-                key={stamp.label}
-                className="flex items-baseline gap-[1.6mm] rounded-[1.4mm] border-[0.25mm] border-[#f2c4ca] bg-[#fdeff1] px-[2.6mm] py-[1mm]"
-              >
-                <dt className="whitespace-nowrap text-[7.6pt] font-bold leading-none text-[#a90f1d]">
-                  {stamp.label}
-                </dt>
-                <dd className="text-[9pt] font-bold leading-none text-[#111]" data-numeric>
-                  {stamp.value}
-                </dd>
-              </div>
-            ))}
-          </dl>
+          <PaperEyebrow>{t("receiptEyebrow")}</PaperEyebrow>
+          <PaperTitle>{t("receiptTitle")}</PaperTitle>
+          <PaperStamps stamps={stamps} />
         </Letterhead>
 
-        {/*
-         * Two flat blocks, never a gradient: a laser bands a gradient across
-         * 190 mm and a photocopier turns the band into stripes. The charcoal
-         * tail is the mark's own colour, so the rule closes on the lockup
-         * above its end rather than running out of the page.
-         */}
-        <div className="flex h-[0.9mm] overflow-hidden rounded-full" aria-hidden>
-          <span className="flex-1 bg-[#e11d2e]" />
-          <span className="w-[26mm] bg-[#333333]" />
-        </div>
+        <PaperRule />
       </div>
 
       {/*
@@ -914,7 +1165,7 @@ export function ReceiptSheet({ facts, printedAt }: { facts: RepairPrintFacts; pr
               <td
                 key={column.label}
                 className={cn(
-                  "h-[12mm] border-[#f2c4ca] px-[2.4mm] py-[1.8mm] text-center align-middle font-bold leading-snug",
+                  "h-[12mm] border-[#f2c4ca] px-[2.4mm] py-[1.5mm] text-center align-middle font-bold leading-snug",
                   /* The amount: the tint lifts it off the row, the red names it. */
                   column.strong ? "bg-[#fdeff1] text-[13.5pt] text-[#e11d2e]" : "text-[9.5pt] text-[#111]",
                   index > 0 && "border-s-[0.25mm]",
@@ -988,9 +1239,9 @@ export function ReceiptSheet({ facts, printedAt }: { facts: RepairPrintFacts; pr
        * The four notes are fixed strings at a fixed width, so its height is
        * deterministic; what is left over goes under the foot instead.
        */}
-      <section className="flex gap-[3.4mm] rounded-[2.4mm] border-[0.25mm] border-[#f2c4ca] bg-[#fdeff1] px-[3.4mm] py-[2mm]">
+      <section className="flex gap-[3.4mm] rounded-[2.4mm] border-[0.25mm] border-[#f2c4ca] bg-[#fdeff1] px-[3.4mm] py-[1.6mm]">
         <h2 className="shrink-0 text-[9.5pt] font-bold text-[#e11d2e]">{t("receiptNotes")}</h2>
-        <div className="min-w-0 flex-1 text-[8.6pt] font-medium leading-[1.65] text-[#222]">
+        <div className="min-w-0 flex-1 text-[8.5pt] font-medium leading-[1.45] text-[#222]">
           <p className="font-bold text-[#a90f1d]">{t("receiptDear")}</p>
           {/*
            * ⚠️ **The numeral must NOT carry `data-numeric`**, and the reason is
@@ -1014,9 +1265,40 @@ export function ReceiptSheet({ facts, printedAt }: { facts: RepairPrintFacts; pr
            * when no warranty was sold: this one is about claims once the
            * device has been checked and taken, which holds either way.
            */}
-          <ol className="grid grid-cols-2 gap-x-[5mm]">
+          {/*
+           * ⚠️ **Column flow, not row flow, and the numbers are why.** Filled
+           * by rows a two-column list runs 1·2 across, then 3·4, then 5 — so
+           * reading down the reader's own column gives **1, 3, 5**, and the
+           * numbers appear to skip. The shop reported the block as broken
+           * (2026-11-12) and that is the half of it a picture shows at once.
+           * `grid-flow-col` with three fixed rows puts 1·2·3 down the first
+           * column and 4·5 down the second, which is how a numbered list in
+           * two columns is read everywhere else.
+           *
+           * ⚠️ **`gap-y` is the other half, and it was zero.** Measured on
+           * the rendered page: the closest two note boxes sat **0.00 mm**
+           * apart, so note 1's wrapped second line and note 3's first line
+           * touched — and Arabic, whose descenders run deep and whose
+           * ascenders carry hamzas, reads that as two lines printed over each
+           * other. The boxes never actually overlapped; nothing but a browser
+           * measurement would have separated "touching" from "overlapping",
+           * and the fix is the same either way.
+           *
+           * ⚠️ The three rows are `auto`, spelled out, and **not**
+           * `grid-rows-3` — Tailwind compiles that to `repeat(3, minmax(0,1fr))`,
+           * three EQUAL rows. With note 1 wrapping to two lines every row
+           * became two lines tall, so notes 2 and 3 were drawn with a blank
+           * line under each and note 3 floated a centimetre below the note
+           * above it. Fixing the count without fixing the sizing looked worse
+           * than the fault it replaced.
+           */}
+          <ol className="grid grid-flow-col grid-cols-2 grid-rows-[repeat(3,auto)] gap-x-[5mm] gap-y-[1.1mm]">
             {notes.map((note, index) => (
-              <li key={note} className="flex gap-[1.6mm]">
+              /* `items-start`: the numeral belongs beside the note's FIRST
+                 line. Stretched (the flex default) it centres itself against a
+                 note that wrapped, which leaves «1-» floating between the two
+                 lines it is meant to open. */
+              <li key={note} className="flex items-start gap-[1.6mm]">
                 <span className="shrink-0 font-bold text-[#e11d2e]">{index + 1}-</span>
                 <span className="min-w-0">{note}</span>
               </li>
@@ -1031,10 +1313,8 @@ export function ReceiptSheet({ facts, printedAt }: { facts: RepairPrintFacts; pr
        * trailing off. The two diamonds are the mark's own plate at 1.6 mm —
        * the shape the warranty paper already uses to bullet its terms.
        */}
-      <footer className="mt-auto flex items-center justify-center gap-[2.6mm] rounded-full bg-[#fdeff1] px-[4mm] py-[1.5mm]">
-        <span className="size-[1.6mm] shrink-0 rotate-45 bg-[#e11d2e]" aria-hidden />
-        <p className="text-[9pt] font-bold leading-none text-[#a90f1d]">{t("printThanksShort")}</p>
-        <span className="size-[1.6mm] shrink-0 rotate-45 bg-[#e11d2e]" aria-hidden />
+      <footer className="mt-auto flex justify-center">
+        <PaperThanks>{t("printThanksShort")}</PaperThanks>
       </footer>
     </article>
   );
@@ -1055,23 +1335,27 @@ export function WarrantySheet({ facts }: { facts: RepairPrintFacts }) {
 
   return (
     <article className="print-paper mx-auto flex h-[147mm] w-[209mm] flex-col overflow-hidden bg-white px-[12mm] py-[8mm] text-[#111]">
-      <div className="flex flex-1 flex-col gap-[5mm] rounded-[3mm] border-[0.5mm] border-[#111] px-[9mm] py-[6mm]">
+      <div className="flex flex-1 flex-col gap-[4mm] rounded-[3mm] border-[0.5mm] border-[#111] px-[9mm] py-[6mm]">
         {/*
          * The same company lockup the receipt carries. The repair department's
          * own logo came off both A5 papers together: two sheets handed over at
          * one counter, on the same day, under two different identities is the
          * shop looking like two shops.
          */}
-        <Letterhead markClass="size-[16mm]">
-          <p className="flex items-center gap-[1.6mm] text-[9pt] font-bold text-[#e11d2e]">
-            <ShieldCheck className="size-[4.4mm]" aria-hidden />
-            {t("warrantyEyebrow")}
-          </p>
-          <h1 className="text-[25pt] font-bold leading-[1.15] text-[#111]">{t("warrantySheetTitle")}</h1>
-          <p className="mt-[1mm] text-[8.5pt] font-medium text-[#555]">
-            {t("counterTicketCode")} <span className="font-bold text-[#111]" data-numeric>{facts.code}</span>
-          </p>
-        </Letterhead>
+        {/*
+         * ⚠️ The same three parts the receipt carries, at the same sizes and
+         * in the same colours — see {@link PaperEyebrow}. The shield stays,
+         * inside the pill rather than beside red type: it says which of the
+         * two papers this is, which is the one thing that should differ.
+         */}
+        <div className="flex flex-col gap-[1.8mm]">
+          <Letterhead markClass="size-[19mm]">
+            <PaperEyebrow Icon={ShieldCheck}>{t("warrantyEyebrow")}</PaperEyebrow>
+            <PaperTitle>{t("warrantySheetTitle")}</PaperTitle>
+            <PaperStamps stamps={[{ label: t("counterTicketCode"), value: facts.code }]} />
+          </Letterhead>
+          <PaperRule />
+        </div>
 
         <dl className="space-y-[2.6mm]">
           {lines.map((line) => (
@@ -1087,9 +1371,46 @@ export function WarrantySheet({ facts }: { facts: RepairPrintFacts }) {
             <dt className="text-[8.5pt] font-medium text-[#444]">{t("warrantyFrom")}</dt>
             <dd className="text-[13pt] font-bold text-[#111]" data-numeric>{start}</dd>
           </div>
-          <div className="border-x-[0.3mm] border-[#111] bg-[#111] px-[2mm] py-[2.2mm]">
-            <dt className="text-[8.5pt] font-medium text-[#ddd]">{t("warrantyDuration")}</dt>
-            <dd className="text-[13pt] font-bold text-white">{t("warrantyDurationValue", { count: days, days: String(days) })}</dd>
+          {/*
+           * ⚠️ **The figure is red INK on the paper's own tint, and it was a
+           * filled red block.** The shop asked for the red by name on
+           * 2026-11-12 — "the ضمان paper must colorful the 30 days with the
+           * red color of our visual identity" — and on 2026-11-13, looking at
+           * a printed one, asked again: *"make the colour of the days of
+           * guarantee of وصل الضمان to be red instead of black background."*
+           *
+           * Both are the same instruction and the first was answered the
+           * wrong way round. ⚠️ **A solid `#e11d2e` field does not print as
+           * red on the machine this paper actually goes through** — a mono
+           * laser, or a colour one somebody has set to greyscale — it prints
+           * as a near-black slab with white type knocked out of it, which is
+           * exactly what the shop photographed. A **filled block is the one
+           * treatment that cannot degrade gracefully**: the ink carries the
+           * whole of it, so losing the hue loses the design. Red type on a
+           * near-white tint degrades to dark type on white, which is the same
+           * picture with the colour taken out.
+           *
+           * So the tint is the receipt's own `#fdeff1` — the 4% wash every
+           * other panel on these two sheets stands on, which is why this cell
+           * now reads as part of the same paper rather than as a stamp applied
+           * to it. `#e11d2e` on it is 4.27:1, comfortable at 13 pt bold; the
+           * label takes `#a90f1d` at 6.75:1, the deeper red this sheet already
+           * reserves for small type, because 8.5 pt of the bright red prints
+           * thin.
+           *
+           * The side rules stay the full red and are the one thing kept from
+           * the filled version: they frame the figure, echo the table head on
+           * the receipt, and are what still separates this cell from its two
+           * white neighbours once the hue is gone. ⚠️ Not `#f2c4ca` — the
+           * tint's own hairline is invisible against a white cell, so the
+           * divider would vanish on exactly the print this change is for.
+           *
+           * Nothing is said in colour alone: the label names the figure and
+           * the unit is written out beside it.
+           */}
+          <div className="border-x-[0.3mm] border-[#e11d2e] bg-[#fdeff1] px-[2mm] py-[2.2mm]">
+            <dt className="text-[8.5pt] font-medium text-[#a90f1d]">{t("warrantyDuration")}</dt>
+            <dd className="text-[13pt] font-bold text-[#e11d2e]">{t("warrantyDurationValue", { count: days, days: String(days) })}</dd>
           </div>
           <div className="px-[2mm] py-[2.2mm]">
             <dt className="text-[8.5pt] font-medium text-[#444]">{t("warrantyTo")}</dt>
@@ -1119,9 +1440,7 @@ export function WarrantySheet({ facts }: { facts: RepairPrintFacts }) {
                 ))}
               </ul>
             </section>
-            <p className="text-[8pt] font-bold text-[#111]">
-              {t("printThanks", { phones: site.repairCardPhones.join(" - ") })}
-            </p>
+            <PaperThanks>{t("printThanks", { phones: site.repairCardPhones.join(" - ") })}</PaperThanks>
           </div>
           <p className="w-[46mm] shrink-0 border-t-[0.3mm] border-[#111] pt-[1mm] text-center text-[8pt] font-medium text-[#444]">
             {t("warrantySignature")}

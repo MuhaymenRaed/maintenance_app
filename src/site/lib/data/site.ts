@@ -1,4 +1,12 @@
-import { LOCAL_PROVINCE } from "@/lib/data/delivery-zones";
+/*
+ * ⚠️ Relative, with the extension — never the `@/` alias. Two test files load
+ * this module through node's own resolver, which knows nothing about
+ * tsconfig paths, and an alias here fails the WHOLE file with
+ * `Cannot find package '@/lib'` — every assertion inside it passing, the
+ * tally two files short, and nothing in the summary saying why. The same rule
+ * `lib/data/queue-window.ts` already follows for `./date-window.ts`.
+ */
+import { LOCAL_PROVINCE } from "./delivery-zones.ts";
 
 /**
  * Single source of truth for the company's public contact details and

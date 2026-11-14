@@ -18,7 +18,14 @@ import {
 import type { RepairPrintFacts } from "@/lib/data/repair-print-facts";
 import { clearPrintLog, printLog, printLogText } from "@/lib/print/print-log";
 import { narrowMediaOnly, suggestRoles, supportsA5, type PrinterInfo, type PrinterRole } from "@/lib/print/printer-match";
-import { agentStatus, listPrinters } from "@/lib/print/agent-client";
+import {
+  AGENT_START_MS,
+  agentEverSeen,
+  agentStatus,
+  listPrinters,
+  wakeAgent,
+  waitForAgent,
+} from "@/lib/print/agent-client";
 import type { StationSettings } from "@/lib/print/station-settings";
 import {
   closePrinterSetup,
@@ -42,6 +49,7 @@ import { saveStationSettings, stationSettingsStore } from "@/lib/print/station-s
 
 type Listing =
   | { state: "connecting" }
+  | { state: "waking" }
   | { state: "ready"; printers: PrinterInfo[]; machine: string }
   | { state: "failed"; code: string };
 
@@ -58,6 +66,35 @@ export function PrinterSetupDialog({ mode }: { mode: "open" | "confirm" }) {
     let alive = true;
     void (async () => {
       try {
+        await agentStatus();
+      } catch (error) {
+        /*
+         * The same bargain the print run makes: an agent that is not running
+         * is started rather than reported. Here it matters more, because this
+         * dialog is where somebody goes to fix printing — and until the agent
+         * answers it can show no printers at all, so there is nothing on the
+         * screen to fix anything with.
+         */
+        const code = connectionProblem(error).code;
+        if (code !== "not_running") {
+          if (alive) setListing({ state: "failed", code });
+          return;
+        }
+        if (alive) setListing({ state: "waking" });
+        wakeAgent();
+        if (!(await waitForAgent(AGENT_START_MS))) {
+          /*
+           * ⚠️ A PC the installer has never run on is the likeliest reason
+           * this dialog is empty, and it is the one reason the reader can
+           * act on — see `agentEverSeen`. Reported as "not running" it
+           * sends somebody to a .cmd file that would have worked all along,
+           * had it ever been double-clicked.
+           */
+          if (alive) setListing({ state: "failed", code: agentEverSeen() ? code : "not_installed" });
+          return;
+        }
+      }
+      try {
         const { machine } = await agentStatus();
         const printers = await listPrinters({ fresh: true });
         if (alive) setListing({ state: "ready", printers, machine });
@@ -70,11 +107,19 @@ export function PrinterSetupDialog({ mode }: { mode: "open" | "confirm" }) {
     };
   }, [attempt]);
 
+  /*
+   * ⚠️ `force`, because this is a press. The browser wants a user activation
+   * before it will offer to open a program, and "try again" is the one moment
+   * the reader has plainly asked for it.
+   */
   const reconnect = () => {
+    wakeAgent({ force: true });
     setListing({ state: "connecting" });
     setAttempt((value) => value + 1);
   };
 
+  /* Connecting and starting are one state to everything but the sentence. */
+  const busy = listing.state === "connecting" || listing.state === "waking";
   const printers = listing.state === "ready" ? listing.printers : [];
   const guess = suggestRoles(printers);
   const set = (change: (current: StationSettings) => StationSettings) => setDraft((current) => change(current));
@@ -189,7 +234,7 @@ export function PrinterSetupDialog({ mode }: { mode: "open" | "confirm" }) {
           <button
             type="button"
             onClick={reconnect}
-            disabled={listing.state === "connecting"}
+            disabled={busy}
             className="press inline-flex items-center gap-1.5 rounded-control border border-line px-3 py-1.5 text-[0.72rem] font-extrabold text-ink hover:border-brand hover:text-brand disabled:opacity-50"
           >
             <RefreshCw className="size-3.5" aria-hidden />
@@ -197,10 +242,10 @@ export function PrinterSetupDialog({ mode }: { mode: "open" | "confirm" }) {
           </button>
         }
       >
-        {listing.state === "connecting" && (
+        {busy && (
           <p className="flex items-center gap-2 text-[0.78rem] font-bold text-muted">
             <Loader2 className="size-4 animate-spin" aria-hidden />
-            {t("psSetupConnecting")}
+            {listing.state === "waking" ? t("psSetupStarting") : t("psSetupConnecting")}
           </p>
         )}
         {listing.state === "ready" && (
@@ -253,7 +298,11 @@ export function PrinterSetupDialog({ mode }: { mode: "open" | "confirm" }) {
                 ariaLabel={t("psSetupA5")}
               />
             </Field>
-            {a5Printer && supportsA5(a5Printer) === false && (
+            {/*
+              The warning has always been able to say a printer lists no A5.
+              It now says what to do about it, because the thing to do exists.
+            */}
+            {a5Printer && supportsA5(a5Printer) === false && draft.a5.page === "a5" && (
               <p className="text-[0.68rem] font-bold text-warning">{t("psSetupNoA5")}</p>
             )}
             <TestButton disabled={!target("a5") || listing.state !== "ready"} onTest={(at) => test("receipt", at)} />
@@ -350,10 +399,23 @@ export function PrinterSetupDialog({ mode }: { mode: "open" | "confirm" }) {
       </Section>
 
       <Section title={t("psSetupA5Section")} hint={t("psSetupFitHint")}>
+        {/*
+          ⚠️ `ChoiceCards` rather than a toggle, because the choice changes what
+          comes out of the machine rather than tuning it — the rule this back
+          office already follows for an offer's kind and a product's.
+        */}
+        <ChoiceCards
+          value={draft.a5.page}
+          onChange={(sheetPage) => set((current) => ({ ...current, a5: { ...current.a5, page: sheetPage } }))}
+          options={[
+            { value: "a5", label: t("psSetupPageA5"), hint: t("psSetupPageA5Hint") },
+            { value: "a4", label: t("psSetupPageA4"), hint: t("psSetupPageA4Hint") },
+          ]}
+        />
         <Toggle
           label={t("psSetupFit")}
           on={draft.a5.fit === "page"}
-          onChange={(on) => set((current) => ({ ...current, a5: { fit: on ? "page" : "actual" } }))}
+          onChange={(on) => set((current) => ({ ...current, a5: { ...current.a5, fit: on ? "page" : "actual" } }))}
         />
       </Section>
 
