@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import type { RepairStatus } from "../../site/lib/data/orders.ts";
 import { repairBase, repairTotal, type PaymentTerms, type RepairService } from "../../site/lib/data/repair-desk.ts";
+import { cleanFaultName } from "../../site/lib/data/repair-faults.ts";
 import type { DeskTicketInput, FinancePatch, OpKind, RepairPatch } from "../../shared/contract";
 
 /**
@@ -100,7 +102,31 @@ export type OpPayload = {
   /** Local photos are uploaded first; `uploaded` remembers which have been, so a retry does not send them twice. */
   photos: { urls: string[]; uploaded?: Record<string, string> };
   delete: { label?: string; reason?: string };
+  /**
+   * A ticket's faults, the whole new set — named, so the waiting change draws
+   * them before the server has heard of it. `isNew` is a fault typed here
+   * that the list does not have yet: its `code` is `typedFaultCode`'s, and the
+   * push files it on the list first. `custom` is the ticket's old typed
+   * faults as they should stand, or null to leave them.
+   */
+  faults: {
+    faults: { code: string; name_ar: string; name_en: string; isNew?: boolean }[];
+    custom: string[] | null;
+  };
 };
+
+/**
+ * The code a fault typed here is filed under — the one `add_repair_issue`
+ * derives on the server (`c-` and twelve hex of md5 of the bench and the
+ * lower-cased name), so a ticket opened offline names its new fault by the
+ * code the server will give it.
+ */
+export function typedFaultCode(service: RepairService, name: string): string {
+  const digest = createHash("md5")
+    .update(`${service}:${cleanFaultName(name).toLowerCase()}`, "utf8")
+    .digest("hex");
+  return `c-${digest.slice(0, 12)}`;
+}
 
 export type AnyOp = { [K in OpKind]: { kind: K; payload: OpPayload[K] } }[OpKind];
 
@@ -155,6 +181,14 @@ export function applyOp(raw: RawTicket, op: AnyOp): RawTicket {
       raw.is_deleted = true;
       return raw;
     }
+    case "faults": {
+      raw.repair_ticket_issues = op.payload.faults.map((fault) => ({
+        issue_code: fault.code,
+        repair_issues: { name_ar: fault.name_ar, name_en: fault.name_en },
+      }));
+      if (op.payload.custom !== null) raw.custom_faults = op.payload.custom;
+      return raw;
+    }
     case "create":
       // A ticket opened here is stored as its own draft row; there is nothing
       // to lay over it.
@@ -205,10 +239,17 @@ export function draftTicket(
     warranty_price: whole(input.warranty) || null,
     warranty_days: whole(input.warrantyDays) || null,
     warranty_start: null,
-    custom_faults: input.customFaults,
+    custom_faults: input.customFaults ?? [],
     branches: refs.branch,
     technicians: refs.holderName ? { name: refs.holderName } : null,
-    repair_ticket_issues: input.issueCodes.map((code) => ({ issue_code: code, repair_issues: refs.issues.get(code) ?? null })),
+    repair_ticket_issues: [
+      ...input.issueCodes.map((code) => ({ issue_code: code, repair_issues: refs.issues.get(code) ?? null })),
+      // Typed at the counter: named by their own words until the server files them.
+      ...(input.newFaults ?? []).map((name) => ({
+        issue_code: typedFaultCode(input.service, name),
+        repair_issues: { name_ar: cleanFaultName(name), name_en: cleanFaultName(name) },
+      })),
+    ],
     repair_ticket_finance: {
       cost_price: whole(input.costPrice),
       collected: whole(input.collected),
@@ -232,6 +273,8 @@ export function describeOp(op: AnyOp): string {
       return String(op.payload.urls.length);
     case "delete":
       return op.payload.reason ?? "";
+    case "faults":
+      return op.payload.faults.map((fault) => fault.name_ar).join("، ");
   }
 }
 

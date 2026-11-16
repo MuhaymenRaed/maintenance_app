@@ -53,6 +53,8 @@ export function TitleBar() {
   return (
     <header
       data-site-header
+      // Windows stop under the bar — see `topInset` in the site's app-window.
+      data-window-top
       className="desk-titlebar sticky top-0 z-70 border-b border-line bg-surface"
     >
       <div className="desk-titlebar-content flex items-center gap-2 px-4">

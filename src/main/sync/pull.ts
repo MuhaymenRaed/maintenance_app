@@ -111,6 +111,21 @@ export async function pullRefs(client: SupabaseClient, userId: string, email: st
       const current = refs.steps();
       store.setRef("steps", { ...current, waitingParts: probe.error?.code !== "22P02" });
     }],
+    ["available", async () => {
+      // Whether a ticket's faults can be changed after it is opened —
+      // `set_repair_faults`, 20261116_repair_faults_editable.sql. Asked with its
+      // own argument names and a ticket that cannot exist, so it either runs and
+      // refuses (nothing written) or PostgREST answers there is no such function.
+      const probe = await client.rpc("set_repair_faults", {
+        p_ticket: "00000000-0000-0000-0000-000000000000",
+        p_codes: [],
+        p_custom: null,
+      });
+      // No code is the line failing, not an answer: leave what was known.
+      if (probe.error && !probe.error.code) return;
+      const missing = probe.error?.code === "PGRST202" || probe.error?.code === "42883";
+      store.setRef("available", { ...refs.available(), faultsEdit: !missing });
+    }],
   ];
   for (const [name, task] of tasks) {
     try {

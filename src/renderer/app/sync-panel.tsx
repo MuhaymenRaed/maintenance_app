@@ -66,6 +66,7 @@ const KIND_LABEL: Record<OpKind, string> = {
   assign: "opAssign",
   photos: "opPhotos",
   delete: "opDelete",
+  faults: "opFaults",
 };
 
 /** The fields an `update` or `finance` change carries, in words. */

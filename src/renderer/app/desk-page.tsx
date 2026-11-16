@@ -19,6 +19,7 @@ import { Link } from "@/i18n/navigation";
 import { FilterChips } from "@/components/admin/filter-chips";
 import { QueueToolbar } from "@/components/admin/queue-toolbar";
 import { RepairsBoard, type DeskHolder } from "@/components/admin/repairs-board";
+import type { ReportContext } from "@/components/admin/profit-report";
 import { DeskTicketButton } from "@/components/admin/desk-ticket";
 import { PrinterSetupButton } from "@/components/admin/printer-setup";
 import { StatPress, type StatDetail } from "@/components/admin/stat-detail";
@@ -171,6 +172,21 @@ function Desk({ data, openId }: { data: Extract<DeskPageData, { ready: true }>; 
 
   const base = Math.max(0, board.totals.revenue - board.totals.warranty);
 
+  // What the profit report prints above its table — see the site's page.
+  const report: ReportContext = {
+    desk: service === "software" ? t("programmingDesk") : t("repairDesk"),
+    period,
+    filters: [
+      ...(view !== "all" ? [scopeLabel] : []),
+      ...(tech && view !== "mine"
+        ? [`${t("deskTechnician")}: ${tech === "none" ? t("unassigned") : (nameOf(tech) ?? "")}`]
+        : []),
+      ...(terms ? [`${t("financeTerms")}: ${t(terms === "cash" ? "termsCash" : "termsDeferred")}`] : []),
+      ...(status ? [`${t("filterStatus")}: ${tStatus(`status_${status}` as "status_received")}`] : []),
+      ...(search ? [`${t("deskSearch")}: ${search}`] : []),
+    ],
+  };
+
   return (
     <div className="space-y-4">
       <header className="flex flex-wrap items-center justify-between gap-3">
@@ -190,13 +206,14 @@ function Desk({ data, openId }: { data: Extract<DeskPageData, { ready: true }>; 
               branches={data.branches}
               brands={data.brands}
               models={data.models}
+              recentDevices={data.recentDevices ?? []}
+              recentFaults={data.recentFaults ?? []}
               issues={data.issues}
               holders={holders}
               viewerId={viewer.id}
               today={today}
               financeAvailable={board.available.finance}
               warrantyAvailable={board.available.warranty}
-              customFaultsAvailable={board.available.customFaults}
             />
           </div>
         )}
@@ -233,6 +250,8 @@ function Desk({ data, openId }: { data: Extract<DeskPageData, { ready: true }>; 
         </p>
       )}
 
+      {/* ── The filters, together — see the site's page. ── */}
+      <section aria-label={t("filterTitle")} className="space-y-2.5">
       <FilterChips
         basePath={basePath}
         param="view"
@@ -252,64 +271,17 @@ function Desk({ data, openId }: { data: Extract<DeskPageData, { ready: true }>; 
         }
       />
 
-      {authority.manages && view === "all" && counts.olderOpen > 0 && window.when !== "open" && window.when !== "all" && (
-        <Link
-          href={`${basePath}?when=open`}
-          className="flex flex-wrap items-center gap-2 rounded-card border border-warning/45 bg-warning/8 px-4 py-2.5 text-[0.8rem] font-bold text-ink transition-colors hover:border-warning"
-        >
-          <AlertTriangle className="size-4 shrink-0 text-warning" aria-hidden />
-          {t("deskOlderOpen", { count: counts.olderOpen })}
-          <span className="ms-auto font-extrabold text-brand">{t("deskOlderOpenShow")}</span>
-        </Link>
-      )}
-
-      <Figures
-        totals={board.totals}
-        seesMoney={authority.seesMoney}
-        finance={board.available.finance}
-        warranty={board.available.warranty}
-        closeLabel={t("close")}
-        period={period}
-        labels={{
-          tickets: t("deskTickets"),
-          ticketsSub: t("deskTicketsSub", { open: board.totals.open, completed: board.totals.completed }),
-          open: t("deskOpen"),
-          completed: t("deskCompleted"),
-          revenue: t("financePriceTotal"),
-          cost: t("financeCostTotal"),
-          profit: t("financeProfitTotal"),
-          profitSub:
-            board.totals.missingCost > 0
-              ? t("deskMissingCost", { count: board.totals.missingCost })
-              : t("deskProfitSub", { count: board.totals.settled }),
-          collectedCash: t("financeCollectedCash"),
-          collectedDeferred: t("financeCollectedDeferred"),
-          partialHeld: t("deskPartialHeld", { amount: money(board.totals.partialHeld) }),
-          outstanding: t("financeOutstanding"),
-          deferred: t("deskDeferred", { count: board.totals.deferred }),
-          warranty: t("warrantyTitle"),
-          warrantySub: t("warrantyOfTotal", { total: money(board.totals.revenue) }),
-          scope: scopeLabel,
-        }}
-        warrantyDetail={{
-          title: t("warrantyDetailTitle"),
-          body: t("warrantyDetailBody"),
-          rows: [
-            { label: t("warrantyDetailTotal"), value: money(board.totals.revenue), tone: "brand" },
-            { label: t("warrantyDetailBase"), value: money(base) },
-            { label: t("warrantyDetailWarranty"), value: money(board.totals.warranty), tone: "info" },
-            { label: t("warrantyDetailTickets"), value: formatPrice(board.totals.warrantyTickets), tone: "muted" },
-          ],
-        }}
-        money={money}
-      />
-
       <QueueToolbar
         locale={locale}
         basePath={basePath}
         window={window}
         search={search}
         params={params}
+        active={
+          status
+            ? [{ name: "status", label: `${t("filterStatus")}: ${tStatus(`status_${status}` as "status_received")}` }]
+            : []
+        }
         selects={[
           ...(authority.seesMoney
             ? [
@@ -365,6 +337,78 @@ function Desk({ data, openId }: { data: Extract<DeskPageData, { ready: true }>; 
         }}
       />
 
+      <div className="flex min-w-0 items-center gap-2.5">
+        <span className="shrink-0 text-[0.74rem] font-extrabold text-ink">{t("filterStatus")}</span>
+        <div className="min-w-0 flex-1">
+      <FilterChips
+        basePath={basePath}
+        active={status}
+        keep={without("status")}
+        options={[
+          { value: null, label: t("all"), count: totalAll },
+          ...statuses.map((value) => ({
+            value,
+            label: tStatus(`status_${value}` as "status_received"),
+            count: board.counts[value] ?? 0,
+          })),
+        ]}
+      />
+        </div>
+      </div>
+      </section>
+
+      {authority.manages && view === "all" && counts.olderOpen > 0 && window.when !== "open" && window.when !== "all" && (
+        <Link
+          href={`${basePath}?when=open`}
+          className="flex flex-wrap items-center gap-2 rounded-card border border-warning/45 bg-warning/8 px-4 py-2.5 text-[0.8rem] font-bold text-ink transition-colors hover:border-warning"
+        >
+          <AlertTriangle className="size-4 shrink-0 text-warning" aria-hidden />
+          {t("deskOlderOpen", { count: counts.olderOpen })}
+          <span className="ms-auto font-extrabold text-brand">{t("deskOlderOpenShow")}</span>
+        </Link>
+      )}
+
+      <Figures
+        totals={board.totals}
+        seesMoney={authority.seesMoney}
+        finance={board.available.finance}
+        warranty={board.available.warranty}
+        closeLabel={t("close")}
+        period={period}
+        labels={{
+          tickets: t("deskTickets"),
+          ticketsSub: t("deskTicketsSub", { open: board.totals.open, completed: board.totals.completed }),
+          open: t("deskOpen"),
+          completed: t("deskCompleted"),
+          revenue: t("financePriceTotal"),
+          cost: t("financeCostTotal"),
+          profit: t("financeProfitTotal"),
+          profitSub:
+            board.totals.missingCost > 0
+              ? t("deskMissingCost", { count: board.totals.missingCost })
+              : t("deskProfitSub", { count: board.totals.settled }),
+          collectedCash: t("financeCollectedCash"),
+          collectedDeferred: t("financeCollectedDeferred"),
+          partialHeld: t("deskPartialHeld", { amount: money(board.totals.partialHeld) }),
+          outstanding: t("financeOutstanding"),
+          deferred: t("deskDeferred", { count: board.totals.deferred }),
+          warranty: t("warrantyTitle"),
+          warrantySub: t("warrantyOfTotal", { total: money(board.totals.revenue) }),
+          scope: scopeLabel,
+        }}
+        warrantyDetail={{
+          title: t("warrantyDetailTitle"),
+          body: t("warrantyDetailBody"),
+          rows: [
+            { label: t("warrantyDetailTotal"), value: money(board.totals.revenue), tone: "brand" },
+            { label: t("warrantyDetailBase"), value: money(base) },
+            { label: t("warrantyDetailWarranty"), value: money(board.totals.warranty), tone: "info" },
+            { label: t("warrantyDetailTickets"), value: formatPrice(board.totals.warrantyTickets), tone: "muted" },
+          ],
+        }}
+        money={money}
+      />
+
       {authority.seesMoney && view === "all" && board.byTech.length > 0 && (
         <TechTable
           rows={board.byTech.map((row) => ({
@@ -389,29 +433,12 @@ function Desk({ data, openId }: { data: Extract<DeskPageData, { ready: true }>; 
         />
       )}
 
-      <FilterChips
-        basePath={basePath}
-        active={status}
-        keep={without("status")}
-        options={[
-          { value: null, label: t("all"), count: totalAll },
-          ...statuses.map((value) => ({
-            value,
-            label: tStatus(`status_${value}` as "status_received"),
-            count: board.counts[value] ?? 0,
-          })),
-        ]}
-      />
-
       {board.truncated && <p className="text-[0.75rem] font-bold text-warning">{t("deskTruncated")}</p>}
 
       <RepairsBoard
-        // ⚠️ `open` is in the key, and on the site it is not. The site's board
-        // reads `initialOpenId` once, on mount, and the site only ever arrives
-        // at `?open=` by a fresh navigation. Here a press on a Windows
-        // notification or the bell lands on `?open=` with the board already
-        // mounted, and without a new key it would never open.
-        key={`${JSON.stringify(params)}|${openId ?? ""}`}
+        // No key: the board keeps its open windows across a filter change, and
+        // hears a new `?open=` (a notification, the bell) by itself.
+        report={report}
         flow={flow}
         rows={board.rows}
         initialOpenId={openId}
@@ -425,6 +452,9 @@ function Desk({ data, openId }: { data: Extract<DeskPageData, { ready: true }>; 
         canDelete={data.canDelete}
         showDays={window.when !== "today" && window.when !== "yesterday"}
         todayDay={today}
+        issues={data.issues}
+        recentFaults={data.recentFaults ?? []}
+        faultsEditable={Boolean(board.available.faultsEdit)}
       />
     </div>
   );

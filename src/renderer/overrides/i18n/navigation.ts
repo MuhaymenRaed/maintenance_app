@@ -24,8 +24,11 @@ export function Link({ href, ...rest }: LinkProps) {
 
 export function useRouter() {
   return {
-    push: (href: string) => navigate(href),
-    replace: (href: string) => navigate(href, { replace: true }),
+    // The second argument is next-intl's (`{ scroll }`), taken and ignored:
+    // the board is redrawn in place here, so there is no scroll to keep.
+    push: (href: string, _options?: { scroll?: boolean; locale?: string }) => navigate(href),
+    replace: (href: string, _options?: { scroll?: boolean; locale?: string }) =>
+      navigate(href, { replace: true }),
     back: () => window.history.back(),
     forward: () => window.history.forward(),
     /** Re-reads the page. Every write already redraws it; this is the belt. */

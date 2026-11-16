@@ -6,6 +6,11 @@ import Image from "next/image";
 import { useTranslations } from "next-intl";
 import { ChevronLeft, Minus, Plus, RotateCcw, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { arrowKeyDirection, imageSwipeDirection } from "@/lib/data/image-swipe";
+
+/** The page's reading direction, asked at the moment of the gesture. */
+const pageIsRtl = () =>
+  typeof document !== "undefined" && document.documentElement.dir === "rtl";
 
 /**
  * Full-screen image viewer with free zoom and pan.
@@ -51,6 +56,7 @@ export function ImageLightbox({
     y: 0,
     active: false,
   });
+  const swipeStart = useRef<{ x: number; y: number } | null>(null);
   /** Distance between two fingers at the start of a pinch. */
   const pinch = useRef<number | null>(null);
 
@@ -129,8 +135,10 @@ export function ImageLightbox({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
-      else if (event.key === "ArrowRight") go(1);
-      else if (event.key === "ArrowLeft") go(-1);
+      // The arrow that points at the next picture shows it: on an Arabic
+      // page that is the LEFT arrow, the side the "next" button is drawn on.
+      else if (arrowKeyDirection(event.key, pageIsRtl()))
+        go(arrowKeyDirection(event.key, pageIsRtl())!);
       else if (event.key === "+" || event.key === "=")
         setZoom(view.current.zoom + STEP);
       else if (event.key === "-") setZoom(view.current.zoom - STEP);
@@ -220,7 +228,14 @@ export function ImageLightbox({
       <div
         className="relative flex-1 touch-none overflow-hidden"
         onPointerDown={(event) => {
-          if (event.isPrimary && view.current.zoom > 1) {
+          if (
+            !event.isPrimary ||
+            (event.target as HTMLElement).closest("button")
+          ) {
+            return;
+          }
+          if (view.current.zoom > 1) {
+            swipeStart.current = null;
             drag.current = {
               x: event.clientX - view.current.x,
               y: event.clientY - view.current.y,
@@ -228,6 +243,9 @@ export function ImageLightbox({
             };
             event.currentTarget.setPointerCapture(event.pointerId);
             paint();
+          } else {
+            swipeStart.current = { x: event.clientX, y: event.clientY };
+            event.currentTarget.setPointerCapture(event.pointerId);
           }
         }}
         onPointerMove={(event) => {
@@ -237,13 +255,26 @@ export function ImageLightbox({
           clamp();
           paint();
         }}
-        onPointerUp={() => {
+        onPointerUp={(event) => {
+          const start = swipeStart.current;
+          swipeStart.current = null;
+          const wasDragging = drag.current.active;
           drag.current.active = false;
           pinch.current = null;
           paint();
+          if (wasDragging || !start || view.current.zoom > 1) return;
+          const direction = imageSwipeDirection(
+            start.x,
+            start.y,
+            event.clientX,
+            event.clientY,
+            pageIsRtl(),
+          );
+          if (direction) go(direction);
         }}
         onPointerCancel={() => {
           drag.current.active = false;
+          swipeStart.current = null;
           pinch.current = null;
         }}
         onDoubleClick={(event) =>
@@ -380,7 +411,7 @@ function Arrow({
       aria-label={label}
       className={cn(
         "absolute top-1/2 z-10 flex size-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white backdrop-blur-sm transition-colors hover:bg-white/25",
-        side === "start" ? "start-3" : "end-3",
+        side === "start" ? "inset-s-3" : "inset-e-3",
       )}
     >
       {/* The glyph flips with the writing direction, not just with the side it

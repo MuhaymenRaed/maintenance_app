@@ -723,6 +723,27 @@
   }
 }
 
+/* A dashboard window arriving — `components/admin/app-window.tsx`. Opacity
+   and a few pixels of rise, nothing that moves the box once it has landed:
+   the window is about to be dragged, and a frame that is still sliding when
+   the pointer grabs it reads as the drag being late. */
+@keyframes window-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+}
+
+/* An image arriving from the side it was swiped in from —
+   `components/product/product-gallery.tsx`. `--swipe-from` is set per change:
+   positive comes in from the right, negative from the left. */
+@keyframes swipe-in {
+  from {
+    opacity: 0.35;
+    transform: translateX(var(--swipe-from, 0px));
+  }
+}
+
 /* ── Hero slide cross-fade ───────────────────────────────────────
    Opacity only. It used to also scale from 1.03, which read as the
    photograph lunging at the frame and settling back — a "pop" rather

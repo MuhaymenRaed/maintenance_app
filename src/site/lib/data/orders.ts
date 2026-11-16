@@ -44,7 +44,17 @@ export type LineColour = { name: string; hex: string };
  * One move along a lifecycle, from `status_events` (20261107_status_steps.sql).
  * `at` is an ISO instant.
  */
-export type StatusEvent = { status: string; at: string };
+export type StatusEvent = {
+  status: string;
+  at: string;
+  /**
+   * Who moved it — filled only on the back office's own read
+   * (`loadStatusHistory`), never on anything a customer sees. `staff` names
+   * the account; `customer` is the customer's own act (placing, cancelling);
+   * `system` is a move nobody signed in made (a guest's booking, a trigger).
+   */
+  by?: { kind: "staff" | "customer" | "system"; name: string | null };
+};
 
 export type OrderDetail = {
   id: string;

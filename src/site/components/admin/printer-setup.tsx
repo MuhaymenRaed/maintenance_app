@@ -198,6 +198,8 @@ export function PrinterSetupDialog({ mode }: { mode: "open" | "confirm" }) {
 
   return (
     <EntityDialog
+      // A viewer: nothing typed here can be lost by closing it.
+      confirmClose={false}
       title={t("psSetupTitle")}
       subtitle={t("psSetupSubtitle")}
       closeLabel={t("psClose")}

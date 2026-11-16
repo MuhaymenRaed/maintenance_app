@@ -66,6 +66,7 @@
   "opAssign": "تحويل التذكرة",
   "opPhotos": "الصور",
   "opDelete": "حذف التذكرة",
+  "opFaults": "الأعطال",
   "opPhotosCount": "{count, plural, one {صورة واحدة} two {صورتان} few {# صور} many {# صورة} other {# صورة}}",
   "fieldStatus": "الحالة",
   "fieldPrice": "السعر",

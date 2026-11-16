@@ -31,6 +31,7 @@ const api: DeskApi = {
   assignRepair: invoke(CH.assignRepair),
   updateRepairFinance: invoke(CH.updateRepairFinance),
   createDeskTicket: invoke(CH.createDeskTicket),
+  updateRepairFaults: invoke(CH.updateRepairFaults),
   deleteRecord: invoke(CH.deleteRecord),
   loadStatusHistory: invoke(CH.loadStatusHistory),
   loadWorldModels: invoke(CH.loadWorldModels),

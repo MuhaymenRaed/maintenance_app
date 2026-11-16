@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { repairBase, repairTotal } from "../../site/lib/data/repair-desk.ts";
+import { repairBase, repairTotal, type RepairService } from "../../site/lib/data/repair-desk.ts";
+import { cleanFaultName } from "../../site/lib/data/repair-faults.ts";
 import { store, type OpRecord } from "../db/store";
-import { markerFor, num, type OpPayload, type RawTicket } from "../desk/raw";
+import { markerFor, num, typedFaultCode, type OpPayload, type RawTicket } from "../desk/raw";
 import { refs } from "../desk/refs";
 import { getSettings } from "../settings";
 import { paths, PHOTO_SCHEME } from "../config";
@@ -106,6 +107,8 @@ async function send(client: SupabaseClient, userId: string, op: OpRecord) {
       return finish(client, op, await sendPhotos(client, op));
     case "delete":
       return finish(client, op, await sendDelete(client, userId, role, op));
+    case "faults":
+      return finish(client, op, await sendFaults(client, userId, role, op));
   }
 }
 
@@ -166,6 +169,8 @@ async function sendCreate(client: SupabaseClient, userId: string, role: string, 
   let code: string | null = null;
   /** True when the server already held this ticket complete — nothing more to write. */
   let complete = false;
+  /** Typed faults the server's list would not take, kept on the ticket as text. */
+  let unfiled: string[] = [];
 
   /*
    * Three ways in, and the order matters:
@@ -190,10 +195,17 @@ async function sendCreate(client: SupabaseClient, userId: string, role: string, 
     complete = true;
     log.info(`adopting ${code} for local ${op.ticketId} — it reached the server before`);
   } else {
+    // Faults typed at the counter join the bench's list first: the booking
+    // files the ticket under codes, and these have none on the server yet.
+    // One the list will not take is kept on the ticket as text, the old way.
+    const typed = await fileTypedFaults(client, input.service, input.newFaults ?? []);
+    unfiled = typed.failed;
+    const codes = [...new Set([...input.issueCodes, ...typed.filed])];
+    if (!codes.length) throw new SyncFailure("refused", "fault_not_filed");
     const booked = await client.rpc("book_repair", {
       p_brand_code: input.deviceBrandCode,
       p_device_model: input.deviceModel.trim(),
-      p_issue_codes: [...new Set(input.issueCodes)],
+      p_issue_codes: codes,
       p_fulfillment: "drop_off",
       p_branch_id: input.branchId,
       p_address_line: null,
@@ -227,7 +239,7 @@ async function sendCreate(client: SupabaseClient, userId: string, role: string, 
   if (warranty) patch.warranty_price = warranty;
   const warrantyDays = whole(input.warrantyDays);
   if (warrantyDays) patch.warranty_days = warrantyDays;
-  const customFaults = [...new Set(input.customFaults.map((fault) => fault.trim().slice(0, 120)).filter(Boolean))].slice(0, 10);
+  const customFaults = [...new Set([...(input.customFaults ?? []), ...unfiled].map((fault) => fault.trim().slice(0, 120)).filter(Boolean))].slice(0, 10);
   if (customFaults.length) patch.custom_faults = customFaults;
 
   if (!complete) {
@@ -351,6 +363,110 @@ async function sendAssign(client: SupabaseClient, userId: string, role: string, 
   if (!result.data?.length) throw new SyncFailure("refused", "forbidden");
   await activity(client, userId, role, { action: "repairs.assign", entityId: id, detail: { assigned: Boolean(payload.holderId) } });
   return id;
+}
+
+/* ── `updateRepairFaults` ─────────────────────────────────────────────── */
+
+async function sendFaults(client: SupabaseClient, userId: string, role: string, op: OpRecord): Promise<string> {
+  const id = serverIdOf(op);
+  const payload = op.payload as OpPayload["faults"];
+  const service: RepairService = store.tickets.get(op.ticketId)?.raw.service === "software" ? "software" : "hardware";
+  const codes: string[] = [];
+  for (const fault of payload.faults) {
+    if (!fault.isNew) {
+      codes.push(fault.code);
+      continue;
+    }
+    const typed = await fileTypedFaults(client, service, [fault.name_ar]);
+    if (!typed.filed.length) throw new SyncFailure("refused", "fault_not_filed");
+    codes.push(typed.filed[0]);
+  }
+  const result = await client.rpc("set_repair_faults", {
+    p_ticket: id,
+    p_codes: [...new Set(codes)],
+    p_custom: payload.custom,
+  });
+  if (result.error) {
+    if (result.error.code === "PGRST202" || result.error.code === "42883") throw new SyncFailure("refused", "faultsUnavailable");
+    const failure = failureOf(result, "faults");
+    if (failure.kind === "refused") {
+      throw new SyncFailure("refused", /^[a-z_]+$/.test(result.error.message ?? "") ? result.error.message! : "save_failed");
+    }
+    throw failure;
+  }
+  await activity(client, userId, role, { action: "repairs.faults", entityId: id, detail: { faults: codes.length } });
+  return id;
+}
+
+/**
+ * Files faults typed here on the bench's list and answers the code of each —
+ * the site's `fileNewFaults`, the same two ways: `add_repair_issue`
+ * (20261116_repair_faults_editable.sql), and before it runs, the table's own
+ * write policy. A refusal is a name in `failed`; a dropped line is thrown, so
+ * the change is retried rather than half-sent.
+ */
+async function fileTypedFaults(
+  client: SupabaseClient,
+  service: RepairService,
+  names: readonly string[],
+): Promise<{ filed: string[]; failed: string[] }> {
+  const filed: string[] = [];
+  const failed: string[] = [];
+  let rpcMissing = false;
+  for (const raw of names) {
+    const name = cleanFaultName(raw);
+    if (name.length < 2) continue;
+    if (!rpcMissing) {
+      const result = await client.rpc("add_repair_issue", { p_name: name, p_service: service });
+      const code = (result.data as { code?: string } | null)?.code;
+      if (!result.error && code) {
+        filed.push(code);
+        continue;
+      }
+      if (result.error && result.error.code !== "PGRST202" && result.error.code !== "42883") {
+        const failure = failureOf(result, "fault");
+        if (failure.kind !== "refused") throw failure;
+        failed.push(name);
+        continue;
+      }
+      rpcMissing = true;
+    }
+    const code = await fileThroughPolicy(client, service, name);
+    if (code) filed.push(code);
+    else failed.push(name);
+  }
+  return { filed, failed };
+}
+
+/** The table's own write policy (`can_write_repairs()`). Null when it refuses. */
+async function fileThroughPolicy(client: SupabaseClient, service: RepairService, name: string): Promise<string | null> {
+  const key = name.toLowerCase();
+  const bench = await client.from("repair_issues").select("code, name_ar, name_en, is_deleted, sort_order").eq("service", service);
+  if (bench.error) {
+    const failure = failureOf(bench, "fault (read)");
+    if (failure.kind !== "refused") throw failure;
+    return null;
+  }
+  const rows = (bench.data ?? []) as { code: string; name_ar: string; name_en: string; is_deleted: boolean; sort_order: number }[];
+  const match = rows
+    .filter((row) => row.name_ar.toLowerCase() === key || row.name_en.toLowerCase() === key)
+    .sort((a, b) => Number(a.is_deleted) - Number(b.is_deleted) || a.sort_order - b.sort_order)[0];
+  if (match) {
+    if (!match.is_deleted) return match.code;
+    const revived = await client.from("repair_issues").update({ is_deleted: false }).eq("code", match.code).select("code");
+    return revived.data?.length ? match.code : null;
+  }
+  const code = typedFaultCode(service, name);
+  const top = await client.from("repair_issues").select("sort_order").order("sort_order", { ascending: false }).limit(1);
+  const sortOrder = (((top.data ?? [])[0] as { sort_order?: number } | undefined)?.sort_order ?? 0) + 10;
+  const inserted = await client
+    .from("repair_issues")
+    .insert({ code, name_ar: name, name_en: name, service, sort_order: sortOrder })
+    .select("code");
+  if (!inserted.error && inserted.data?.length) return code;
+  // Another counter filed the same words a moment ago: the code is theirs too.
+  if (inserted.error?.code === "23505") return code;
+  return null;
 }
 
 /* ── `deleteRecord` ───────────────────────────────────────────────────── */

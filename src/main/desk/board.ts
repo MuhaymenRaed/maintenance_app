@@ -15,6 +15,9 @@ import {
 import { liveFlow, REPAIR_FLOW, type RepairStatus } from "../../site/lib/data/orders.ts";
 import { cleanSearch, resolveQueueWindow } from "../../site/lib/data/queue-window.ts";
 import { baghdadDay } from "../../site/lib/data/date-window.ts";
+import { recentDevicesFrom } from "../../site/lib/data/recent-devices.ts";
+import { recentFaultsFrom } from "../../site/lib/data/repair-faults.ts";
+import { MAKE_CODES } from "../../site/lib/data/device-name.ts";
 import type {
   DeskBoard,
   DeskPageData,
@@ -109,6 +112,10 @@ export function shapeRow(
       link.repair_issues ? [ar ? link.repair_issues.name_ar : link.repair_issues.name_en] : [],
     ),
     issueCodes: (raw.repair_ticket_issues ?? []).map((link) => link.issue_code),
+    faults: (raw.repair_ticket_issues ?? []).map((link) => ({
+      code: link.issue_code,
+      name: link.repair_issues ? (ar ? link.repair_issues.name_ar : link.repair_issues.name_en) : link.issue_code,
+    })),
     customFaults: (raw.custom_faults ?? []).filter((fault) => fault.trim()),
     service: raw.service === "software" ? "software" : "hardware",
     price,
@@ -230,6 +237,21 @@ export function deskPage(params: DeskPageParams, service: RepairService): DeskPa
     branches: refs.branches().map((branch) => ({ id: branch.id, name: ar ? branch.name_ar : branch.name_en })),
     brands: refs.brands().map((brand) => ({ code: brand.code, name: ar ? brand.name_ar : brand.name_en })),
     models: refs.models(),
+    // What the counter's model picker opens on: this bench's latest devices,
+    // newest first, whatever the filters say — see the site's
+    // `lib/data/recent-devices.ts`. `tickets` is already newest first.
+    recentDevices: recentDevicesFrom(
+      tickets.slice(0, 500).map(({ raw }) => ({ model: raw.device_model, brandCode: raw.brand_code, at: raw.created_at })),
+      MAKE_CODES,
+    ),
+    // Both fault pickers open on the faults this bench used last — the site's
+    // `lib/data/repair-faults.ts`, over the same newest-first tickets.
+    recentFaults: recentFaultsFrom(
+      tickets.slice(0, 500).map(({ raw }) => ({
+        codes: (raw.repair_ticket_issues ?? []).map((link) => link.issue_code),
+        at: raw.created_at,
+      })),
+    ),
     issues: refs
       .issues()
       .filter((issue) => issue.service === service)

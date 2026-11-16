@@ -43,7 +43,17 @@ export type DeskTicketInput = {
   deviceBrandCode: string | null;
   deviceModel: string;
   issueCodes: string[];
-  customFaults: string[];
+  /**
+   * Faults typed at the counter that the list does not have yet — filed on
+   * the bench's list before the ticket is booked (the site's
+   * `createDeskTicket`, 2026-11-16).
+   */
+  newFaults?: string[];
+  /**
+   * The old way: words kept on one ticket (`custom_faults`). The dialog no
+   * longer sends any; a ticket queued before the change still carries them.
+   */
+  customFaults?: string[];
   notes: string;
   price: number | null;
   warranty: number | null;
@@ -63,9 +73,17 @@ export type CreateTicketResult =
       financeSaved: boolean;
       warrantySaved: boolean;
       customSaved: boolean;
+      /** Every typed fault is on the list now. Absent here: they go up with the ticket. */
+      listSaved?: boolean;
       /** The app's own: saved on this computer and not yet on the server. */
       queued?: boolean;
     }
+  | { ok: false; error: string };
+
+/** `updateRepairFaults` — a ticket's faults after it was opened, named. */
+export type FaultsInput = { codes: string[]; newFaults?: string[]; custom?: string[] | null; locale?: string };
+export type FaultsResult =
+  | { ok: true; faults: { code: string; name: string }[]; custom: string[] }
   | { ok: false; error: string };
 
 export type RecordKind = "order" | "repair" | "trade_in";
@@ -162,7 +180,7 @@ export type OutboxItem = {
   error: string | null;
 };
 
-export type OpKind = "create" | "update" | "finance" | "assign" | "photos" | "delete";
+export type OpKind = "create" | "update" | "finance" | "assign" | "photos" | "delete" | "faults";
 
 /* ── Backups ──────────────────────────────────────────────────────────── */
 
@@ -213,6 +231,7 @@ export type DeskApi = {
   assignRepair(id: string, holderId: string | null): Promise<DeskResult>;
   updateRepairFinance(id: string, patch: FinancePatch): Promise<DeskResult>;
   createDeskTicket(input: DeskTicketInput): Promise<CreateTicketResult>;
+  updateRepairFaults(id: string, input: FaultsInput): Promise<FaultsResult>;
   deleteRecord(input: { kind: RecordKind; id: string; label?: string; reason?: string }): Promise<RecordResult>;
   loadStatusHistory(kind: "order" | "repair" | "trade_in", id: string): Promise<{ available: boolean; events: StatusEvent[] }>;
   loadWorldModels(brandCode: string, locale: string): Promise<WorldModel[]>;
@@ -284,6 +303,7 @@ export const CH = {
   assignRepair: "desk:assignRepair",
   updateRepairFinance: "desk:updateRepairFinance",
   createDeskTicket: "desk:createDeskTicket",
+  updateRepairFaults: "desk:updateRepairFaults",
   deleteRecord: "desk:deleteRecord",
   loadStatusHistory: "desk:loadStatusHistory",
   loadWorldModels: "desk:loadWorldModels",

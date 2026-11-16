@@ -13,6 +13,8 @@
  * provisional code a ticket opened offline carries until it gets a real one.
  */
 import type { RepairStatus } from "../site/lib/data/orders.ts";
+import type { RecentDevice } from "../site/lib/data/recent-devices.ts";
+import type { RecentFault } from "../site/lib/data/repair-faults.ts";
 import type {
   DeskAuthority,
   DeskControl,
@@ -59,6 +61,8 @@ export type RowSync = "pending" | "failed" | null;
 export type DeskRow = RepairCard & {
   service: RepairService;
   issueCodes: string[];
+  /** The same faults as pairs, so the ticket window's editor can name each chip. */
+  faults: { code: string; name: string }[];
   customFaults: string[];
   /** مبلغ الصيانة كله — what the customer pays, warranty included. */
   price: number | null;
@@ -100,6 +104,11 @@ export type DeskAvailability = {
   finance: boolean;
   warranty: boolean;
   customFaults: boolean;
+  /**
+   * A ticket's faults can be changed after it is opened — `set_repair_faults`,
+   * 20261116_repair_faults_editable.sql. Asked of the server on every refs pull.
+   */
+  faultsEdit?: boolean;
 };
 
 export type DeskBoard = {
@@ -160,6 +169,10 @@ export type DeskPageData =
       branches: { id: string; name: string }[];
       brands: { code: string; name: string }[];
       models: Record<string, StockModel[]>;
+      /** The bench's latest devices, newest first — the model picker opens on them. */
+      recentDevices: RecentDevice[];
+      /** The bench's faults by their last ticket, newest first — both fault pickers open on them. */
+      recentFaults: RecentFault[];
       issues: { code: string; name: string }[];
       today: string;
       now: number;

@@ -68,6 +68,12 @@ export type SearchableOption = {
   hint?: string;
   /** Folded into the search haystack but never rendered. */
   keywords?: string;
+  /**
+   * Lower ranks first among equally good matches — the repair desk ranks the
+   * devices it prepared receipts for most recently. A typo never outranks a
+   * real match because of it: see the tiers in `matches`.
+   */
+  rank?: number;
 };
 
 const controlBase =
@@ -86,6 +92,7 @@ export function SearchableSelect({
   formatCustom,
   disabled = false,
   loading = false,
+  stayOpen = false,
   className,
 }: {
   id?: string;
@@ -125,6 +132,13 @@ export function SearchableSelect({
    * what "fast" means when the wait itself cannot be shortened.
    */
   loading?: boolean;
+  /**
+   * After a choice the list stays open, with the query cleared, rather than
+   * closing. For an adder — the chips of a multi-select — where several picks
+   * in a row is the common case and reopening the list for each is a press
+   * per pick spent on nothing.
+   */
+  stayOpen?: boolean;
   className?: string;
 }) {
   const listId = useId();
@@ -218,13 +232,27 @@ export function SearchableSelect({
     // Fuzzy, ranked: a verbatim hit outranks a prefix, which outranks a
     // typo, and the list's own order breaks ties — so "galxy s24" still puts
     // the Galaxy S24 first. See `fuzzyScore`.
+    //
+    // ⚠️ Two tiers before the rank: a verbatim or prefix hit (score under 1)
+    // always outranks a typo. Within a tier an option's `rank` comes first —
+    // the desk's "most recently prepared" — and then the score. Options with
+    // no rank compare as equal on it (`Infinity - Infinity` is NaN, which the
+    // `||` chain reads as "no opinion"), so a list without ranks sorts exactly
+    // as it always has.
+    const tier = (score: number) => (score < 1 ? 0 : 1);
     const found = tokens.length
       ? haystack
           .flatMap((entry, order) => {
             const score = fuzzyScore(entry.text, folded);
             return score === null ? [] : [{ option: entry.option, score, order }];
           })
-          .sort((a, b) => a.score - b.score || a.order - b.order)
+          .sort(
+            (a, b) =>
+              tier(a.score) - tier(b.score) ||
+              (a.option.rank ?? Infinity) - (b.option.rank ?? Infinity) ||
+              a.score - b.score ||
+              a.order - b.order,
+          )
           .map((entry) => entry.option)
       : haystack.map((entry) => entry.option);
 
@@ -268,6 +296,12 @@ export function SearchableSelect({
     // the list was covering — see `lib/ui/swallow-click.ts`.
     swallowNextClick();
     onChange(next);
+    if (stayOpen && next !== null) {
+      setQuery("");
+      setLimit(PAGE);
+      setActive(0);
+      return;
+    }
     close();
   };
 

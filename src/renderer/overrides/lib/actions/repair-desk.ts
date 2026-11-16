@@ -2,6 +2,8 @@ import type {
   CreateTicketResult,
   DeskResult,
   DeskTicketInput,
+  FaultsInput,
+  FaultsResult,
   FinancePatch,
 } from "../../../../shared/contract";
 
@@ -34,4 +36,9 @@ export function updateRepairFinance(ticketId: string, patch: FinancePatch): Prom
 
 export function createDeskTicket(input: DeskTicketInput): Promise<CreateTicketResult> {
   return window.desk.createDeskTicket(input);
+}
+
+/** A ticket's faults after it was opened — see `updateRepairFaults` in `src/main/desk/actions.ts`. */
+export function updateRepairFaults(ticketId: string, input: FaultsInput): Promise<FaultsResult> {
+  return window.desk.updateRepairFaults(ticketId, input);
 }

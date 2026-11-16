@@ -1,39 +1,78 @@
-import { CalendarRange, Search } from "lucide-react";
-import { FilterChips } from "@/components/admin/filter-chips";
-import { FormSelect } from "@/components/admin/form-select";
+"use client";
+
+import { useEffect, useState, useTransition } from "react";
+import { useTranslations } from "next-intl";
+import {
+  CalendarClock,
+  CalendarRange,
+  Check,
+  Filter,
+  Loader2,
+  RotateCcw,
+  Search,
+  X,
+} from "lucide-react";
+import { useRouter } from "@/i18n/navigation";
+import { Select } from "@/components/ui/select";
 import { QUEUE_PRESETS, type QueueWindow } from "@/lib/data/queue-window";
 import { cn } from "@/lib/utils";
 
 /**
- * The bar above every work queue: when, and what.
+ * The bar above every work queue: when, and what — and what is in force now.
  *
- * - **When** — today, yesterday, a week, a month, all time (the default), or a
- *   range of days. See `lib/data/queue-window.ts` for why the default moved.
- *   A page that can, also offers what is still open and "the last N days"
- *   (`labels.open`, `labels.lastDays`).
+ * ---------------------------------------------------------------------------
+ * ⚠️ Why this stopped being a plain GET form
+ * ---------------------------------------------------------------------------
+ * It used to be three `<form method="get">`s and a picker that submitted its
+ * own form, which was right for a page that is reloaded whole: no JavaScript,
+ * and every filtered view a URL. Two faults came out of it:
  *
- *   ⚠️ Which chip carries no parameter is read from `window.fallback`, never
- *   written as a literal — so this bar needs no edit when a page changes what
- *   it opens on, and the clean URL and the explicit one can never become two
- *   different pages.
- * - **What** — one search box over the ticket's code, the customer's name and
- *   numbers, the device and the notes, plus whatever selects the page adds
- *   (a technician, cash or deferred).
+ * - **On the site** every change was a full document reload of the dashboard
+ *   — the layout, the tabs, every query — which is the slowest thing the back
+ *   office can ask for, and it read as the filter "loading for ever".
+ * - **In the desktop app** it was worse than slow. The picker marked itself
+ *   busy and waited for the document to be replaced, which is what clears the
+ *   flag on the site; the app's router answers a GET form in place, so the
+ *   document was never replaced, and the picker stayed locked behind its
+ *   spinner until the app was restarted. That is exactly how it was reported.
  *
- * A plain GET form, the shape `PeriodPicker` already uses: it needs no
- * JavaScript, works before hydration, and every filtered view is a URL one
- * member of staff can send another. Every link and the form carry the other
- * filters along (`keep`), so changing one never silently drops another.
+ * Now every control navigates through the router inside a transition. The
+ * transition's own `pending` is the only busy flag, and it ends when the new
+ * board is on screen — on the site and in the desktop app alike, because both
+ * routers answer `push`. Nothing is ever disabled while it waits: a second
+ * change simply supersedes the first.
  *
- * ⚠️ Field classes are written out here rather than imported from
- * `form-kit`: that module is `"use client"`, and a Server Component importing
- * a string from a client module receives a reference, not the string.
+ * Every filtered view is still a URL — the filters live in the query string
+ * exactly as before — so a filtered queue is still something one member of
+ * staff can send another.
+ *
+ * ---------------------------------------------------------------------------
+ * Three rows, three questions
+ * ---------------------------------------------------------------------------
+ * **When** (the period), **what** (the search and the page's own pickers), and
+ * **what is in force** — every active filter as a chip that removes itself,
+ * and one press to reset them all. The last row is what makes the board
+ * readable at a glance: the reader no longer has to work out from six
+ * highlighted controls why the list is short.
  */
-const field =
-  "h-9 rounded-control border border-line bg-canvas px-2.5 text-[0.8rem] font-medium text-ink outline-none transition-[border-color,box-shadow] focus-visible:border-brand focus-visible:shadow-[0_0_0_3px_color-mix(in_srgb,var(--brand)_15%,transparent)]";
 
 /** The filters that say *when*. Only one of them may be in a URL at a time. */
 const WINDOW_KEYS = new Set(["when", "from", "to", "days"]);
+
+const field =
+  "h-9 rounded-control border border-line bg-canvas px-2.5 text-[0.8rem] font-medium text-ink outline-none transition-[border-color,box-shadow] focus-visible:border-brand focus-visible:shadow-[0_0_0_3px_color-mix(in_srgb,var(--brand)_15%,transparent)]";
+
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * A day worth applying by itself. A date field fires `change` for every
+ * complete date, and one typed year by year passes through 0002, 0020 and 0202
+ * on its way to 2026 — each a "complete" date the range would otherwise go
+ * and fetch.
+ */
+function sane(day: string): boolean {
+  return DAY.test(day) && day >= "2000-01-01" && day <= "2100-12-31";
+}
 
 export type ToolbarSelect = {
   name: string;
@@ -42,23 +81,32 @@ export type ToolbarSelect = {
   options: { value: string; label: string }[];
 };
 
+/** A filter the page applies outside this bar — shown, and removable, here. */
+export type ToolbarActive = { name: string; label: string };
+
 export function QueueToolbar({
-  locale,
   basePath,
-  window,
+  window: span,
   search,
   params,
   selects = [],
+  active = [],
+  clearKeys = ["status"],
   labels,
 }: {
-  locale: string;
+  /** Kept for the callers; the router supplies the locale. */
+  locale?: string;
   /** Without the locale, as `FilterChips` takes it. */
   basePath: string;
   window: QueueWindow;
   search: string;
-  /** Every filter currently in the URL except the window — status, q, tech… */
+  /** Every filter currently in the URL — status, q, tech, the window… */
   params: Record<string, string>;
   selects?: ToolbarSelect[];
+  /** Filters applied elsewhere on the page (the status chips), for the summary. */
+  active?: ToolbarActive[];
+  /** What "reset all" clears beyond this bar's own fields. */
+  clearKeys?: string[];
   labels: {
     presets: Record<(typeof QUEUE_PRESETS)[number], string>;
     /** Offers the "still open" chip. */
@@ -74,154 +122,410 @@ export function QueueToolbar({
     clear: string;
   };
 }) {
-  const custom = window.when === "custom";
-  const lastDays = window.when === "days";
-  const formKeep = Object.fromEntries(
-    Object.entries(params).filter(([name]) => name !== "q" && !selects.some((s) => s.name === name)),
-  );
-  const anyFilter = Boolean(search) || selects.some((s) => s.value);
+  const t = useTranslations("Admin");
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
 
-  // ⚠️ Without the window's own keys. A range outranks a preset, so a chip that
-  // carried `from` and `to` along would change nothing and look broken.
-  const outsideWindow = Object.fromEntries(
-    Object.entries(params).filter(([name]) => !WINDOW_KEYS.has(name)),
-  );
+  /* ── navigation ───────────────────────────────────────────────────────── */
+
+  function go(next: Record<string, string>) {
+    const query = new URLSearchParams(
+      Object.entries(next).filter(([, value]) => value !== "" && value != null),
+    ).toString();
+    startTransition(() => {
+      router.push(query ? `${basePath}?${query}` : basePath, { scroll: false });
+    });
+  }
+
+  const without = (keys: Iterable<string>) => {
+    const drop = new Set(keys);
+    return Object.fromEntries(Object.entries(params).filter(([name]) => !drop.has(name)));
+  };
+
+  /* ── the search, applied as it is typed ───────────────────────────────── */
+
+  /*
+   * ⚠️ The field is never re-keyed on the URL. Remounting it on the query is
+   * the fault `StoreSearch` shipped: the URL the box changes is the box's own,
+   * so a remount half a second into typing took the focus and put the shorter,
+   * already-sent query back over every letter typed since. It follows the URL
+   * during render instead, and ignores the echo of a query it sent itself.
+   */
+  const [draft, setDraft] = useState(search);
+  const [sent, setSent] = useState(search);
+  const [seen, setSeen] = useState(search);
+  if (search !== seen) {
+    setSeen(search);
+    if (search.trim() !== sent.trim()) {
+      setDraft(search);
+      setSent(search);
+    }
+  }
+  function sendSearch(value: string) {
+    if (value.trim() === sent.trim()) return;
+    setSent(value);
+    go({ ...without(["q"]), ...(value.trim() ? { q: value.trim() } : {}) });
+  }
+
+  /*
+   * Applied once typing pauses. The effect owns the timer: every new letter
+   * re-renders, which clears the pending send and starts another, and leaving
+   * the page clears it for good. Enter sends at once (`sendSearch` below).
+   */
+  useEffect(() => {
+    if (draft.trim() === sent.trim()) return;
+    const timer = setTimeout(() => sendSearch(draft), 450);
+    return () => clearTimeout(timer);
+  });
+
+  /* ── the period ───────────────────────────────────────────────────────── */
+
+  const custom = span.when === "custom";
+  const lastDays = span.when === "days";
+  const windowKey = JSON.stringify(span.query);
+  const [range, setRange] = useState({ from: span.from ?? "", to: span.to ?? "", days: span.days ? String(span.days) : "" });
+  const [seenWindow, setSeenWindow] = useState(windowKey);
+  if (windowKey !== seenWindow) {
+    setSeenWindow(windowKey);
+    setRange({ from: span.from ?? "", to: span.to ?? "", days: span.days ? String(span.days) : "" });
+  }
+
+  const outsideWindow = without(WINDOW_KEYS);
+
+  function pickPreset(value: string | null) {
+    go({ ...outsideWindow, ...(value ? { when: value } : {}) });
+  }
+
+  function applyRange(from = range.from, to = range.to) {
+    if (!sane(from) || !sane(to)) return;
+    const [a, b] = from <= to ? [from, to] : [to, from];
+    go({ ...outsideWindow, from: a, to: b });
+  }
+
+  function applyDays(raw = range.days) {
+    const days = Number(raw);
+    if (!Number.isInteger(days) || days < 1 || days > 3650) return;
+    go({ ...outsideWindow, days: String(days) });
+  }
 
   // Whatever the queue opens on is the chip with no parameter.
   const chips: { value: string | null; label: string }[] = QUEUE_PRESETS.map((preset) => ({
-    value: preset === window.fallback ? null : preset,
+    value: preset === span.fallback ? null : preset,
     label: labels.presets[preset],
   }));
   if (labels.open) {
-    const open = { value: window.fallback === "open" ? null : "open", label: labels.open };
-    if (window.fallback === "open") chips.unshift(open);
+    const open = { value: span.fallback === "open" ? null : "open", label: labels.open };
+    if (span.fallback === "open") chips.unshift(open);
     else chips.push(open);
+  }
+  const activeChip = custom || lastDays ? "__custom" : span.when === span.fallback ? null : span.when;
+
+  /* ── the page's own pickers ───────────────────────────────────────────── */
+
+  const selectKey = selects.map((select) => `${select.name}=${select.value}`).join("&");
+  const [choices, setChoices] = useState(() =>
+    Object.fromEntries(selects.map((select) => [select.name, select.value])),
+  );
+  const [seenSelects, setSeenSelects] = useState(selectKey);
+  if (selectKey !== seenSelects) {
+    setSeenSelects(selectKey);
+    setChoices(Object.fromEntries(selects.map((select) => [select.name, select.value])));
+  }
+
+  function choose(name: string, value: string) {
+    setChoices((current) => ({ ...current, [name]: value }));
+    go({ ...without([name]), ...(value ? { [name]: value } : {}) });
+  }
+
+  /* ── what is in force ─────────────────────────────────────────────────── */
+
+  const periodLabel = custom
+    ? `${span.from} — ${span.to}`
+    : lastDays
+      ? `${labels.lastDays?.before ?? ""} ${span.days} ${labels.lastDays?.after ?? ""}`.trim()
+      : span.when === "open"
+        ? (labels.open ?? span.when)
+        : span.when in labels.presets
+          ? labels.presets[span.when as keyof typeof labels.presets]
+          : span.when;
+
+  const inForce: { key: string; label: string; remove: () => void }[] = [];
+  if (span.when !== span.fallback) {
+    inForce.push({ key: "when", label: periodLabel, remove: () => pickPreset(null) });
+  }
+  if (search) {
+    inForce.push({
+      key: "q",
+      label: `${labels.search}: ${search}`,
+      remove: () => {
+        setDraft("");
+        sendSearch("");
+      },
+    });
+  }
+  for (const select of selects) {
+    if (!select.value) continue;
+    const option = select.options.find((candidate) => candidate.value === select.value);
+    inForce.push({
+      key: select.name,
+      label: `${select.label}: ${option?.label ?? select.value}`,
+      remove: () => choose(select.name, ""),
+    });
+  }
+  for (const extra of active) {
+    inForce.push({ key: extra.name, label: extra.label, remove: () => go(without([extra.name])) });
+  }
+
+  function resetAll() {
+    setDraft("");
+    setSent("");
+    go(without([...WINDOW_KEYS, "q", ...selects.map((select) => select.name), ...clearKeys]));
   }
 
   return (
-    <div className="space-y-2.5 rounded-panel border border-line bg-surface p-3 shadow-card">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <FilterChips
-          basePath={basePath}
-          param="when"
-          active={custom || lastDays ? "__custom" : window.when === window.fallback ? null : window.when}
-          keep={outsideWindow}
-          options={chips}
-        />
+    <section
+      aria-busy={pending}
+      className="relative overflow-hidden rounded-panel border border-line bg-surface shadow-card"
+    >
+      {/* The one busy signal: a hairline that runs while the board is on its
+          way, and stops by itself when the transition ends. */}
+      {pending && (
+        <span className="absolute inset-x-0 top-0 h-[2px] overflow-hidden bg-brand/12" aria-hidden>
+          <span className="animate-indeterminate block h-full w-1/3 rounded-full bg-brand" />
+        </span>
+      )}
+
+      {/* ── When ── */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line/70 px-3.5 py-3">
+        <RowLabel icon={CalendarClock} label={t("filterPeriod")} />
+        <ul className="scrollbar-none flex max-w-full gap-1.5 overflow-x-auto pb-0.5">
+          {chips.map((chip) => {
+            const on = chip.value === activeChip;
+            return (
+              <li key={chip.value ?? "__default"} className="shrink-0">
+                <button
+                  type="button"
+                  onClick={() => pickPreset(chip.value)}
+                  aria-pressed={on}
+                  className={cn(
+                    "rounded-chip border px-3 py-1.5 text-[0.78rem] font-bold transition-colors",
+                    on
+                      ? "border-brand bg-brand text-white"
+                      : "border-line text-muted hover:border-muted hover:text-ink",
+                  )}
+                >
+                  {chip.label}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
 
         {labels.lastDays && (
           <form
-            method="get"
-            action={`/${locale}${basePath}`}
+            onSubmit={(event) => {
+              event.preventDefault();
+              applyDays();
+            }}
             className={cn(
-              "flex items-center gap-1.5 rounded-chip border px-2.5 py-1.5 transition-colors",
+              "flex items-center gap-1.5 rounded-chip border px-2.5 py-1 transition-colors",
               lastDays ? "border-brand bg-brand/6" : "border-line",
             )}
           >
-            {Object.entries(outsideWindow).map(([name, value]) => (
-              <input key={name} type="hidden" name={name} value={value} />
-            ))}
-            <label className="inline-flex items-center gap-1.5 text-[0.78rem] font-bold text-muted">
+            <label className="inline-flex items-center gap-1.5 text-[0.76rem] font-bold text-muted">
               {labels.lastDays.before}
               <input
                 type="number"
-                name="days"
+                inputMode="numeric"
                 min={1}
                 max={3650}
-                required
-                defaultValue={window.days ?? ""}
+                value={range.days}
+                onChange={(event) => setRange((current) => ({ ...current, days: event.target.value }))}
+                onBlur={() => range.days && Number(range.days) !== span.days && applyDays()}
                 dir="ltr"
                 data-numeric
-                className={cn(field, "h-8 w-[4.5rem] text-center")}
+                className={cn(field, "h-8 w-[4.25rem] text-center")}
               />
               {labels.lastDays.after}
             </label>
             <button
               type="submit"
-              className="press inline-flex h-8 items-center rounded-control bg-brand px-3 text-[0.76rem] font-extrabold text-white transition-colors hover:bg-brand-hover"
+              aria-label={labels.apply}
+              title={labels.apply}
+              className="press flex size-7 items-center justify-center rounded-control bg-brand text-white transition-colors hover:bg-brand-hover"
             >
-              {labels.apply}
+              <Check className="size-3.5" aria-hidden />
             </button>
           </form>
         )}
 
         <form
-          method="get"
-          action={`/${locale}${basePath}`}
+          onSubmit={(event) => {
+            event.preventDefault();
+            applyRange();
+          }}
+          aria-label={labels.custom}
           className={cn(
-            "flex flex-wrap items-center gap-2 rounded-chip border px-2.5 py-1.5 transition-colors",
+            "flex flex-wrap items-center gap-1.5 rounded-chip border px-2.5 py-1 transition-colors",
             custom ? "border-brand bg-brand/6" : "border-line",
           )}
-          aria-label={labels.custom}
         >
-          {Object.entries(outsideWindow).map(([name, value]) => (
-            <input key={name} type="hidden" name={name} value={value} />
-          ))}
-          <span className={cn("inline-flex items-center gap-1.5 text-[0.78rem] font-bold", custom ? "text-brand" : "text-muted")}>
-            <CalendarRange className="size-4" aria-hidden />
+          <span className={cn("inline-flex items-center gap-1 text-[0.76rem] font-bold", custom ? "text-brand" : "text-muted")}>
+            <CalendarRange className="size-3.5" aria-hidden />
             {labels.custom}
           </span>
-          <label className="inline-flex items-center gap-1.5 text-[0.72rem] font-bold text-muted">
+          <label className="inline-flex items-center gap-1 text-[0.7rem] font-bold text-muted">
             {labels.from}
-            <input type="date" name="from" defaultValue={window.from ?? ""} required dir="ltr" className={cn(field, "h-8 w-[9.5rem]")} />
+            <input
+              type="date"
+              value={range.from}
+              max={range.to || undefined}
+              onChange={(event) => {
+                const from = event.target.value;
+                setRange((current) => ({ ...current, from }));
+                // Both ends present: the range applies itself, the way the
+                // presets beside it do.
+                if (sane(from) && sane(range.to)) applyRange(from, range.to);
+              }}
+              dir="ltr"
+              className={cn(field, "h-8 w-[9.25rem]")}
+            />
           </label>
-          <label className="inline-flex items-center gap-1.5 text-[0.72rem] font-bold text-muted">
+          <label className="inline-flex items-center gap-1 text-[0.7rem] font-bold text-muted">
             {labels.to}
-            <input type="date" name="to" defaultValue={window.to ?? ""} required dir="ltr" className={cn(field, "h-8 w-[9.5rem]")} />
+            <input
+              type="date"
+              value={range.to}
+              min={range.from || undefined}
+              onChange={(event) => {
+                const to = event.target.value;
+                setRange((current) => ({ ...current, to }));
+                if (sane(range.from) && sane(to)) applyRange(range.from, to);
+              }}
+              dir="ltr"
+              className={cn(field, "h-8 w-[9.25rem]")}
+            />
           </label>
-          <button
-            type="submit"
-            className="press inline-flex h-8 items-center rounded-control bg-brand px-3 text-[0.76rem] font-extrabold text-white transition-colors hover:bg-brand-hover"
-          >
-            {labels.apply}
-          </button>
         </form>
       </div>
 
-      <form method="get" action={`/${locale}${basePath}`} className="flex flex-wrap items-end gap-2" role="search">
-        {Object.entries({ ...formKeep, ...window.query }).map(([name, value]) => (
-          <input key={name} type="hidden" name={name} value={value} />
-        ))}
-        <label className="flex min-w-[14rem] flex-1 flex-col gap-1">
+      {/* ── What ── */}
+      <div className="flex flex-wrap items-end gap-2 px-3.5 py-3">
+        <RowLabel icon={Filter} label={t("filterSearchAndNarrow")} className="w-full" />
+        <form
+          role="search"
+          onSubmit={(event) => {
+            event.preventDefault();
+            sendSearch(draft);
+          }}
+          className="flex min-w-[14rem] flex-1 flex-col gap-1"
+        >
           <span className="text-[0.7rem] font-bold text-muted">{labels.search}</span>
           <span className="relative">
             <Search className="pointer-events-none absolute start-2.5 top-1/2 size-4 -translate-y-1/2 text-muted" aria-hidden />
             <input
               type="search"
-              name="q"
-              defaultValue={search}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
               placeholder={labels.searchPlaceholder}
-              className={cn(field, "w-full ps-8")}
+              aria-label={labels.search}
+              className={cn(field, "w-full pe-9 ps-8")}
             />
+            {draft && (
+              <button
+                type="button"
+                onClick={() => {
+                  setDraft("");
+                  sendSearch("");
+                }}
+                aria-label={labels.clear}
+                title={labels.clear}
+                className="absolute end-1.5 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-full text-muted transition-colors hover:bg-subtle hover:text-ink"
+              >
+                <X className="size-3.5" aria-hidden />
+              </button>
+            )}
           </span>
-        </label>
+        </form>
         {selects.map((select) => (
-          <label key={select.name} className="flex min-w-[9rem] flex-col gap-1">
+          <label key={select.name} className="flex min-w-[10rem] flex-col gap-1 max-sm:flex-1">
             <span className="text-[0.7rem] font-bold text-muted">{select.label}</span>
-            <FormSelect name={select.name} defaultValue={select.value} options={select.options} ariaLabel={select.label} />
+            <Select
+              value={choices[select.name] ?? ""}
+              aria-label={select.label}
+              options={select.options}
+              onChange={(value) => {
+                if (value === (choices[select.name] ?? "")) return;
+                choose(select.name, value);
+              }}
+            />
           </label>
         ))}
-        <button
-          type="submit"
-          className="press inline-flex h-9 items-center gap-1.5 rounded-control bg-ink px-4 text-[0.78rem] font-extrabold text-surface transition-opacity hover:opacity-90"
-        >
-          <Search className="size-4" aria-hidden />
-          {labels.apply}
-        </button>
-        {anyFilter && (
-          <a
-            href={`/${locale}${basePath}${toQuery({ ...formKeep, ...window.query })}`}
-            className="inline-flex h-9 items-center rounded-control px-3 text-[0.78rem] font-bold text-muted hover:text-brand"
-          >
-            {labels.clear}
-          </a>
+      </div>
+
+      {/* ── What is in force ── */}
+      <div className="flex flex-wrap items-center gap-2 border-t border-line/70 bg-subtle/45 px-3.5 py-2.5">
+        <span className="text-[0.72rem] font-extrabold text-muted">{t("filterActive")}</span>
+        {inForce.length === 0 ? (
+          <span className="text-[0.74rem] font-semibold text-muted">{t("filterNone")}</span>
+        ) : (
+          <ul className="flex flex-wrap gap-1.5">
+            {inForce.map((item) => (
+              <li key={item.key}>
+                <span className="inline-flex items-center gap-1 rounded-chip border border-brand/35 bg-brand/8 py-0.5 pe-1 ps-2.5 text-[0.74rem] font-bold text-brand">
+                  <span className="max-w-[16rem] truncate">{item.label}</span>
+                  <button
+                    type="button"
+                    onClick={item.remove}
+                    aria-label={`${t("filterRemove")} — ${item.label}`}
+                    title={t("filterRemove")}
+                    className="flex size-5 items-center justify-center rounded-full transition-colors hover:bg-brand hover:text-white"
+                  >
+                    <X className="size-3" aria-hidden />
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ul>
         )}
-      </form>
-    </div>
+        <span className="ms-auto flex items-center gap-2">
+          {pending && (
+            <span className="inline-flex items-center gap-1.5 text-[0.72rem] font-bold text-muted" role="status">
+              <Loader2 className="size-3.5 animate-spin" aria-hidden />
+              {t("filterUpdating")}
+            </span>
+          )}
+          {inForce.length > 0 && (
+            <button
+              type="button"
+              onClick={resetAll}
+              className="press inline-flex items-center gap-1.5 rounded-control border border-line bg-surface px-3 py-1.5 text-[0.74rem] font-extrabold text-ink transition-colors hover:border-brand hover:text-brand"
+            >
+              <RotateCcw className="size-3.5" aria-hidden />
+              {t("filterResetAll")}
+            </button>
+          )}
+        </span>
+      </div>
+    </section>
   );
 }
 
-function toQuery(params: Record<string, string>): string {
-  const query = new URLSearchParams(params).toString();
-  return query ? `?${query}` : "";
+function RowLabel({
+  icon: Icon,
+  label,
+  className,
+}: {
+  icon: typeof Search;
+  label: string;
+  className?: string;
+}) {
+  return (
+    <span className={cn("inline-flex shrink-0 items-center gap-1.5 text-[0.74rem] font-extrabold text-ink", className)}>
+      <span className="flex size-6 items-center justify-center rounded-control bg-brand/10 text-brand">
+        <Icon className="size-3.5" aria-hidden />
+      </span>
+      {label}
+    </span>
+  );
 }

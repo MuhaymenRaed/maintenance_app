@@ -58,6 +58,11 @@ import {
 import { uploadPhotos } from "@/lib/upload";
 import { REPAIR_FLOW } from "@/lib/data/orders";
 import { StatusHistory } from "@/components/admin/status-history";
+import { useStatusConfirm } from "@/components/admin/status-confirm";
+import { ProfitReportButton, type ReportContext } from "@/components/admin/profit-report";
+import { TicketFaults } from "@/components/admin/fault-picker";
+import type { RecentFault } from "@/lib/data/repair-faults";
+import { windowStore } from "@/lib/windows/window-store";
 import { statusTone, TONE_VAR } from "@/lib/data/status-tone";
 import { formatPrice } from "@/lib/format";
 import type { DeskRow } from "@/lib/queries/repair-desk";
@@ -102,7 +107,26 @@ export function RepairsBoard({
   todayDay,
   initialOpenId = null,
   flow = REPAIR_FLOW.filter((step) => step !== "waiting_parts"),
+  report,
+  issues = [],
+  recentFaults = [],
+  faultsEditable = false,
 }: {
+  /** The bench's faults, for a manager changing a ticket's. */
+  issues?: { code: string; name: string }[];
+  /** The bench's faults by their last ticket, newest first. */
+  recentFaults?: RecentFault[];
+  /**
+   * A ticket's faults can be changed after it is opened — false until
+   * 20261116_repair_faults_editable.sql runs, and the faults are then read
+   * only rather than an editor that every save refuses.
+   */
+  faultsEditable?: boolean;
+  /**
+   * What the profit report prints above its table — the period and the
+   * filters in words. Absent, the report button is not drawn.
+   */
+  report?: ReportContext;
   /**
    * The steps this deployment can store, in order — the page passes
    * `liveFlow(REPAIR_FLOW, …)`. Without 20261107_status_steps.sql
@@ -148,7 +172,29 @@ export function RepairsBoard({
     setHeld(initial);
     setRows(initial);
   }
-  const [openId, setOpenId] = useState<string | null>(initialOpenId);
+  /*
+   * Every ticket open in a window, oldest first. Several at once is the point
+   * — see `components/admin/app-window.tsx` — and a ticket already open is
+   * brought to the front rather than opened a second time.
+   *
+   * `pinned` keeps the row each window was opened on, so a window survives a
+   * filter that no longer lists its ticket: the reader changed what the list
+   * shows, not what they were working on.
+   */
+  const [openIds, setOpenIds] = useState<string[]>(initialOpenId ? [initialOpenId] : []);
+  const [pinned, setPinned] = useState<Record<string, RepairCard>>({});
+  /*
+   * The board is no longer remounted by a filter change (its windows would go
+   * with it), so a later `?open=<id>` — a staff alert pressed while the board
+   * is already on screen — has to be heard here, during render.
+   */
+  const [seenOpen, setSeenOpen] = useState(initialOpenId);
+  if (initialOpenId !== seenOpen) {
+    setSeenOpen(initialOpenId);
+    if (initialOpenId && !openIds.includes(initialOpenId)) {
+      setOpenIds([...openIds, initialOpenId]);
+    }
+  }
   const [error, setError] = useState<string | null>(null);
   const [warrantyId, setWarrantyId] = useState<string | null>(null);
   /*
@@ -159,8 +205,30 @@ export function RepairsBoard({
   const station = useSyncExternalStore(printStation.subscribe, printStation.snapshot, printStation.server);
   const [, startTransition] = useTransition();
 
-  const open = rows.find((row) => row.id === openId) ?? null;
-  const warrantyRow = rows.find((row) => row.id === warrantyId) ?? null;
+  const openRows = openIds.flatMap((id) => {
+    const row = rows.find((candidate) => candidate.id === id) ?? pinned[id];
+    return row ? [row] : [];
+  });
+  const warrantyRow =
+    rows.find((row) => row.id === warrantyId) ?? (warrantyId ? pinned[warrantyId] : undefined) ?? null;
+
+  function openTicket(row: RepairCard) {
+    if (openIds.includes(row.id)) {
+      windowStore.focus(`repair:${row.id}`);
+      return;
+    }
+    setPinned((current) => ({ ...current, [row.id]: row }));
+    setOpenIds((current) => [...current, row.id]);
+  }
+
+  function closeTicket(id: string) {
+    setOpenIds((current) => current.filter((candidate) => candidate !== id));
+    setPinned((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }
 
   /**
    * One press: both receipts to the A5 printer, then the label to the label
@@ -171,11 +239,11 @@ export function RepairsBoard({
    * The date on the paper is stamped by the press — reading the clock during
    * render is impure, and it is when the desk asked for it.
    */
-  function printTicket(row: RepairCard) {
+  function printTicket(row: RepairCard, printedAt: number) {
     const started = startPrint({
       ticketId: row.id,
       facts: printFacts(row),
-      printedAt: Date.now(),
+      printedAt,
       papers: TICKET_RUN,
       locale,
     });
@@ -187,6 +255,9 @@ export function RepairsBoard({
     setRows((current) =>
       current.map((row) => (row.id === id ? { ...row, ...next } : row)),
     );
+    setPinned((current) =>
+      current[id] ? { ...current, [id]: { ...current[id], ...next } } : current,
+    );
   }
 
   /** Optimistic, reverted in place from the snapshot taken before the call. */
@@ -195,7 +266,7 @@ export function RepairsBoard({
     next: Partial<RepairCard>,
     send: () => Promise<{ ok: boolean; error?: string }>,
   ) {
-    const before = rows.find((row) => row.id === id);
+    const before = rows.find((row) => row.id === id) ?? pinned[id];
     if (!before) return;
     setError(null);
     patch(id, next);
@@ -217,6 +288,20 @@ export function RepairsBoard({
         >
           {t.has(error) ? t(error as "updateFailed") : t("updateFailed")}
         </p>
+      )}
+
+      {/* What the filters above came to, and the one report built from it. */}
+      {report && seesMoney && (
+        <div className="flex flex-wrap items-center gap-2 rounded-panel border border-line bg-surface px-3.5 py-2.5 shadow-card">
+          <p className="text-[0.78rem] font-bold text-muted">
+            {t("deskListCount", { count: rows.length })}
+          </p>
+          <ProfitReportButton
+            rows={rows}
+            context={report}
+            className="ms-auto"
+          />
+        </div>
       )}
 
       {rows.length === 0 ? (
@@ -270,7 +355,7 @@ export function RepairsBoard({
                     hydration error rather than a style bug. */}
                 <button
                   type="button"
-                  onClick={() => setOpenId(row.id)}
+                  onClick={() => openTicket(row)}
                   aria-label={row.code}
                   className="absolute inset-0 z-0 rounded-panel focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
                 />
@@ -359,7 +444,7 @@ export function RepairsBoard({
                 {manages && (
                   <button
                     type="button"
-                    onClick={() => printTicket(row)}
+                    onClick={() => printTicket(row, Date.now())}
                     disabled={printingCode !== null}
                     aria-busy={printingCode === row.code}
                     aria-label={`${t("deskPrint")} — ${row.code}`}
@@ -404,9 +489,10 @@ export function RepairsBoard({
         </div>
       )}
 
-      {open && (
+      {openRows.map((open) => (
         <RepairDialog
           key={open.id}
+          windowId={`repair:${open.id}`}
           repair={open}
           flow={flow}
           holders={holders}
@@ -418,9 +504,13 @@ export function RepairsBoard({
           warrantyAvailable={warrantyAvailable}
           canDelete={canDelete}
           error={error}
-          onClose={() => setOpenId(null)}
+          issues={issues}
+          recentFaults={recentFaults}
+          faultsEditable={faultsEditable}
+          onPatch={(next) => patch(open.id, next)}
+          onClose={() => closeTicket(open.id)}
           onApply={(next, send) => apply(open.id, next, send)}
-          onPrint={() => printTicket(open)}
+          onPrint={() => printTicket(open, Date.now())}
           printing={printingCode !== null}
           onWarranty={() => setWarrantyId(open.id)}
           onDeleted={() => {
@@ -438,10 +528,10 @@ export function RepairsBoard({
              * contains the row.
              */
             setRows((current) => current.filter((row) => row.id !== open.id));
-            setOpenId(null);
+            closeTicket(open.id);
           }}
         />
-      )}
+      ))}
 
       {warrantyRow && (
         <RepairWarrantyDialog
@@ -645,6 +735,7 @@ function repairMessage(
 /* ------------------------------ the ticket ------------------------------- */
 
 function RepairDialog({
+  windowId,
   repair,
   flow,
   holders,
@@ -656,6 +747,10 @@ function RepairDialog({
   warrantyAvailable,
   canDelete,
   error,
+  issues,
+  recentFaults,
+  faultsEditable,
+  onPatch,
   onClose,
   onApply,
   onPrint,
@@ -663,6 +758,12 @@ function RepairDialog({
   onWarranty,
   onDeleted,
 }: {
+  windowId: string;
+  issues: { code: string; name: string }[];
+  recentFaults: RecentFault[];
+  faultsEditable: boolean;
+  /** Writes what the database answered onto the board's row. */
+  onPatch: (next: Partial<RepairCard>) => void;
   repair: RepairCard;
   flow: readonly RepairStatus[];
   holders: DeskHolder[];
@@ -725,6 +826,20 @@ function RepairDialog({
   const step = flow.indexOf(repair.status);
   const statusLabel = tTrack(`status_${repair.status}` as "status_received");
   const rankLabel = (rank: DeskRank) => t(`rank_${rank}`);
+  /** Asked before any status moves — see `status-confirm.tsx`. */
+  const confirm = useStatusConfirm();
+  /** The fee is required; clearing it is refused rather than saved. */
+  const [priceMissing, setPriceMissing] = useState(false);
+
+  function moveTo(status: RepairStatus) {
+    confirm.request({
+      subject: repair.code,
+      from: { key: repair.status, label: statusLabel },
+      to: { key: status, label: tTrack(`status_${status}` as "status_received") },
+      note: status === "cancelled" ? t("statusConfirmCancelRepair") : undefined,
+      run: () => onApply({ status }, () => updateRepair(repair.id, { status })),
+    });
+  }
 
   function addPhotos(files: FileList | null) {
     if (!files?.length) return;
@@ -774,6 +889,7 @@ function RepairDialog({
       <EntityDialog
         // A programming job is not a repair — "مركز الصيانة" over a system
         // install read as the wrong desk.
+        windowId={windowId}
         title={`${repair.service === "software" ? t("programmingJob") : tRepair("title")} · ${repair.code}`}
         subtitle={repair.deviceModel}
         closeLabel={t("close")}
@@ -886,17 +1002,36 @@ function RepairDialog({
         <Section title={t("repairSubmission")}>
           <dl className="grid gap-x-4 gap-y-2.5 sm:grid-cols-2">
             <Fact label={t("repairDevice")} value={repair.deviceModel} />
-            {repair.issues.length > 0 && (
-              <Fact
-                label={t("repairIssues")}
-                value={repair.issues.join(" · ")}
-              />
-            )}
-            {repair.customFaults.length > 0 && (
-              <Fact
-                label={t("repairCustomIssues")}
-                value={repair.customFaults.join(" · ")}
-              />
+            {/* Whoever runs the ticket changes its faults here, in place — a
+                second fault found on the bench belongs on this ticket, not on
+                a new one. Everybody else reads them. */}
+            {full && faultsEditable ? (
+              <div className="min-w-0 sm:col-span-2">
+                <dt className="mb-1 text-[0.68rem] font-bold text-muted">{t("repairIssues")}</dt>
+                <dd>
+                  <TicketFaults
+                    repair={repair}
+                    issues={issues}
+                    recent={recentFaults}
+                    onPatch={onPatch}
+                  />
+                </dd>
+              </div>
+            ) : (
+              <>
+                {repair.issues.length > 0 && (
+                  <Fact
+                    label={t("repairIssues")}
+                    value={repair.issues.join(" · ")}
+                  />
+                )}
+                {repair.customFaults.length > 0 && (
+                  <Fact
+                    label={t("repairCustomIssues")}
+                    value={repair.customFaults.join(" · ")}
+                  />
+                )}
+              </>
             )}
             {repair.notes && (
               <Fact
@@ -971,11 +1106,7 @@ function RepairDialog({
                   <button
                     type="button"
                     disabled={!handles || active}
-                    onClick={() =>
-                      onApply({ status }, () =>
-                        updateRepair(repair.id, { status }),
-                      )
-                    }
+                    onClick={() => moveTo(status)}
                     aria-current={active ? "step" : undefined}
                     className={cn(
                       "press rounded-control border px-2.5 py-1.5 text-[0.7rem] font-extrabold transition-colors",
@@ -1009,11 +1140,7 @@ function RepairDialog({
                 <button
                   type="button"
                   disabled={!handles || repair.status === status}
-                  onClick={() =>
-                    onApply({ status: status as RepairStatus }, () =>
-                      updateRepair(repair.id, { status }),
-                    )
-                  }
+                  onClick={() => moveTo(status as RepairStatus)}
                   aria-current={repair.status === status ? "step" : undefined}
                   className={cn(
                     "press rounded-control border px-2.5 py-1.5 text-[0.7rem] font-extrabold transition-colors disabled:opacity-40",
@@ -1055,19 +1182,36 @@ function RepairDialog({
           <Section title={t("repairCostTitle")} hint={t("repairCostHint")}>
             {/* A technician is never told about the warranty, so to them this
                 is simply the amount. A manager reads it as the part before it. */}
-            <Field label={t(seesMoney ? "financeBasePrice" : "financePrice")}>
+            <Field label={`${t(seesMoney ? "financeBasePrice" : "financePrice")} *`}>
               <MoneyInput
                 value={base}
                 clearable
-                onChange={setBase}
-                onCommit={() =>
-                  base !== repair.basePrice &&
-                  onApply({ basePrice: base, actualCost: total, price: total }, () =>
-                    updateRepair(repair.id, { price: base }),
-                  )
-                }
+                onChange={(next) => {
+                  setBase(next);
+                  if (next != null && next > 0) setPriceMissing(false);
+                }}
+                onCommit={() => {
+                  // ⚠️ Required: a ticket's fee can be changed, never emptied.
+                  // An empty or zero fee is put back as it was and said so,
+                  // rather than saved as a ticket that costs nothing.
+                  if (base == null || base <= 0) {
+                    if (repair.basePrice != null && repair.basePrice > 0) setBase(repair.basePrice);
+                    setPriceMissing(true);
+                    return;
+                  }
+                  if (base !== repair.basePrice) {
+                    onApply({ basePrice: base, actualCost: total, price: total }, () =>
+                      updateRepair(repair.id, { price: base }),
+                    );
+                  }
+                }}
                 min={0}
               />
+              {priceMissing && (
+                <span role="alert" className="mt-1 block text-[0.72rem] font-bold text-brand">
+                  {t("deskPriceRequired")}
+                </span>
+              )}
             </Field>
             <Field label={t("repairResult")}>
               <textarea
@@ -1396,6 +1540,8 @@ function RepairDialog({
           onClose={() => setLightbox(null)}
         />
       )}
+
+      {confirm.dialog}
     </>
   );
 }

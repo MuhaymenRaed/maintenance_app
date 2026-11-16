@@ -3,6 +3,7 @@ import { useTranslations } from "next-intl";
 import toast, { Toaster } from "react-hot-toast";
 import { AlertTriangle, Bell, CircleCheck, Wifi, WifiOff, X } from "lucide-react";
 import { PrintStationHost } from "@/components/admin/print-station";
+import { WindowHost } from "@/components/admin/app-window";
 import { cn } from "@/lib/utils";
 import type { AppNotice } from "../../shared/contract";
 import { chime } from "../lib/chime";
@@ -39,6 +40,10 @@ function Shell() {
   useShortcuts();
 
   return (
+    // Every editor is a window here as on the dashboard — several tickets open
+    // at once, folded into the dock, closed only after asking. See the site's
+    // `components/admin/app-window.tsx`.
+    <WindowHost>
     <div className="flex min-h-dvh flex-col">
       <TitleBar />
       <main className="mx-auto w-full max-w-[1280px] flex-1 px-6 py-6 max-sm:px-4">
@@ -55,6 +60,7 @@ function Shell() {
       <PrintStationHost />
       <SyncPanelHost />
     </div>
+    </WindowHost>
   );
 }
 

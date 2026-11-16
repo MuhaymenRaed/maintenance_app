@@ -6,10 +6,13 @@ import { SERVICE_CAPABILITY, type RepairService } from "../../site/lib/data/repa
 import { toRepairPrintFacts } from "../../site/lib/data/repair-print-facts.ts";
 import type { StatusEvent } from "../../site/lib/data/orders.ts";
 import type { WorldModel } from "../../site/lib/data/device-name.ts";
+import { cleanFaultName, MAX_TICKET_FAULTS } from "../../site/lib/data/repair-faults.ts";
 import type {
   CreateTicketResult,
   DeskResult,
   DeskTicketInput,
+  FaultsInput,
+  FaultsResult,
   FinancePatch,
   PrintFactsResult,
   RecordKind,
@@ -23,8 +26,8 @@ import { sync } from "../sync/engine";
 import { supabase } from "../sync/client";
 import { pullTicket } from "../sync/pull";
 import { authorizeTicket, deskScope } from "./board";
-import { draftTicket, financeOf, num } from "./raw";
-import { refs } from "./refs";
+import { draftTicket, financeOf, num, typedFaultCode, type OpPayload } from "./raw";
+import { refs, type Issue } from "./refs";
 import { logger } from "../log";
 
 const log = logger("desk");
@@ -60,6 +63,10 @@ export function updateRepair(id: string, patch: RepairPatch): SectionResult {
   if (touchesWarranty && verdict.control !== "full") return { ok: false, error: "not_your_ticket" };
   if (touchesWarranty && !refs.available().warranty) return { ok: false, error: "warrantyUnavailable" };
   if (patch.warrantyStart && !/^\d{4}-\d{2}-\d{2}$/.test(patch.warrantyStart)) return { ok: false, error: "save_failed" };
+  // The fee may be changed, never emptied — the site's `updateRepair` refuses the same.
+  if (patch.price !== undefined && !(typeof patch.price === "number" && patch.price > 0)) {
+    return { ok: false, error: "price_required" };
+  }
   const clean: RepairPatch = {};
   for (const key of ["status", "price", "warranty", "warrantyDays", "warrantyStart", "quoteNotes"] as const) {
     if (patch[key] !== undefined) (clean as Record<string, unknown>)[key] = patch[key];
@@ -151,16 +158,27 @@ export async function createDeskTicket(input: DeskTicketInput): Promise<CreateTi
   if (!/^07\d{9}$/.test(input.customerPhone.replace(/[\s()-]/g, ""))) return { ok: false, error: "phone_invalid" };
   if (!input.branchId) return { ok: false, error: "branch_required" };
   if (input.deviceModel.trim().length < 2) return { ok: false, error: "device_required" };
-  const issueCodes = [...new Set(input.issueCodes.filter((code) => code.trim()))];
-  if (!issueCodes.length) return { ok: false, error: "issue_required" };
-  const customFaults = [...new Set(input.customFaults.map((fault) => fault.trim().slice(0, 120)).filter(Boolean))].slice(0, 10);
+  const listedCodes = [...new Set(input.issueCodes.filter((code) => code.trim()))];
+  const typedNames = uniqueFaultNames(input.newFaults ?? []);
+  if (!listedCodes.length && !typedNames.length) return { ok: false, error: "issue_required" };
+  if (listedCodes.length + typedNames.length > MAX_TICKET_FAULTS) return { ok: false, error: "too_many_issues" };
+  // The fee is required, as on the site's `createDeskTicket` (2026-11-16).
+  if (!(typeof input.price === "number" && Number.isFinite(input.price) && input.price > 0)) {
+    return { ok: false, error: "price_required" };
+  }
+  const customFaults = [...new Set((input.customFaults ?? []).map((fault) => fault.trim().slice(0, 120)).filter(Boolean))].slice(0, 10);
+  // A typed fault the bench's list already has is that fault; the rest go up
+  // with the ticket and are filed on the list before it is booked.
+  const typed = typedFaults(service, typedNames);
+  const issueCodes = [...new Set([...listedCodes, ...typed.filter((fault) => !fault.isNew).map((fault) => fault.code)])];
+  const newFaults = typed.filter((fault) => fault.isNew).map((fault) => fault.name_ar);
 
   const id = randomUUID();
   const at = new Date().toISOString();
   const person = scope.people.find((candidate) => candidate.userId === input.holderId);
   const branch = refs.branches().find((candidate) => candidate.id === input.branchId) ?? null;
   const issues = new Map(refs.issues().map((issue) => [issue.code, { name_ar: issue.name_ar, name_en: issue.name_en }]));
-  const clean: DeskTicketInput = { ...input, service, issueCodes, customFaults };
+  const clean: DeskTicketInput = { ...input, service, issueCodes, newFaults, customFaults };
   let localCode = "";
 
   queued(() => {
@@ -196,6 +214,96 @@ export async function createDeskTicket(input: DeskTicketInput): Promise<CreateTi
   return { ok: true, id, code: localCode, at, financeSaved: true, warrantySaved: true, customSaved: true, queued: true };
 }
 
+/* ── A ticket's faults, after it was opened ─────────────────────────── */
+
+/**
+ * The site's `updateRepairFaults`: the whole new set of a ticket's faults,
+ * whoever runs the ticket. Refused by the same rules — `set_repair_faults`
+ * asks them again on the server — and written to the outbox like every other
+ * change, so it shows at once and goes up when the line allows.
+ *
+ * ⚠️ Answered from this computer. The faults come back named from the local
+ * list, a typed one by its own words; the server's answer replaces them when
+ * the change is read back.
+ */
+export function updateRepairFaults(id: string, input: FaultsInput): FaultsResult {
+  const verdict = authorizeTicket(id);
+  if (!verdict.ok) return verdict;
+  if (verdict.control !== "full") return { ok: false, error: "not_your_ticket" };
+  if (!refs.available().faultsEdit) return { ok: false, error: "faultsUnavailable" };
+
+  const codes = [...new Set(input.codes.map((code) => code.trim()).filter(Boolean))];
+  const names = uniqueFaultNames(input.newFaults ?? []);
+  if (!codes.length && !names.length) return { ok: false, error: "no_issues" };
+  if (codes.length + names.length > MAX_TICKET_FAULTS) return { ok: false, error: "too_many_issues" };
+  const custom =
+    input.custom == null
+      ? null
+      : [...new Set(input.custom.map((fault) => fault.trim().slice(0, 120)).filter(Boolean))].slice(0, 10);
+
+  const listed = new Map(refs.issues().map((issue) => [issue.code, issue]));
+  // A fault the ticket carries that the list no longer has keeps its name.
+  const own = new Map((verdict.raw.repair_ticket_issues ?? []).map((link) => [link.issue_code, link.repair_issues]));
+  const faults: OpPayload["faults"]["faults"] = codes.map((code) => {
+    const named = listed.get(code) ?? own.get(code) ?? null;
+    return { code, name_ar: named?.name_ar ?? code, name_en: named?.name_en ?? code };
+  });
+  for (const fault of typedFaults(verdict.service, names)) {
+    if (!faults.some((held) => held.code === fault.code)) faults.push(fault);
+  }
+
+  queued(() => store.addOp(id, "faults", { faults, custom }));
+  const ar = input.locale !== "en";
+  return {
+    ok: true,
+    faults: faults.map((fault) => ({ code: fault.code, name: ar ? fault.name_ar : fault.name_en })),
+    custom: custom ?? (verdict.raw.custom_faults ?? []).filter((fault) => fault.trim()),
+  };
+}
+
+/** The typed names, cleaned, each once whatever its spacing or case. */
+function uniqueFaultNames(names: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of names) {
+    const name = cleanFaultName(String(raw ?? ""));
+    const key = name.toLowerCase();
+    if (name.length < 2 || seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out.slice(0, MAX_TICKET_FAULTS);
+}
+
+/**
+ * Typed names as faults: the one on this bench's list when it is spelt the
+ * same way, a new one otherwise. A new one is offered at once in every picker
+ * on this computer — under the code the server will file it under — and filed
+ * on the server's list when the change is sent. The next refs pull replaces
+ * this computer's list with the server's, which by then holds it.
+ */
+function typedFaults(service: RepairService, names: readonly string[]): OpPayload["faults"]["faults"] {
+  const all = refs.issues();
+  const bench = all.filter((issue) => issue.service === service);
+  const out: OpPayload["faults"]["faults"] = [];
+  const added: Issue[] = [];
+  for (const name of names) {
+    const key = name.toLowerCase();
+    const match = bench.find((issue) => issue.name_ar.toLowerCase() === key || issue.name_en.toLowerCase() === key);
+    if (match) {
+      out.push({ code: match.code, name_ar: match.name_ar, name_en: match.name_en });
+      continue;
+    }
+    const code = typedFaultCode(service, name);
+    out.push({ code, name_ar: name, name_en: name, isNew: true });
+    if (!all.some((issue) => issue.code === code) && !added.some((issue) => issue.code === code)) {
+      added.push({ code, name_ar: name, name_en: name, service });
+    }
+  }
+  if (added.length) store.setRef("issues", [...all, ...added]);
+  return out;
+}
+
 /* ── Reads the dialogs make ───────────────────────────────────────────── */
 
 export async function loadStatusHistory(kind: string, id: string): Promise<{ available: boolean; events: StatusEvent[] }> {
@@ -208,12 +316,25 @@ export async function loadStatusHistory(kind: string, id: string): Promise<{ ava
   try {
     const result = await supabase()
       .from("status_events")
-      .select("status, at")
+      .select("status, at, actor")
       .eq("kind", "repair")
       .eq("entity_id", record.serverId)
       .order("at", { ascending: true });
     if (result.error) return { available: Boolean(cached), events: cached ?? [] };
-    const events = (result.data ?? []) as StatusEvent[];
+    // Who moved it, by name — the site's `loadStatusHistory` does the same
+    // through `staff_directory()`; here the roster is already on this
+    // computer (`refs.directory()`). A move made from this app reads as the
+    // shop's maintenance account, which is the account that sent it.
+    const directory = refs.directory();
+    const events = ((result.data ?? []) as { status: string; at: string; actor: string | null }[]).map(
+      ({ actor, ...event }): StatusEvent => {
+        if (!actor) return { ...event, by: { kind: "system", name: null } };
+        const person = directory[actor];
+        return person
+          ? { ...event, by: { kind: "staff", name: person.name } }
+          : { ...event, by: { kind: "customer", name: null } };
+      },
+    );
     store.setRef(cacheKey, events);
     return { available: true, events };
   } catch {

@@ -34,6 +34,7 @@ export function registerIpc() {
   handle(CH.assignRepair, actions.assignRepair);
   handle(CH.updateRepairFinance, actions.updateRepairFinance);
   handle(CH.createDeskTicket, actions.createDeskTicket);
+  handle(CH.updateRepairFaults, actions.updateRepairFaults);
   handle(CH.deleteRecord, actions.deleteRecord);
   handle(CH.loadStatusHistory, actions.loadStatusHistory);
   handle(CH.loadWorldModels, (brand: string) => actions.loadWorldModels(brand));

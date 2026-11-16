@@ -66,6 +66,7 @@
   "opAssign": "Handed over",
   "opPhotos": "Photos",
   "opDelete": "Ticket deleted",
+  "opFaults": "Faults",
   "opPhotosCount": "{count, plural, one {One photo} other {# photos}}",
   "fieldStatus": "status",
   "fieldPrice": "price",

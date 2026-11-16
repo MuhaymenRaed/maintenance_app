@@ -7,6 +7,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Select, type SelectOption } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { dialogOverlay } from "@/components/ui/dialog-chrome";
+import { AppWindow, useAppWindow, useWindowed } from "@/components/admin/app-window";
 import {
   caretAfterValueChars,
   countValueChars,
@@ -399,6 +400,9 @@ export function EntityDialog({
   width = 620,
   /** A hairline of colour at the top — a status tone, a brand accent. */
   accent,
+  windowId,
+  height,
+  confirmClose = true,
 }: {
   title: string;
   subtitle?: string;
@@ -408,7 +412,45 @@ export function EntityDialog({
   footer: React.ReactNode;
   width?: number;
   accent?: string;
+  /**
+   * Inside the dashboard every editor is a window (see `app-window.tsx`):
+   * `windowId` lets the board find it again rather than open a second copy.
+   */
+  windowId?: string;
+  /** The window's opening height; it is resizable from there. */
+  height?: number;
+  /**
+   * Ask "are you sure?" before the window closes. On for every editor; a pure
+   * viewer — the printer setup, a staff member's standing — turns it off.
+   */
+  confirmClose?: boolean;
 }) {
+  /*
+   * ⚠️ One hook, read before any branch. Inside the dashboard's
+   * `WindowHost` this is a window — draggable, foldable into the dock, one of
+   * several, and closed only after asking. Outside it (the storefront's
+   * product pencil) it is the modal it always was.
+   */
+  const windowed = useWindowed();
+  if (windowed) {
+    return (
+      <AppWindow
+        windowId={windowId}
+        title={title}
+        subtitle={subtitle}
+        accent={accent}
+        width={width}
+        height={height}
+        closeLabel={closeLabel}
+        onClose={onClose}
+        confirmClose={confirmClose}
+        footer={footer}
+      >
+        {children}
+      </AppWindow>
+    );
+  }
+
   return (
     <Dialog.Root open onOpenChange={(next) => !next && onClose()}>
       <Dialog.Portal>
@@ -535,6 +577,13 @@ export function EditorFooter({
   disabled?: boolean;
 }) {
   const [asking, setAsking] = useState(false);
+  /*
+   * In a window, Cancel is a close like the ×: it asks first, and then runs
+   * this editor's own cancel — which may do more than close (the catalogue
+   * editor discards the pictures it uploaded and never saved).
+   */
+  const win = useAppWindow();
+  const cancel = win ? () => win.requestClose(onCancel) : onCancel;
 
   return (
     <>
@@ -578,7 +627,7 @@ export function EditorFooter({
       <div className="ms-auto flex gap-2">
         <button
           type="button"
-          onClick={onCancel}
+          onClick={cancel}
           className="rounded-control px-4 py-2.5 text-[0.78rem] font-extrabold text-muted transition-colors hover:bg-subtle hover:text-ink"
         >
           {cancelLabel}

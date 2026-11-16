@@ -3,7 +3,7 @@
 import { useMemo, useState, useSyncExternalStore, useTransition } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
-import { Cpu, Loader2, Plus, Printer, ShieldCheck, Wrench, X } from "lucide-react";
+import { Cpu, Loader2, Printer, ShieldCheck, Wrench } from "lucide-react";
 import { EntityDialog, Field, FieldGroup, Grid, input, NumberInput, Section, SelectField, MoneyInput } from "@/components/admin/form-kit";
 import {
   RepairWarrantyDialog,
@@ -12,10 +12,13 @@ import {
 } from "@/components/admin/repair-print";
 import { isPrinting, printStation, startPrint } from "@/lib/print/station";
 import type { DeskHolder } from "@/components/admin/repairs-board";
-import { ChipMultiSelect } from "@/components/ui/chip-multi-select";
+import { FaultPicker } from "@/components/admin/fault-picker";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { createDeskTicket } from "@/lib/actions/repair-desk";
-import { mergeBrandModels, type StockModel } from "@/lib/data/device-catalogue";
+import type { StockModel } from "@/lib/data/device-catalogue";
+import { deskModelOptions, type RecentDevice } from "@/lib/data/recent-devices";
+import { faultText, isNewFault, splitFaults, type RecentFault } from "@/lib/data/repair-faults";
+import { formatDayNumeric } from "@/lib/data/datetime";
 import { useWorldModels } from "@/lib/hooks/use-world-models";
 import { repairMoney, repairTotal, type PaymentTerms, type RepairService } from "@/lib/data/repair-desk";
 import { formatPrice } from "@/lib/format";
@@ -50,19 +53,24 @@ export function DeskTicketButton({
   branches,
   brands,
   models,
+  recentDevices = [],
+  recentFaults = [],
   issues,
   holders,
   viewerId,
   today,
   financeAvailable,
   warrantyAvailable,
-  customFaultsAvailable,
 }: {
   service: RepairService;
   branches: Branch[];
   brands: Brand[];
   /** The shop own models per make, floated above the curated list. */
   models: Record<string, StockModel[]>;
+  /** The bench's latest devices, newest first — what the picker opens on. */
+  recentDevices?: RecentDevice[];
+  /** The bench's faults by their last ticket — what the fault picker opens on. */
+  recentFaults?: RecentFault[];
   issues: Issue[];
   /** Who this reader may hand a ticket to. */
   holders: DeskHolder[];
@@ -71,70 +79,87 @@ export function DeskTicketButton({
   today: string;
   financeAvailable: boolean;
   warrantyAvailable: boolean;
-  /**
-   * False until `20261103_repair_custom_faults.sql` runs. The dialog then
-   * omits the field rather than taking words and dropping them.
-   */
-  customFaultsAvailable: boolean;
 }) {
   const t = useTranslations("Admin");
-  const [open, setOpen] = useState(false);
+  /*
+   * Every "add a ticket" window open now. Each press opens another — two
+   * customers at the counter are two tickets filled side by side — and each
+   * keeps its own fields until it is saved or closed. See `app-window.tsx`.
+   */
+  const [windows, setWindows] = useState<number[]>([]);
+  const [next, setNext] = useState(1);
   const Icon = service === "software" ? Cpu : Wrench;
   return (
     <>
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          setWindows((current) => [...current, next]);
+          setNext((n) => n + 1);
+        }}
         className="press inline-flex shrink-0 items-center gap-2 rounded-control bg-brand px-4 py-2.5 text-[0.8rem] font-extrabold text-white transition-colors hover:bg-brand-hover"
       >
         <Icon className="size-4" aria-hidden />
         {t("deskNewTicket")}
+        {windows.length > 0 && (
+          <span className="rounded-full bg-white/25 px-1.5 text-[0.7rem]" data-numeric>
+            {windows.length}
+          </span>
+        )}
       </button>
-      {open && (
+      {windows.map((number) => (
         <DeskTicketDialog
+          key={number}
+          number={number}
           service={service}
           branches={branches}
           brands={brands}
           models={models}
+          recentDevices={recentDevices}
+          recentFaults={recentFaults}
           issues={issues}
           holders={holders}
           viewerId={viewerId}
           today={today}
           financeAvailable={financeAvailable}
           warrantyAvailable={warrantyAvailable}
-          customFaultsAvailable={customFaultsAvailable}
-          onClose={() => setOpen(false)}
+          onClose={() => setWindows((current) => current.filter((n) => n !== number))}
         />
-      )}
+      ))}
     </>
   );
 }
 
 function DeskTicketDialog({
+  number,
   service,
   branches,
   brands,
   models,
+  recentDevices,
+  recentFaults,
   issues,
   holders,
   viewerId,
   today,
   financeAvailable,
   warrantyAvailable,
-  customFaultsAvailable,
   onClose,
 }: {
+  /** Which "new ticket" window this is — the dock tells several apart by it. */
+  number: number;
   service: RepairService;
   branches: Branch[];
   brands: Brand[];
   models: Record<string, StockModel[]>;
+  recentDevices: RecentDevice[];
+  recentFaults: RecentFault[];
   issues: Issue[];
   holders: DeskHolder[];
   viewerId: string;
   today: string;
   financeAvailable: boolean;
   warrantyAvailable: boolean;
-  customFaultsAvailable: boolean;
   onClose: () => void;
 }) {
   const t = useTranslations("Admin");
@@ -153,10 +178,12 @@ function DeskTicketDialog({
   const [branchId, setBranchId] = useState(branches.length === 1 ? branches[0].id : "");
   const [brandCode, setBrandCode] = useState("");
   const [model, setModel] = useState("");
-  const [issueCodes, setIssueCodes] = useState<string[]>([]);
-  const [customFaults, setCustomFaults] = useState<string[]>([]);
-  /** What is in the "anything else" box, before it becomes a chip. */
-  const [customDraft, setCustomDraft] = useState("");
+  /*
+   * The faults: codes off the bench's list, and `new:` names typed at the
+   * counter that the save files on the list. One control for both — see
+   * `fault-picker.tsx`.
+   */
+  const [faults, setFaults] = useState<string[]>([]);
   const [notes, setNotes] = useState("");
   const [terms, setTerms] = useState<PaymentTerms>("cash");
   const [price, setPrice] = useState<number | null>(null);
@@ -166,7 +193,15 @@ function DeskTicketDialog({
   const [collected, setCollected] = useState<number | null>(null);
   const [holderId, setHolderId] = useState(viewerId);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<{ id: string; code: string; at: string; financeSaved: boolean; warrantySaved: boolean; customSaved: boolean } | null>(null);
+  const [done, setDone] = useState<{
+    id: string;
+    code: string;
+    at: string;
+    financeSaved: boolean;
+    warrantySaved: boolean;
+    customSaved: boolean;
+    listSaved: boolean;
+  } | null>(null);
   const [warrantyOpen, setWarrantyOpen] = useState(false);
   const [printBusy, setPrintBusy] = useState(false);
   // Read only for the button's spinner: the run lives in the print station,
@@ -198,31 +233,31 @@ function DeskTicketDialog({
    * line on the label, the receipt and the warranty certificate this dialog
    * prints. See `lib/data/device-name.ts`.
    */
+  /*
+   * ⚠️ No `inStockMark`, and that is the shop's own instruction: the mark is
+   * for customers. Staff know what is on the shelf, and on a ticket dialog it
+   * is a word in brackets on every row that nobody reads.
+   *
+   * With no make chosen — the default, "every make" — the list is every
+   * make's models at once, opening on the devices this bench prepared
+   * receipts for most recently; a search ranks those first too (`rank`).
+   * See `lib/data/recent-devices.ts`.
+   */
   const modelOptions = useMemo(
     () =>
-      /*
-       * ⚠️ No `inStockMark`, and that is the shop's own instruction: the mark
-       * is for customers. Staff know what is on the shelf, and on a ticket
-       * dialog it is a word in brackets on every row that nobody reads and
-       * that lengthens every label.
-       *
-       * The flag itself still earns its keep — `mergeBrandModels` floats the
-       * stocked models to the top of the list either way, which is the useful
-       * half and is invisible.
-       */
-      mergeBrandModels(
-        brandCode || null,
-        brandCode ? (models[brandCode] ?? []) : [],
-        worldModels,
-      ).map((option) => ({
-        // Spread, not rebuilt: `keywords` is what the picker folds into its
-        // search haystack, so a hand-made object loses the search.
-        ...option,
-        // The release year, which is what tells sixteen years of "Galaxy A5"
-        // apart.
-        hint: option.year ? String(option.year) : undefined,
-      })),
-    [brandCode, models, worldModels],
+      deskModelOptions({
+        brandCode: brandCode || null,
+        brands,
+        stock: models,
+        world: worldModels,
+        recent: recentDevices,
+        dayLabel: (at) => t("deskRecentOn", { day: formatDayNumeric(locale, at) }),
+      }),
+    [brandCode, brands, models, worldModels, recentDevices, t, locale],
+  );
+  const brandOfModel = useMemo(
+    () => new Map(modelOptions.map((option) => [option.value, option.brandCode])),
+    [modelOptions],
   );
 
   /*
@@ -235,15 +270,20 @@ function DeskTicketDialog({
     setModel("");
   }
 
-  function addCustomFault() {
-    const fault = customDraft.trim().slice(0, 120);
-    if (!fault || customFaults.includes(fault) || customFaults.length >= 10) return;
-    setCustomFaults([...customFaults, fault]);
-    setCustomDraft("");
-  }
-
   function submit() {
     setError(null);
+    // ⚠️ Required: a ticket opened without its fee is a ticket the receipt,
+    // the till and the profit report all read as free. The action refuses it
+    // too; asking here keeps the reader at the field rather than the footer.
+    if (price == null || price <= 0) {
+      setError("price_required");
+      return;
+    }
+    const picked = splitFaults(faults);
+    if (!picked.codes.length && !picked.names.length) {
+      setError("issue_required");
+      return;
+    }
     start(async () => {
       const result = await createDeskTicket({
         service,
@@ -252,8 +292,8 @@ function DeskTicketDialog({
         branchId,
         deviceBrandCode: brandCode || null,
         deviceModel: model,
-        issueCodes,
-        customFaults,
+        issueCodes: picked.codes,
+        newFaults: picked.names,
         notes,
         price,
         warranty,
@@ -267,7 +307,16 @@ function DeskTicketDialog({
         setError(result.error);
         return;
       }
-      setDone({ id: result.id, code: result.code, at: result.at, financeSaved: result.financeSaved, warrantySaved: result.warrantySaved, customSaved: result.customSaved });
+      setDone({
+        id: result.id,
+        code: result.code,
+        at: result.at,
+        financeSaved: result.financeSaved,
+        warrantySaved: result.warrantySaved,
+        customSaved: result.customSaved,
+        // A queued ticket in the desk app answers without it: nothing to say.
+        listSaved: result.listSaved ?? true,
+      });
     });
   }
 
@@ -275,13 +324,12 @@ function DeskTicketDialog({
     code: done.code,
     customerName: name.trim(),
     device: model.trim(),
-    fault: [
-      ...issueCodes.flatMap((code) => {
-        const match = issues.find((issue) => issue.code === code);
-        return match ? [match.name] : [];
-      }),
-      ...customFaults,
-    ].join("، "),
+    fault: faults
+      .flatMap((value) => {
+        const match = issues.find((issue) => issue.code === value);
+        return match ? [match.name] : isNewFault(value) ? [faultText(value)] : [];
+      })
+      .join("، "),
     amount: money.price,
     warranty: money.warranty,
     collected: money.collected,
@@ -297,9 +345,17 @@ function DeskTicketDialog({
 
   return (
     <EntityDialog
-      title={service === "software" ? t("deskNewProgramming") : t("deskNewRepair")}
+      windowId={`desk-new-${service}-${number}`}
+      title={
+        done
+          ? `${service === "software" ? t("deskNewProgramming") : t("deskNewRepair")} · ${done.code}`
+          : `${service === "software" ? t("deskNewProgramming") : t("deskNewRepair")} #${number}`
+      }
+      subtitle={[name.trim(), model.trim()].filter(Boolean).join(" · ") || undefined}
       closeLabel={t("close")}
       onClose={onClose}
+      // Saved and printed, there is nothing left in it to lose.
+      confirmClose={!done}
       width={680}
       footer={
         <div className="flex w-full items-center justify-end gap-2">
@@ -382,10 +438,15 @@ function DeskTicketDialog({
             {!done.warrantySaved && (
               <p className="mt-1 text-[0.76rem] font-semibold text-warning">{t("warrantyNotSaved")}</p>
             )}
-            {/* Only when something was actually typed and then not stored —
-                the field is absent otherwise, so there is nothing to report. */}
-            {!done.customSaved && (
+            {/* A fault typed at the counter that the list could not take is
+                kept on the ticket as text; one that could be kept nowhere is
+                said plainly. Neither, and there is nothing to report. */}
+            {!done.customSaved ? (
               <p className="mt-1 text-[0.76rem] font-semibold text-warning">{t("deskFaultsNotSaved")}</p>
+            ) : (
+              !done.listSaved && (
+                <p className="mt-1 text-[0.76rem] font-semibold text-warning">{t("deskNewFaultsAsText")}</p>
+              )
             )}
           </div>
         ) : (
@@ -429,8 +490,12 @@ function DeskTicketDialog({
                   <SelectField
                     value={brandCode}
                     onChange={pickBrand}
-                    options={brands.map((b) => ({ value: b.code, label: b.name }))}
-                    placeholder={t("counterBrandAny")}
+                    // "Every make" is a real choice and the default: the model
+                    // list then holds them all, newest tickets first.
+                    options={[
+                      { value: "", label: t("counterBrandAll") },
+                      ...brands.map((b) => ({ value: b.code, label: b.name })),
+                    ]}
                   />
                 </Field>
               </Grid>
@@ -445,8 +510,14 @@ function DeskTicketDialog({
                   options={modelOptions}
                   loading={modelsLoading}
                   value={model || null}
-                  onChange={(next) => setModel(next ?? "")}
-                  placeholder={brandCode ? t("deskModelPick") : t("deskModelType")}
+                  onChange={(next) => {
+                    setModel(next ?? "");
+                    // Picked from every make: the make is filled in from the
+                    // device, so the ticket still files under its brand.
+                    const make = next ? brandOfModel.get(next) : null;
+                    if (!brandCode && make) setBrandCode(make);
+                  }}
+                  placeholder={brandCode ? t("deskModelPick") : t("deskModelAll")}
                   searchPlaceholder={tPicker("search")}
                   emptyLabel={tPicker("empty")}
                   clearLabel={tPicker("clear")}
@@ -455,81 +526,26 @@ function DeskTicketDialog({
                 />
               </Field>
 
+              {/* One control for every fault: pick from the bench's list —
+                  most recently used first — or type one it does not have and
+                  press Enter. A typed fault is filed on the list when the
+                  ticket is saved, so the next ticket is offered it. */}
               <FieldGroup label={t("deskFault")} hint={t("deskFaultHint")} required>
-                <ChipMultiSelect
-                  values={issueCodes}
-                  onChange={setIssueCodes}
-                  options={issues.map((issue) => ({ value: issue.code, label: issue.name }))}
-                  addLabel={t("deskFaultPick")}
-                  emptyLabel={t("deskFaultNone")}
-                  removeLabel={t("remove")}
-                  searchPlaceholder={tPicker("search")}
-                  noMatchLabel={tPicker("empty")}
-                  clearLabel={tPicker("clear")}
+                <FaultPicker
+                  values={faults}
+                  onChange={(next) => {
+                    setFaults(next);
+                    if (error === "issue_required" && next.length) setError(null);
+                  }}
+                  issues={issues}
+                  recent={recentFaults}
                 />
+                {error === "issue_required" && (
+                  <span role="alert" className="mt-1 block text-[0.72rem] font-bold text-brand">
+                    {t("issue_required")}
+                  </span>
+                )}
               </FieldGroup>
-
-              {/* ⚠️ Absent, never disabled, when the column is not there — a
-                  box that takes a fault and silently drops it is worse than no
-                  box. And deliberately its own control rather than another
-                  chip in the list above: these carry no code, no price and
-                  nothing the service trigger can read, so drawing them as
-                  identical chips would invite somebody to expect a quote
-                  against one. */}
-              {customFaultsAvailable && (
-                <FieldGroup label={t("deskCustomFault")} hint={t("deskCustomFaultHint")}>
-                  <div className="space-y-2">
-                    {customFaults.length > 0 && (
-                      <ul className="flex flex-wrap gap-1.5">
-                        {customFaults.map((fault) => (
-                          <li key={fault}>
-                            <span className="inline-flex items-center gap-1.5 rounded-chip border border-dashed border-line bg-canvas py-1 pe-1.5 ps-2.5 text-[0.75rem] font-bold text-ink">
-                              <span className="max-w-[16rem] truncate">{fault}</span>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setCustomFaults(customFaults.filter((f) => f !== fault))
-                                }
-                                aria-label={`${t("remove")} — ${fault}`}
-                                className="flex size-4 items-center justify-center rounded-full text-muted transition-colors hover:bg-brand/15 hover:text-brand"
-                              >
-                                <X className="size-3" aria-hidden />
-                              </button>
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    <div className="flex gap-2">
-                      <input
-                        value={customDraft}
-                        onChange={(e) => setCustomDraft(e.target.value)}
-                        /* Enter adds the chip rather than submitting the
-                           dialog, which is what a counter expects of a field
-                           with an Add button beside it. */
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            addCustomFault();
-                          }
-                        }}
-                        maxLength={120}
-                        placeholder={t("deskCustomFaultPlaceholder")}
-                        className={text}
-                      />
-                      <button
-                        type="button"
-                        onClick={addCustomFault}
-                        disabled={!customDraft.trim() || customFaults.length >= 10}
-                        className="press inline-flex shrink-0 items-center gap-1.5 rounded-control border border-line px-3 py-2 text-[0.78rem] font-extrabold text-ink transition-colors hover:border-brand hover:text-brand disabled:opacity-50"
-                      >
-                        <Plus className="size-3.5" aria-hidden />
-                        {t("deskCustomFaultAdd")}
-                      </button>
-                    </div>
-                  </div>
-                </FieldGroup>
-              )}
 
               <Field label={t("deskNotes")}>
                 <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} className={cn(input, "resize-y")} />
@@ -561,8 +577,21 @@ function DeskTicketDialog({
                 </div>
               </Field>
               <Grid>
-                <Field label={t("financeBasePrice")}>
-                  <MoneyInput value={price} clearable onChange={setPrice} min={0} />
+                <Field label={`${t("financeBasePrice")} *`}>
+                  <MoneyInput
+                    value={price}
+                    clearable
+                    onChange={(next) => {
+                      setPrice(next);
+                      if (error === "price_required" && next != null && next > 0) setError(null);
+                    }}
+                    min={0}
+                  />
+                  {error === "price_required" && (
+                    <span role="alert" className="mt-1 block text-[0.72rem] font-bold text-brand">
+                      {t("price_required")}
+                    </span>
+                  )}
                 </Field>
                 <Field label={t("financeCost")}>
                   <MoneyInput value={cost} clearable onChange={setCost} min={0} />
