@@ -52,11 +52,9 @@
  * ---------------------------------------------------------------------------
  * ⚠️ It errs PESSIMISTIC, on purpose
  * ---------------------------------------------------------------------------
- * A character count cannot know where a line will break, and the nine-fault
- * ticket sits on a knife edge: ninety characters in the value column at 5.4 pt
- * is 2.0 lines, so any margin at all tips the estimate to three and the fitter
- * drops a rung. Measured both ways on the rendered sheet — it is 2 lines in
- * reality and the model says 3.
+ * A character count cannot know where a line will break, so a long fault list
+ * that sits near a line boundary is estimated a line longer than it renders,
+ * and the fitter drops a rung it might not have needed.
  *
  * That is the direction to be wrong in. Pessimistic costs one rung on the
  * hardest ticket in the shop; optimistic costs the footer on a ticket nobody
@@ -68,73 +66,88 @@
  *
  * ⚠️ Not a continuous scale. A thermal head rounds every stroke to a whole
  * dot, so sizes a fraction of a point apart print identically and only make
- * the ladder harder to reason about. Five rungs cover one fault to about
- * twelve.
+ * the ladder harder to reason about. Six rungs cover one fault to about
+ * twelve. The top rung is the label's body size — every value on the sticker
+ * is set at it when there is room — and the floor is the printer's (see the
+ * header). On Arabic the floor is never reached by a realistic ticket; it is
+ * there for a four-part Latin name over nine faults.
  */
-export const FAULT_SIZES = [7.6, 6.8, 6, 5.4, 4.8] as const;
+export const FAULT_SIZES = [8.4, 7.6, 6.8, 6, 5.4, 4.8] as const;
 
-/** The name's ladder: three rungs, stopping well above the fault's floor. */
-export const NAME_SIZES = [7.6, 6.8, 6] as const;
+/** The name's ladder: shorter than the fault's, and stopping above its floor. */
+export const NAME_SIZES = [8.4, 7.6, 6.8, 6] as const;
 
 /**
- * The width of each field's value column, in CSS pixels.
+ * The width of the value column, in CSS pixels.
  *
- * ⚠️ **Measured on the rendered label in BOTH locales, and the narrower of
- * the two is what is written down** — the field label sits in the same row, so
- * a long label starves its own value. Measured 2026-11-13:
+ * ⚠️ **One column for both fields since 2026-11-17**, because the label is one
+ * grid now and every value starts on the same line. Its width is whatever the
+ * widest label leaves, so it is **measured in BOTH locales and the narrower is
+ * written down**:
  *
- *     name    ar 148.8   en 161      ->  148
- *     fault   ar 149.5   en 166.9    ->  149
+ *     ar 144.1   («مبلغ الصيانة:» is the widest label)   en 154.5   ->  144
  *
- * The English figures are what they are *because* two of the four labels were
- * shortened in the same change: "Customer name:" was 67.4 px against the
- * Arabic «اسم الزبون:» at 41.1, which left the English name column 26 px
- * narrower than the Arabic one — and that, not the Arabic, is why the English
- * nine-fault label overlapped its own footer. Shortening the label is the fix
- * at the source; this constant is the fix in the model.
- *
- * Re-measure both if a label's wording changes, or if the row's `dt` column
- * stops being `auto`.
+ * Re-measure both if a label's wording changes or the label column's padding
+ * does.
  */
-const NAME_COLUMN_PX = 148;
-const FAULT_COLUMN_PX = 149;
+const NAME_COLUMN_PX = 144;
+const FAULT_COLUMN_PX = 144;
 
 /**
  * How much height the two free-text rows have between them.
  *
  * ⚠️ **Measured, never derived, and it is the one number here that moves on
- * its own.** It is what the `dl` has left once the amount row, the payment row
- * and all four rows' own padding are placed: 84.1 − 23.6 − 16.0 − 5.7 = 38.8
- * px on the rendered 55 x 37 mm sheet. 37 is that, less a cushion — because
- * `justify-between` needs *some* positive free space, and zero is the value at
- * which it starts overlapping rather than spacing.
+ * its own.** It is what the table has left once its padding, the amount row
+ * (its rule included) and the two row gaps are placed: 93 − 7.6 − 28.5 − 9.4
+ * = 47.5 px on the rendered 55 x 37 mm sheet, measured 2026-11-17. 46 is that
+ * less a cushion. It was 37 before the phone numbers moved into the header and
+ * the payment into the amount row; those two moves are where the extra room
+ * came from.
  *
- * Re-measure in a browser after changing the lockup, the footer, the fixed
- * rows or any row's leading. The arithmetic for it is deliberately not in this
+ * Re-measure in a browser after changing the lockup, the footer, the amount
+ * row or any row's leading. The arithmetic for it is deliberately not in this
  * file: a derived pool goes stale silently, a measured one goes stale loudly
  * the first time somebody renders a label.
  */
-export const TEXT_POOL_PX = 37;
+export const TEXT_POOL_PX = 46;
 
 /**
- * Advance per character, in em, for this label's Arabic at its own sizes.
+ * Advance per character, in em, by field and by script.
  *
- * ⚠️ Measured rather than read off the font: what matters is the average
- * advance of *this* text — Arabic names and fault words — not of a
- * representative glyph. Checked against four rendered cases, where 36
- * characters at 8 px occupied 148 px (0.51 em) and 90 characters at 7.2 px
- * occupied two lines of a 149 px column (0.46 em or less).
+ * ⚠️ **Measured in the label's own bold face, and Latin is the wide one.**
+ * Expo Arabic in bold, per character, 2026-11-17:
+ *
+ *     Arabic name   0.494     Latin name    0.557 – 0.570
+ *     Arabic fault  0.424     Latin fault   0.489
+ *
+ * There used to be one figure, 0.46, calibrated on Arabic — and it put a
+ * four-part Latin name on one line that in fact takes two, which is what
+ * pushed the English nine-fault label into its own footer. A name advances
+ * further than a fault list because it has fewer spaces and commas in it.
+ * Each figure is rounded up: this model errs pessimistic, on purpose.
  */
-const ADVANCE_EM = 0.46;
+const ADVANCE_EM = {
+  name: { arabic: 0.5, latin: 0.58 },
+  fault: { arabic: 0.46, latin: 0.5 },
+} as const;
+
+type Field = keyof typeof ADVANCE_EM;
+
+/** Which advance a text takes: Latin when it has more Latin letters than Arabic ones. */
+function advanceOf(text: string, field: Field): number {
+  const latin = text.match(/[A-Za-z]/g)?.length ?? 0;
+  const arabic = text.match(/[؀-ۿ]/g)?.length ?? 0;
+  return ADVANCE_EM[field][latin > arabic ? "latin" : "arabic"];
+}
 
 /**
  * Characters a line gives up to the word it could not fit.
  *
  * ⚠️ This is the pessimism. Set it to zero and the model assumes perfect
  * packing, which is what makes a fitter overflow on the one ticket nobody
- * tested. It is one number for both fields because both are Arabic prose of
- * similar word length — a fault list of short comma-separated segments packs a
- * little better than a name, and the difference is inside the margin.
+ * tested. It applies only to a text that wraps: a text that fits on one line
+ * whole wraps nothing and gives nothing up, and charging it the waste anyway
+ * is what told a 36-character name that fits that it does not.
  */
 const WRAP_WASTE = 3;
 
@@ -159,9 +172,11 @@ export function heightOf(fit: TextFit): number {
   return fit.lines * fit.pt * PX_PER_PT * LEADING;
 }
 
-function linesFor(chars: number, pt: number, columnPx: number): number {
-  const perLine = Math.max(1, Math.floor(columnPx / (ADVANCE_EM * pt * PX_PER_PT)) - WRAP_WASTE);
-  return Math.max(1, Math.ceil(chars / perLine));
+function linesFor(text: string, field: Field, pt: number, columnPx: number): number {
+  const charPx = advanceOf(text, field) * pt * PX_PER_PT;
+  if (text.length * charPx <= columnPx) return 1;
+  const perLine = Math.max(1, Math.floor(columnPx / charPx) - WRAP_WASTE);
+  return Math.max(2, Math.ceil(text.length / perLine));
 }
 
 /**
@@ -172,16 +187,17 @@ function linesFor(chars: number, pt: number, columnPx: number): number {
  * this knows nothing about the sheet.
  */
 function fit(
-  text: string,
+  raw: string,
+  field: Field,
   budgetPx: number,
   sizes: readonly number[],
   columnPx: number,
 ): TextFit {
-  const chars = text.trim().length;
-  if (!chars) return { pt: sizes[0], lines: 1, clamp: false };
+  const text = raw.trim();
+  if (!text) return { pt: sizes[0], lines: 1, clamp: false };
 
   for (const pt of sizes) {
-    const lines = linesFor(chars, pt, columnPx);
+    const lines = linesFor(text, field, pt, columnPx);
     if (lines * pt * PX_PER_PT * LEADING <= budgetPx) return { pt, lines, clamp: false };
   }
 
@@ -197,12 +213,12 @@ function fit(
 
 /** The fault, on the ladder written for it. */
 export function fitFault(text: string, budgetPx: number): TextFit {
-  return fit(text, budgetPx, FAULT_SIZES, FAULT_COLUMN_PX);
+  return fit(text, "fault", budgetPx, FAULT_SIZES, FAULT_COLUMN_PX);
 }
 
 /** The customer's name, which shrinks but never as far as a long fault list. */
 export function fitName(text: string, budgetPx: number): TextFit {
-  return fit(text, budgetPx, NAME_SIZES, NAME_COLUMN_PX);
+  return fit(text, "name", budgetPx, NAME_SIZES, NAME_COLUMN_PX);
 }
 
 /**
@@ -210,26 +226,38 @@ export function fitName(text: string, budgetPx: number): TextFit {
  *
  * ⚠️ **The name is fitted against ONE LINE, not against its share of the
  * pool.** Given a budget it could spend on two lines it does, and then the
- * fault is clamped — the one outcome that cuts words. A second line is
- * reachable only at the floor, where the fault's own single line is already
- * reserved below.
+ * fault is clamped — the one outcome that cuts words.
  */
-const NAME_LINE_PX = 7.6 * PX_PER_PT * LEADING + 0.9;
+const NAME_LINE_PX = NAME_SIZES[0] * PX_PER_PT * LEADING + 0.9;
 
 /** One line of the fault at its floor, which the name may never eat. */
-const FAULT_FLOOR_LINE_PX = 4.8 * PX_PER_PT * LEADING;
+const FAULT_FLOOR_LINE_PX = FAULT_SIZES[FAULT_SIZES.length - 1] * PX_PER_PT * LEADING;
 
 /**
  * Both free-text fields, sized against the sheet's one pool.
  *
  * The name goes first and is held to one line; the fault takes the rest. See
  * the header for why that order and not the other.
+ *
+ * ⚠️ **A name too long for one line even at the floor takes two, at the
+ * floor.** Reporting it as clamped is no answer: nothing on the sheet clamps
+ * a value (an Arabic line box is shorter than its own ink, so `overflow:
+ * hidden` cuts the tops off the letters), so the page wraps it anyway, and
+ * the fault — sized against a name of one line — then pushes the amount into
+ * the footer. The second line is planned for here, and the fault is fitted
+ * into what is genuinely left. Two lines and no more: a name that needs a
+ * third is not a name anybody types at a counter.
  */
 export function fitLabelText(
   name: string,
   fault: string,
   poolPx: number = TEXT_POOL_PX,
 ): { name: TextFit; fault: TextFit } {
-  const nameFit = fitName(name, Math.min(NAME_LINE_PX, poolPx - FAULT_FLOOR_LINE_PX));
+  let nameFit = fitName(name, Math.min(NAME_LINE_PX, poolPx - FAULT_FLOOR_LINE_PX));
+  if (nameFit.clamp) {
+    const floor = NAME_SIZES[NAME_SIZES.length - 1];
+    const twoLines = 2 * floor * PX_PER_PT * LEADING + 0.9;
+    nameFit = fit(name, "name", Math.min(twoLines, poolPx - FAULT_FLOOR_LINE_PX), [floor], NAME_COLUMN_PX);
+  }
   return { name: nameFit, fault: fitFault(fault, poolPx - heightOf(nameFit)) };
 }

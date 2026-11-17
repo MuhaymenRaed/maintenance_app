@@ -858,18 +858,30 @@ export function LabelSheet({
    * nothing to fit: both fields keep their full size.
    */
   const sized = fits ? null : fitLabelText(facts.customerName, facts.fault);
+  const deferred = facts.terms === "deferred";
 
-  const rows = [
-    { label: t("printName"), value: facts.customerName, pt: sized?.name.pt },
-    { label: t("printFault"), value: facts.fault, pt: sized?.fault.pt },
-    { label: t("printAmount"), value: formatPrice(facts.amount), numeric: true, strong: true },
-    {
-      label: t("printPayment"),
-      value: t(facts.terms === "deferred" ? "printDeferred" : "printCash"),
-    },
-  ];
+  /*
+   * One label style and one value style for every row: the same size, weight
+   * and leading down the whole table is most of what makes it read as one
+   * object rather than four lines that happen to be near each other.
+   *
+   * ⚠️ The label column carries its own `pe` and the grid has NO column gap.
+   * The amount row draws its rule as a top border on both of its cells, and a
+   * column gap would break that rule into two pieces with a hole between them.
+   */
+  const labelText = "whitespace-nowrap pe-[2mm] text-[6.3pt] font-semibold leading-[1.3]";
+  /*
+   * ⚠️ **Nothing that holds a value may carry `overflow: hidden`.** That is
+   * what `truncate` and `line-clamp` add, and an Arabic line box is shorter
+   * than its own ink: measured on this sheet, every value's glyphs reach 2 px
+   * above their box, so hidden sliced the tops off — «الشاشة» printed as
+   * «التاشة», which is what the shop photographed on 2026-11-13. The ink
+   * paints into the row gap instead, and the words stay whole. The fitted
+   * size is what keeps the sheet from overflowing; see {@link fitLabelText}.
+   */
+  const valueText = "min-w-0 break-words font-bold leading-[1.3] text-[8.4pt]";
   // 0.25 mm = exactly 2 dots at 203 dpi; see the note on PAGE above.
-  const rule = "border-0 border-t-[0.25mm] border-solid border-[#000]";
+  const amountCell = "mt-[0.5mm] self-stretch border-0 border-t-[0.25mm] border-solid border-[#000] pt-[1.5mm]";
 
   return (
     <article
@@ -878,27 +890,33 @@ export function LabelSheet({
       className="print-paper mx-auto my-[1mm] flex flex-col overflow-hidden bg-white px-[1.5mm] text-[#000]"
     >
       {/*
-       * The letterhead, in the receipt's own proportions: the lockup leads and
-       * the name is the largest thing above the rule. It was a 5.5 mm mark
-       * beside 7.6 pt, which on a sticker read as a caption rather than as the
-       * shop signing the paper.
+       * A letterhead: who issued this at the reader's start, how to reach them
+       * at the end, a hairline between. The phones used to be a second footer
+       * line under the thanks, which put the two lines a customer keeps the
+       * sticker for into the last 6 mm of it, set at 6 pt against a rule. Up
+       * here they cost no height at all — the lockup is two lines tall either
+       * way — and that one move is what gave the table room to breathe.
        */}
-      <header className="flex items-center gap-[1.75mm] pt-[0.5mm]">
-        <svg viewBox={MARK_VIEWBOX} className="size-[6.25mm] shrink-0" aria-hidden>
+      <header className="flex items-center gap-[2mm] pt-[0.5mm]">
+        <svg viewBox={MARK_VIEWBOX} className="size-[6.75mm] shrink-0" aria-hidden>
           <path d={MARK_MONO_PATH} fillRule="evenodd" fill="#000" />
         </svg>
         {/*
          * ⚠️ `whitespace-nowrap`, never `truncate`. Both keep the lockup on two
          * lines; only the second adds `overflow: hidden`, and an Arabic line
-         * box is shorter than the ink inside it — measured on this sheet, the
-         * glyphs reach 1 px above their own box, so hidden clipped the tops
-         * off the shop's own name. If one of these two strings is ever long
-         * enough to overrun, the sheet's own `overflow-hidden` is what cuts
-         * it, which is the right place for that decision.
+         * box is shorter than the ink inside it — the glyphs reach 1 px above
+         * their own box, so hidden clipped the tops off the shop's own name.
          */}
         <div className="min-w-0 flex-1">
-          <p className="whitespace-nowrap text-[8.2pt] font-bold leading-[1.25]">{t("printBadge")}</p>
-          <p className="whitespace-nowrap text-[6.2pt] font-semibold leading-[1.3]">{t("printDept")}</p>
+          <p className="whitespace-nowrap text-[8.6pt] font-bold leading-[1.2]">{t("printBadge")}</p>
+          <p className="whitespace-nowrap text-[6pt] font-semibold leading-[1.3]">{t("printDept")}</p>
+        </div>
+        <div className="flex shrink-0 flex-col justify-center self-stretch border-0 border-s-[0.25mm] border-solid border-[#000] ps-[1.75mm]">
+          {site.repairCardPhones.map((phone) => (
+            <p key={phone} className="text-end text-[6.6pt] font-bold leading-[1.3]">
+              <span data-numeric>{phone}</span>
+            </p>
+          ))}
         </div>
       </header>
 
@@ -908,110 +926,96 @@ export function LabelSheet({
        * on a colour change; a thermal head has no second colour, so the change
        * is **thickness** — 4 dots under the mark falling to 2 across the rest.
        * Both are whole dots (0.5 and 0.25 mm at 8 dots/mm): a rule measured in
-       * between is rounded per edge, which is what made the old 0.2 mm rules
-       * print one dot in places and two in others and read as unevenly inked.
-       *
-       * The heavy segment is the row's first child, so it sits at the reader's
-       * start — under the mark — in both scripts, with no logical property to
-       * get the wrong way round.
+       * between is rounded per edge and prints one dot in places and two in
+       * others. The heavy segment is the row's first child, so it sits at the
+       * reader's start — under the mark — in both scripts.
        */}
-      <div className="mt-[0.75mm] flex items-start" aria-hidden>
+      <div className="mt-[1mm] flex items-start" aria-hidden>
         <span className="h-[0.5mm] w-[11mm] shrink-0 bg-[#000]" />
         <span className="h-[0.25mm] flex-1 bg-[#000]" />
       </div>
 
       {/*
-       * ⚠️ **A ruled table that fills the label, where this was four lines
-       * floating in the middle of it.** The old body was `justify-center` with a
-       * 0.5 mm gap, so on an ordinary ticket a third of the sticker was empty
-       * above the rows and a third below, and the four facts had nothing
-       * holding them together — which is most of what "ugly compared to the
-       * receipt" meant. `justify-between` spreads the rows and the hairlines
-       * between them across whatever height is going, so the rules land at
-       * even intervals and the table reads as the body of the label.
+       * ⚠️ **ONE grid for all three rows, and that is the fix for "messy".**
+       * Each row used to be a grid of its own with an `auto` label column, so
+       * each value started wherever its own label happened to end: on the
+       * label the shop photographed on 2026-11-17 the name, the fault, the
+       * amount and the payment began at four different places. Here the label
+       * column is as wide as the widest label and every value starts on the
+       * same vertical line.
+       *
+       * ⚠️ `[align-content:safe_center]`, not `content-center`. The table is
+       * centred in whatever height the header and footer leave — an ordinary
+       * ticket gets even space above and below rather than a hole under it —
+       * and `safe` means that a table taller than its box falls back to the
+       * top instead of spilling over the header as well as the footer.
        *
        * ⚠️ It must stay `min-h-0`: a flex item's default `min-height: auto`
-       * refuses to shrink below its content, so a three-line fault would push
-       * the footer off the bottom edge instead of eating the slack — which is
-       * exactly how the phone line came to be cut off the printed label.
-       *
-       * On continuous paper there is no free space to spread, so the same
-       * markup flows naturally and `justify-between` does nothing.
+       * refuses to shrink below its content, so a long fault would push the
+       * footer off the bottom edge instead of meeting the fitter's limit.
        */}
       <dl
         className={cn(
-          "flex flex-col",
-          fits ? "gap-[1.25mm] py-[1.25mm]" : "min-h-0 flex-1 justify-between py-[0.75mm]",
+          "grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-y-[1.25mm]",
+          fits ? "py-[1.75mm]" : "min-h-0 flex-1 py-[1mm] [align-content:safe_center]",
         )}
       >
-        {rows.map((row, index) => (
-          <Fragment key={row.label}>
-            {index > 0 && !fits && <hr className={cn(rule, "w-full")} />}
-            <div className="grid grid-cols-[auto_1fr] items-baseline gap-[1.75mm] py-[0.375mm]">
-              <dt
-                className={cn(
-                  "whitespace-nowrap font-semibold",
-                  row.strong ? "text-[6.8pt]" : "text-[6.4pt]",
-                  "leading-[1.3]",
-                )}
-              >
-                {row.label}
-              </dt>
-              <dd
-                className={cn(
-                  "min-w-0 font-bold",
-                  /*
-                   * ⚠️ **The amount sits beside its label, not at the far
-                   * edge**, and the shop asked for that in those words on
-                   * 2026-11-13. The receipt's own split — facts adjacent,
-                   * money at opposite ends — is right on a 210 mm page, where
-                   * the eye travels a long way and the two ends are columns.
-                   * On a 55 mm sticker the far end is two centimetres away,
-                   * so the figure read as belonging to nothing: there is not
-                   * enough width for the gap to mean "this is the total"
-                   * rather than "these two are unrelated". It is still the
-                   * hero — 12 pt against 7.6 is the hierarchy — and now the
-                   * hierarchy and the reading order agree.
-                   *
-                   * ⚠️ **Nothing here may carry `overflow: hidden`.** That is
-                   * what `truncate` and `line-clamp` add, and an Arabic line box
-                   * is shorter than its own ink: measured on this sheet, every
-                   * value's glyphs reach 2 px above their box, so hidden
-                   * sliced the tops off — «الشاشة» printed as «التاشة», which
-                   * is what the shop photographed. The ink paints into the row
-                   * gap instead, where there is nothing to collide with, and
-                   * the words stay whole. The fault's own size is what keeps
-                   * the sheet from overflowing; see {@link fitLabelText}.
-                   */
-                  row.strong ? "text-[12pt]" : "text-[7.6pt]",
-                  "leading-[1.3] break-words",
-                )}
-                style={row.pt ? { fontSize: `${row.pt}pt` } : undefined}
-              >
-                {row.numeric ? <span data-numeric>{row.value}</span> : row.value}
-              </dd>
-            </div>
-          </Fragment>
-        ))}
+        <dt className={labelText}>{t("printName")}</dt>
+        <dd className={valueText} style={sized ? { fontSize: `${sized.name.pt}pt` } : undefined}>
+          {facts.customerName}
+        </dd>
+
+        <dt className={labelText}>{t("printFault")}</dt>
+        <dd className={valueText} style={sized ? { fontSize: `${sized.fault.pt}pt` } : undefined}>
+          {facts.fault}
+        </dd>
+
+        {/*
+         * ⚠️ **The amount sits beside its label**, which the shop asked for in
+         * those words on 2026-11-13: on a 55 mm sticker a figure two
+         * centimetres from its label reads as belonging to nothing. It is the
+         * hero by size alone, and it starts on the same line as the values
+         * above it.
+         *
+         * The payment is a tag at the far end of the same row rather than a
+         * fourth row: «زبون آجل» and «زبون نقدي» say what they are without a
+         * label, and they are a fact about this amount. ⚠️ **Deferred is solid
+         * black and cash is an outline**, so money still owed is the one thing
+         * on the sticker that stands out at a glance. The words carry it too —
+         * the fill is never the only thing saying it.
+         *
+         * Both cells stretch to the row's full height, so their top borders
+         * land on one line and draw a single rule across the table.
+         */}
+        <dt className={cn(labelText, amountCell, "flex items-center")}>{t("printAmount")}</dt>
+        <dd className={cn(amountCell, "flex min-w-0 items-center justify-between gap-[1.5mm]")}>
+          <span data-numeric className="whitespace-nowrap text-[13pt] font-bold leading-[1.15]">
+            {formatPrice(facts.amount)}
+          </span>
+          <span
+            className={cn(
+              "shrink-0 whitespace-nowrap rounded-full border-[0.25mm] border-solid border-[#000] px-[1.75mm] py-[0.5mm] text-[6.4pt] font-bold leading-[1.25]",
+              deferred ? "bg-[#000] text-white" : "bg-white",
+            )}
+          >
+            {t(deferred ? "printTagDeferred" : "printTagCash")}
+          </span>
+        </dd>
       </dl>
 
-      <hr className={rule} />
-
       {/*
-       * The receipt closes on ◆ thanks ◆ and so does this, at a size a thermal
-       * head can hold: a 1 mm square turned 45° is 8 dots across, which keeps
-       * its points. The phones are the heavier of the two lines because they
-       * are the reason a customer keeps the sticker.
+       * The receipt closes on ◆ thanks ◆ and so does this, drawn as one
+       * ornament — a hairline running out to each edge — so the table is
+       * closed by the line itself rather than by a rule with words crammed
+       * under it. A 1 mm square turned 45° is 8 dots across, which keeps its
+       * points on a thermal head.
        */}
-      <footer className="pb-[0.5mm] pt-[0.75mm]">
-        <div className="flex items-center justify-center gap-[1.25mm]">
-          <span className="size-[1mm] shrink-0 rotate-45 bg-[#000]" aria-hidden />
-          <p className="truncate text-[5.4pt] font-bold leading-[1.25]">{t("printThanksShort")}</p>
-          <span className="size-[1mm] shrink-0 rotate-45 bg-[#000]" aria-hidden />
-        </div>
-        <p className="truncate text-center text-[6pt] font-bold leading-[1.25]">
-          {t("printPhoneLine", { phones: site.repairCardPhones.join(" - ") })}
-        </p>
+      <footer className="flex items-center gap-[1.25mm] pb-[0.5mm] pt-[0.5mm]">
+        <span className="h-[0.25mm] min-w-[1.5mm] flex-1 bg-[#000]" aria-hidden />
+        <span className="size-[1mm] shrink-0 rotate-45 bg-[#000]" aria-hidden />
+        <p className="whitespace-nowrap text-[5.8pt] font-bold leading-[1.25]">{t("printThanksShort")}</p>
+        <span className="size-[1mm] shrink-0 rotate-45 bg-[#000]" aria-hidden />
+        <span className="h-[0.25mm] min-w-[1.5mm] flex-1 bg-[#000]" aria-hidden />
       </footer>
     </article>
   );
