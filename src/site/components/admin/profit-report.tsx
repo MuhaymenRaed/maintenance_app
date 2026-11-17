@@ -147,13 +147,15 @@ type Totals = {
   profit: number;
   missingCost: number;
   outstanding: number;
+  /** «واصل بالخزنة» — every dinar collected, the warranty inside it once. See `DeskTotals.till`. */
+  till: number;
 };
 
 type BuiltReport = { rows: ReportRow[]; totals: Totals };
 
 /** The rows, in the order they came in, and the totals over them. */
 export function buildProfitReport(rows: readonly ReportSourceRow[], unassigned: string): BuiltReport {
-  const totals: Totals = { count: 0, amount: 0, warranty: 0, profit: 0, missingCost: 0, outstanding: 0 };
+  const totals: Totals = { count: 0, amount: 0, warranty: 0, profit: 0, missingCost: 0, outstanding: 0, till: 0 };
   const out: ReportRow[] = [];
   const kept = rows
     .filter((row) => row.status !== "cancelled" && row.status !== "declined")
@@ -174,6 +176,7 @@ export function buildProfitReport(rows: readonly ReportSourceRow[], unassigned: 
     totals.amount += money.price;
     totals.warranty += money.warranty;
     totals.outstanding += money.remaining;
+    totals.till += money.collected;
     if (profit != null) totals.profit += profit;
     else if (priced && money.base > 0) totals.missingCost += 1;
 
@@ -278,10 +281,13 @@ export function ProfitReportActions({
   rows,
   context,
   className,
+  bare = false,
 }: {
   rows: readonly ReportSourceRow[];
   context: ReportContext;
   className?: string;
+  /** Without its own «جرد الأرباح» label — for a place that already says it. */
+  bare?: boolean;
 }) {
   const t = useTranslations("Admin");
   const brand = useTranslations("Brand");
@@ -498,10 +504,12 @@ export function ProfitReportActions({
   return (
     <>
       <div className={cn("flex flex-wrap items-center gap-x-2.5 gap-y-2", className)}>
-        <span className="inline-flex items-center gap-1.5 text-[0.8rem] font-extrabold text-ink">
-          <ClipboardList className="size-4 text-brand" aria-hidden />
-          {t("profitReport")}
-        </span>
+        {!bare && (
+          <span className="inline-flex items-center gap-1.5 text-[0.8rem] font-extrabold text-ink">
+            <ClipboardList className="size-4 text-brand" aria-hidden />
+            {t("profitReport")}
+          </span>
+        )}
         <div role="group" aria-label={t("profitReport")} className="flex flex-wrap items-center gap-1.5">
           {MODES.map(({ mode, Icon }) => {
             const mine = task?.mode === mode;
@@ -820,9 +828,12 @@ function ReportPage({
 }
 
 /**
- * The five figures, from the reader's start: what was charged, the warranty
- * within it, the profit — the one figure in red, because it is the reason the
- * report is printed — how many devices, and what is still owed.
+ * The six figures, from the reader's start: what was charged, the warranty
+ * within it, what is actually in the till (2026-11-17), the profit — the one
+ * figure in red, because it is the reason the report is printed — how many
+ * devices, and what is still owed. Two rows of three, so a seven-digit figure
+ * keeps its size; the first page is measured with them, so the table below
+ * starts where they end.
  *
  * ⚠️ The figure sits in a span inside the cell, never on it: `data-numeric`
  * pins `direction: ltr`, so on the cell it would push the number to the LEFT
@@ -833,13 +844,14 @@ function ReportSummary({ totals }: { totals: Totals }) {
   const cards = [
     { key: "amount", label: t("profitReportTotalAmount"), value: money(totals.amount) },
     { key: "warranty", label: t("profitReportTotalWarranty"), value: money(totals.warranty) },
+    { key: "till", label: t("profitReportTill"), value: money(totals.till) },
     { key: "profit", label: t("profitReportTotalProfit"), value: money(totals.profit), strong: true },
     { key: "count", label: t("profitReportTotalCount"), value: String(totals.count) },
     { key: "outstanding", label: t("profitReportOutstanding"), value: money(totals.outstanding) },
   ];
   return (
     <section className="mt-[3.4mm] shrink-0">
-      <dl className="grid grid-cols-5 gap-[2mm]">
+      <dl className="grid grid-cols-3 gap-[2mm]">
         {cards.map((card) => (
           <div
             key={card.key}

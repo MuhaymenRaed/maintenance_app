@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { Callout, ChoiceCards, Field, input, Section, SelectField, Toggle } from "@/components/admin/form-kit";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { LockedPanel } from "@/components/admin/desk-gate";
 import { openPrinterSetup } from "@/lib/print/station";
 import { formatDayTime } from "@/lib/data/datetime";
 import type { RepairService } from "@/lib/data/repair-desk";
@@ -66,13 +67,24 @@ const TABS: { key: Tab; Icon: React.ComponentType<{ className?: string }> }[] = 
   { key: "about", Icon: Info },
 ];
 
+/**
+ * What a technician signed in to the app may change here — "very less
+ * privileges, only what he can see within his app" (the shop, 2026-11-17):
+ * the language, how it looks, which account it uses, and what it is. No
+ * bench, printers, sync, backups or the desk's password.
+ */
+const TECH_TABS = new Set<Tab>(["general", "appearance", "account", "about"]);
+
 export function SettingsPage() {
   const t = useTranslations("Desk");
   const route = useRoute();
+  const sync = useSync();
+  const technician = sync.account?.role === "technician";
+  const tabs = technician ? TABS.filter((entry) => TECH_TABS.has(entry.key)) : TABS;
   const asked = route.query.tab as Tab | undefined;
-  const tab: Tab = TABS.some((entry) => entry.key === asked) ? asked! : "general";
+  const tab: Tab = tabs.some((entry) => entry.key === asked) ? asked! : "general";
 
-  return (
+  const body = (
     <div className="space-y-5">
       <header className="border-s-[3px] border-brand ps-3.5">
         <h1 className="text-[clamp(1.4rem,2.2vw,1.8rem)] font-black leading-tight tracking-[-0.04em] text-ink">
@@ -84,7 +96,7 @@ export function SettingsPage() {
       <div className="grid gap-5 md:grid-cols-[14rem_1fr]">
         <nav aria-label={t("settings")} className="md:sticky md:top-20 md:self-start">
           <ul className="flex gap-1.5 overflow-x-auto md:flex-col">
-            {TABS.map(({ key, Icon }) => (
+            {tabs.map(({ key, Icon }) => (
               <li key={key} className="shrink-0">
                 <a
                   href={`/settings?tab=${key}`}
@@ -109,17 +121,39 @@ export function SettingsPage() {
         </nav>
 
         <section className="desk-rise min-w-0 rounded-panel border border-line bg-surface p-5 shadow-card" key={tab}>
-          {tab === "general" && <General />}
+          {technician && (
+            <p className="mb-4 rounded-card border border-info/35 bg-info/6 px-3.5 py-2.5 text-[0.78rem] font-bold leading-relaxed text-info">
+              {t("techSettingsNote")}
+            </p>
+          )}
+          {tab === "general" && <General technician={technician} />}
           {tab === "appearance" && <Appearance />}
           {tab === "notifications" && <Notifications />}
           {tab === "printing" && <Printing />}
           {tab === "sync" && <SyncSettings />}
           {tab === "backups" && <Backups />}
-          {tab === "account" && <Account />}
+          {tab === "account" && (
+            <>
+              <Account />
+              {!technician && <DeskPassword />}
+            </>
+          )}
           {tab === "about" && <About />}
         </section>
       </div>
     </div>
+  );
+
+  // The shop's account opens its settings with the desk's password, every
+  // time; a technician's narrow settings open without it.
+  // Cancel goes back to the bench — the same place the title bar's own
+  // settings button returns to (`app.tsx`).
+  return technician ? (
+    body
+  ) : (
+    <LockedPanel reason="settings" cancelHref="/admin/repairs">
+      {body}
+    </LockedPanel>
   );
 }
 
@@ -130,7 +164,7 @@ function useSave() {
 
 /* ── General ──────────────────────────────────────────────────────────────── */
 
-function General() {
+function General({ technician }: { technician: boolean }) {
   const t = useTranslations("Desk");
   const settings = useSettings();
   const save = useSave();
@@ -159,6 +193,8 @@ function General() {
         />
       </Section>
 
+      {!technician && (
+      <>
       <Section title={t("bench")} hint={t("benchHint")}>
         {benches === null ? (
           <Loader2 className="size-4 animate-spin text-muted" aria-hidden />
@@ -188,6 +224,8 @@ function General() {
         </div>
         <p className="text-[0.72rem] leading-relaxed text-muted">{t("closeToTrayHint")}</p>
       </Section>
+      </>
+      )}
     </div>
   );
 }
@@ -744,6 +782,80 @@ function Account() {
         onCancel={() => setConfirming(false)}
       />
     </div>
+  );
+}
+
+/* ── The desk's password ───────────────────────────────────────────────────── */
+
+/**
+ * Changing the desk's password (`src/main/desk-lock.ts`). The current one is
+ * asked again even though these settings already sit behind it: a settings
+ * page left open is not a reason to let whoever walks up change the lock.
+ */
+function DeskPassword() {
+  const t = useTranslations("Desk");
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [again, setAgain] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    if (next !== again) {
+      setError("mismatch");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    const result = await window.desk.setDeskPassword({ current, next });
+    setSaving(false);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    setCurrent("");
+    setNext("");
+    setAgain("");
+    toast.success(t("lockSaved"));
+  }
+
+  const field = (value: string, set: (value: string) => void) => (
+    <input
+      type="password"
+      inputMode="numeric"
+      dir="ltr"
+      autoComplete="off"
+      value={value}
+      onChange={(event) => {
+        set(event.target.value);
+        setError(null);
+      }}
+      className={input}
+    />
+  );
+
+  return (
+    <Section title={t("lockTitle")} hint={t("lockHint")}>
+      <div className="grid grid-cols-3 gap-3.5 max-sm:grid-cols-1">
+        <Field label={t("lockCurrent")}>{field(current, setCurrent)}</Field>
+        <Field label={t("lockNew")}>{field(next, setNext)}</Field>
+        <Field label={t("lockAgain")}>{field(again, setAgain)}</Field>
+      </div>
+      {error && (
+        <p className="rounded-card border border-brand/30 bg-brand/6 px-3.5 py-2.5 text-[0.78rem] font-bold text-brand">
+          {t(`lockError_${error}`)}
+        </p>
+      )}
+      <button
+        type="button"
+        disabled={!current || !next || !again || saving}
+        onClick={() => void submit()}
+        className="press inline-flex items-center gap-2 rounded-control bg-brand px-4 py-2.5 text-[0.8rem] font-extrabold text-white transition-colors hover:bg-brand-hover disabled:opacity-50"
+      >
+        {saving ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <KeyRound className="size-4" aria-hidden />}
+        {t("lockSave")}
+      </button>
+    </Section>
   );
 }
 

@@ -16,9 +16,18 @@ import { localised, navigate, refresh, useRoute } from "../../lib/router";
  * thing it does add is the locale — `localised()` — so the address bar and the
  * language the window is drawing in cannot drift apart.
  */
-export type LinkProps = AnchorHTMLAttributes<HTMLAnchorElement> & { href: string };
+export type LinkProps = AnchorHTMLAttributes<HTMLAnchorElement> & {
+  href: string;
+  /**
+   * next-intl's own prop, taken and dropped: the bench's panel and view tabs
+   * pass `scroll={false}` on the site, and the board is redrawn in place here,
+   * so there is no scroll to keep. Left on the anchor it would be an unknown
+   * DOM attribute and a React warning.
+   */
+  scroll?: boolean;
+};
 
-export function Link({ href, ...rest }: LinkProps) {
+export function Link({ href, scroll: _scroll, ...rest }: LinkProps) {
   return createElement("a", { href: localised(href), ...rest });
 }
 

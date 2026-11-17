@@ -51,6 +51,10 @@ export const paths = {
   get session() {
     return path.join(app.getPath("userData"), "session.bin");
   },
+  /** The desk's password, as a salted hash — see `desk-lock.ts`. */
+  get lock() {
+    return path.join(app.getPath("userData"), "desk-lock.json");
+  },
   /** The print agent shipped with the app — next to the exe once packaged. */
   get printAgent() {
     return app.isPackaged

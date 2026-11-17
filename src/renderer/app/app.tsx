@@ -4,6 +4,7 @@ import toast, { Toaster } from "react-hot-toast";
 import { AlertTriangle, Bell, CircleCheck, Wifi, WifiOff, X } from "lucide-react";
 import { PrintStationHost } from "@/components/admin/print-station";
 import { WindowHost } from "@/components/admin/app-window";
+import { DeskGateProvider } from "@/components/admin/desk-gate";
 import { cn } from "@/lib/utils";
 import type { AppNotice } from "../../shared/contract";
 import { chime } from "../lib/chime";
@@ -11,7 +12,7 @@ import { DeskIntl } from "../lib/intl";
 import { markRead } from "../lib/notices";
 import { navigate, openTicket, useRoute } from "../lib/router";
 import { readSettings, saveSettings } from "../lib/settings";
-import { syncNow } from "../lib/sync";
+import { syncNow, useSync } from "../lib/sync";
 import { DeskPage } from "./desk-page";
 import { SettingsPage } from "./settings-page";
 import { SyncPanelHost } from "./sync-panel";
@@ -35,14 +36,29 @@ export function App() {
 
 function Shell() {
   const route = useRoute();
+  const sync = useSync();
   useNoticeToasts();
   useOpenTicketFromMain();
   useShortcuts();
 
+  /*
+   * The desk's password (the shop, 2026-11-17): the ticket editor, the figures
+   * and reports, and the settings ask for it — every time — while the app is
+   * signed in as the shop's own account. Signed in as a technician the app is
+   * already his narrow view (his tickets, his steps, no money), so it asks for
+   * nothing. See the site's `components/admin/desk-gate.tsx`.
+   */
+  const technician = sync.account?.role === "technician";
+  const gate = {
+    required: !technician,
+    verify: (password: string) => window.desk.verifyDeskPassword(password),
+  };
+
   return (
-    // Every editor is a window here as on the dashboard — several tickets open
-    // at once, folded into the dock, closed only after asking. See the site's
-    // `components/admin/app-window.tsx`.
+    <DeskGateProvider value={gate}>
+    {/* Every editor is a window here as on the dashboard — several tickets open
+        at once, folded into the dock, closed only after asking. See the site's
+        `components/admin/app-window.tsx`. */}
     <WindowHost>
     <div className="flex min-h-dvh flex-col">
       <TitleBar />
@@ -61,6 +77,7 @@ function Shell() {
       <SyncPanelHost />
     </div>
     </WindowHost>
+    </DeskGateProvider>
   );
 }
 

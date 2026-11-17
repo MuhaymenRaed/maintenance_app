@@ -1,11 +1,12 @@
 {
   "site": "B:\\Programming Projects\\Next JS\\Al_Isnad",
-  "syncedAt": "2026-11-17T10:43:07.451Z",
+  "syncedAt": "2026-11-17T15:44:09.355Z",
   "files": [
     "components/account/status-pill.tsx",
     "components/admin/app-window.tsx",
     "components/admin/contact-actions.tsx",
     "components/admin/day-rule.tsx",
+    "components/admin/desk-gate.tsx",
     "components/admin/desk-ticket.tsx",
     "components/admin/fault-picker.tsx",
     "components/admin/filter-chips.tsx",
@@ -15,6 +16,7 @@
     "components/admin/profit-report.tsx",
     "components/admin/queue-toolbar.tsx",
     "components/admin/record-delete.tsx",
+    "components/admin/repair-desk-view.tsx",
     "components/admin/repair-print.tsx",
     "components/admin/repairs-board.tsx",
     "components/admin/stat-detail.tsx",

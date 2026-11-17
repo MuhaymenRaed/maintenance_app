@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
-import { Bot, History, UserRound } from "lucide-react";
+import { Bot, ChevronDown, History, UserRound } from "lucide-react";
 import { loadStatusHistory } from "@/lib/actions/status-history";
 import { formatDayTime } from "@/lib/data/datetime";
 import { statusTone, TONE_VAR } from "@/lib/data/status-tone";
@@ -22,6 +22,11 @@ import type { HistoryKind } from "@/lib/queries/status-steps";
  * me it was ready on Tuesday". Read on open (`loadStatusHistory`), and again
  * whenever `status` changes, so a press on a status button appears here on the
  * frame the board confirms it.
+ *
+ * ⚠️ **Folded until asked for** — the shop, 2026-11-17: the history is the
+ * answer to a question somebody occasionally asks, and drawn open on every
+ * ticket it pushed the work below it down a screen. Nothing is read until it
+ * is opened, so a ticket opened to change its price costs no history query.
  */
 export function StatusHistory({
   kind,
@@ -38,12 +43,14 @@ export function StatusHistory({
 }) {
   const t = useTranslations("Admin");
   const locale = useLocale();
+  const [open, setOpen] = useState(false);
   const [state, setState] = useState<{
     available: boolean;
     events: StatusEvent[];
   } | null>(null);
 
   useEffect(() => {
+    if (!open) return;
     // A cancellation flag and no run-once ref: the pairing of the two is what
     // once left the rating dialog on its skeleton for ever.
     let alive = true;
@@ -57,16 +64,23 @@ export function StatusHistory({
     return () => {
       alive = false;
     };
-  }, [kind, id, status]);
+  }, [open, kind, id, status]);
 
   return (
     <section className="space-y-2.5">
-      <h3 className="flex items-center gap-1.5 text-[0.78rem] font-extrabold text-ink">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-1.5 rounded-control text-start text-[0.78rem] font-extrabold text-ink transition-colors hover:text-brand"
+      >
         <History className="size-3.5 text-muted" aria-hidden />
-        {t("statusHistory")}
-      </h3>
+        <span className="flex-1">{t("statusHistory")}</span>
+        <span className="text-[0.7rem] font-bold text-muted">{open ? t("statusHistoryHide") : t("statusHistoryShow")}</span>
+        <ChevronDown className={`size-4 shrink-0 text-muted transition-transform duration-150 ${open ? "rotate-180" : ""}`} aria-hidden />
+      </button>
 
-      {state === null ? (
+      {!open ? null : state === null ? (
         <div className="sheen h-14 rounded-card bg-subtle" aria-hidden />
       ) : !state.available ? (
         <p className="rounded-card border border-dashed border-line px-3 py-2.5 text-[0.72rem] font-medium text-muted">
@@ -119,7 +133,7 @@ export function StatusHistory({
                     </span>
                   )}
                 </span>
-                <span className="shrink-0 pt-0.5 text-[0.7rem] font-semibold text-muted" dir="ltr">
+                <span className="shrink-0 pt-0.5 text-[0.7rem] font-semibold text-muted">
                   {formatDayTime(locale, event.at)}
                 </span>
               </li>

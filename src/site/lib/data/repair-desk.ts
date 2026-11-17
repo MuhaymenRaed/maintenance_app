@@ -89,9 +89,11 @@
  *   `above` for every viewer who is not one, which closes both halves at
  *   once: `ticketControl` already refuses anything held by somebody above,
  *   and `controls`/`assignable`/`visible` are all filtered by it.
- * - **A technician** controls nothing. They read every ticket, and handle the
- *   ones in their own name: the status, the price the customer is told, what
- *   became of the device, the photographs.
+ * - **A technician** controls nothing, and sees only the tickets in his own
+ *   name (the shop, 2026-11-17: "the tech ui must show only his cards"). On
+ *   those he moves the status along the work steps — `TECH_STATUSES` — and
+ *   reads the device, the customer and the price; he types nothing else.
+ *   Accepting, cancelling and handing a device back are a manager's.
  *
  * ⚠️ This file decides what is *offered*. `desk_may_control` and the
  * `repair_tickets_guard_desk` trigger say the same thing in the database, and
@@ -128,6 +130,59 @@ export function daysBetween(start: string, end: string): number {
 /** Still on somebody's bench — the same three the queue strips call closed. */
 export function isOpenTicket(status: string): boolean {
   return status !== "completed" && status !== "cancelled" && status !== "declined";
+}
+
+/**
+ * What a technician may set on a ticket in his own name.
+ *
+ * The shop, 2026-11-17: accepting a ticket and cancelling one are "in the hand
+ * of the manager", and so is handing the device back — `ready` is the manager
+ * ringing the customer and `completed` is money changing hands. The technician
+ * moves the work along and says when his part is done: `work_done`, a status
+ * added for exactly that ("so the tech tells the manager that he finished his
+ * work").
+ *
+ * ⚠️ Two halves of one rule: `repair_tickets_guard_desk` in
+ * `20261117_technician_desk.sql` says the same in the database.
+ */
+export const TECH_STATUSES = [
+  "received",
+  "diagnosing",
+  "waiting_parts",
+  "in_repair",
+  "quality_check",
+  "work_done",
+] as const;
+
+export function techMaySet(status: string): boolean {
+  return (TECH_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * Where a technician may move a ticket **from**: accepted, or one of his own
+ * steps. Once the manager has set it waiting on the customer, handed it back
+ * or cancelled it, the ticket is out of his hands.
+ *
+ * ⚠️ `techMaySet` alone checked only where a ticket was going, so a
+ * technician could pull a delivered or cancelled ticket of his back into
+ * repair — reopening a sale the manager had closed, after the money had
+ * settled. Found by a security review of this change, 2026-11-17. Two halves
+ * of one rule again: `v_from` in `repair_tickets_guard_desk`.
+ */
+export function techMayMoveFrom(status: string): boolean {
+  return status === "approved" || techMaySet(status);
+}
+
+/**
+ * Whether moving a ticket to `status` settles what it still owes.
+ *
+ * The shop, 2026-11-17: a deferred (آجل) ticket handed back to its customer —
+ * «تم التسليم» — is paid, so «الباقي» is filled the moment it gets there. A
+ * cash ticket is paid in full already (see `repairMoney`), so there is
+ * nothing to settle on one.
+ */
+export function settlesOnStatus(status: string, terms: PaymentTerms): boolean {
+  return status === "completed" && terms === "deferred";
 }
 
 /* ── The price and the warranty ───────────────────────────────────────────── */
@@ -229,6 +284,18 @@ export type DeskTotals = {
   collectedDeferred: number;
   /** The part of `collectedDeferred` on tickets still owing — not yet profit. */
   partialHeld: number;
+  /**
+   * «واصل بالخزنة» — every dinar actually collected, cash and deferred alike.
+   *
+   * ⚠️ The shop asked for it as «الضمان + واصل نقد + واصل آجل», and the warranty
+   * is already inside both: a ticket's total carries it, and a cash ticket's
+   * واصل is that whole total. Adding it again would count every warranty
+   * twice, so the till is the two واصل figures, and `tillWarranty` says how
+   * much of it is warranty.
+   */
+  till: number;
+  /** The warranty's share of `till`, taken first out of what each ticket paid. */
+  tillWarranty: number;
   outstanding: number;
   deferred: number;
   /** Paid tickets with a price but no cost typed — the profit leaves them out. */
@@ -250,6 +317,8 @@ export function emptyTotals(): DeskTotals {
     collectedCash: 0,
     collectedDeferred: 0,
     partialHeld: 0,
+    till: 0,
+    tillWarranty: 0,
     outstanding: 0,
     deferred: 0,
     missingCost: 0,
@@ -300,6 +369,8 @@ export function addToTotals(
   } else {
     totals.collectedCash += money.collected;
   }
+  totals.till += money.collected;
+  totals.tillWarranty += Math.min(money.warranty, money.collected);
 
   if (money.cost != null) totals.cost += money.cost;
   if (money.settled) {

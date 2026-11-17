@@ -53,6 +53,8 @@ const api: DeskApi = {
 
   account: invoke(CH.account),
   setAccount: invoke(CH.setAccount),
+  verifyDeskPassword: invoke(CH.verifyDeskPassword),
+  setDeskPassword: invoke(CH.setDeskPassword),
 
   backups: invoke(CH.backups),
   backupNow: invoke(CH.backupNow),

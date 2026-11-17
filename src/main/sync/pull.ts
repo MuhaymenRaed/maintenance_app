@@ -107,9 +107,19 @@ export async function pullRefs(client: SupabaseClient, userId: string, email: st
     }],
     ["catalogue", () => pullCatalogue(client)],
     ["steps", async () => {
-      const probe = await client.from("repair_tickets").select("id").eq("status", "waiting_parts").limit(1);
+      // A filter on a value the enum does not have is refused with 22P02 — the
+      // site's own probe (`lib/queries/status-steps.ts`).
+      const [parts, done] = await Promise.all([
+        client.from("repair_tickets").select("id").eq("status", "waiting_parts").limit(1),
+        // «انتهاء عمل الصيانة» — 20261117_technician_desk.sql.
+        client.from("repair_tickets").select("id").eq("status", "work_done" as never).limit(1),
+      ]);
       const current = refs.steps();
-      store.setRef("steps", { ...current, waitingParts: probe.error?.code !== "22P02" });
+      store.setRef("steps", {
+        ...current,
+        waitingParts: parts.error?.code !== "22P02",
+        workDone: done.error?.code !== "22P02",
+      });
     }],
     ["available", async () => {
       // Whether a ticket's faults can be changed after it is opened —

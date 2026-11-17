@@ -184,10 +184,15 @@ export function deskPage(params: DeskPageParams, service: RepairService): DeskPa
   const isTech = authority.rank === "technician";
   const now = Date.now();
 
+  // A technician has one list — his own (the shop, 2026-11-17). Everybody
+  // else opens on the bench.
   const defaultView: DeskView = isTech ? "mine" : "all";
   const asked = params.view;
-  const view: DeskView =
-    asked === "all" || asked === "mine" ? asked : asked === "pending" && !isTech ? "pending" : defaultView;
+  const view: DeskView = isTech
+    ? "mine"
+    : asked === "all" || asked === "mine" || asked === "pending"
+      ? asked
+      : defaultView;
 
   const window = resolveQueueWindow(
     { when: params.when, from: params.from, to: params.to, days: params.days },
@@ -284,7 +289,9 @@ function buildBoard(
     if (window.since && raw.created_at < window.since) continue;
     if (window.until && raw.created_at >= window.until) continue;
     if (window.when === "open" && !isOpenTicket(raw.status)) continue;
-    if (view === "mine" && raw.assigned_to !== viewerId) continue;
+    // ⚠️ A technician reads only the tickets in his own name, whatever view was
+    // asked for — the site's `getRepairDesk` holds the same line.
+    if ((view === "mine" || scope.authority.rank === "technician") && raw.assigned_to !== viewerId) continue;
     if (
       needle &&
       ![

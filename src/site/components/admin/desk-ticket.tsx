@@ -3,7 +3,7 @@
 import { useMemo, useState, useSyncExternalStore, useTransition } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
-import { Cpu, Loader2, Printer, ShieldCheck, Wrench } from "lucide-react";
+import { ChevronDown, Cpu, Loader2, Printer, ShieldCheck, Wrench } from "lucide-react";
 import { EntityDialog, Field, FieldGroup, Grid, input, NumberInput, Section, SelectField, MoneyInput } from "@/components/admin/form-kit";
 import {
   RepairWarrantyDialog,
@@ -203,6 +203,8 @@ function DeskTicketDialog({
     listSaved: boolean;
   } | null>(null);
   const [warrantyOpen, setWarrantyOpen] = useState(false);
+  /** The warranty's fields, folded until asked for (2026-11-17). */
+  const [warrantyShown, setWarrantyShown] = useState(false);
   const [printBusy, setPrintBusy] = useState(false);
   // Read only for the button's spinner: the run lives in the print station,
   // so closing this dialog mid-print cannot stop the papers.
@@ -603,27 +605,43 @@ function DeskTicketDialog({
                 <Field label={t("financeCost")}>
                   <MoneyInput value={cost} clearable onChange={setCost} min={0} />
                 </Field>
-                <Field label={t("financeCollected")}>
-                  {/* ⚠️ Not offered on cash: a cash ticket is paid in full at
-                      the counter, and the total shows greyed in its place. */}
-                  <MoneyInput
-                    value={terms === "cash" ? null : collected}
-                    clearable
-                    onChange={setCollected}
-                    min={0}
-                    disabled={terms === "cash"}
-                    placeholder={terms === "cash" && total ? formatPrice(total) : undefined}
-                  />
-                </Field>
               </Grid>
 
+              {/* ⚠️ Only once «آجل» is chosen — the shop, 2026-11-17: "the آجل
+                  must show its fields only when the user chooses it". A cash
+                  ticket is paid in full at the counter. */}
+              {terms === "deferred" && (
+                <div className="rounded-card border border-warning/35 bg-warning/5 p-3">
+                  <Field label={t("financeCollected")}>
+                    <MoneyInput value={collected} clearable onChange={setCollected} min={0} />
+                  </Field>
+                </div>
+              )}
+
               {/* Its own block, because it is its own decision with its own
-                  price — and it joins the repair in what the customer pays. */}
-              <div className="space-y-2 rounded-card border-2 border-info/40 bg-info/6 p-3">
-                <p className="flex items-center gap-2 text-[0.82rem] font-black text-ink">
-                  <ShieldCheck className="size-4 text-info" aria-hidden />
-                  {t("warrantyTitle")}
-                </p>
+                  price — and it joins the repair in what the customer pays.
+                  Folded until asked for, with what it holds on the fold. */}
+              <div className="rounded-card border-2 border-info/40 bg-info/6">
+                <button
+                  type="button"
+                  onClick={() => setWarrantyShown((value) => !value)}
+                  aria-expanded={warrantyShown}
+                  className="flex w-full items-center gap-2 px-3 py-2.5 text-start"
+                >
+                  <ShieldCheck className="size-4 shrink-0 text-info" aria-hidden />
+                  <span className="flex-1 text-[0.82rem] font-black text-ink">{t("warrantyTitle")}</span>
+                  <span className="text-[0.72rem] font-extrabold text-info">
+                    {(warranty ?? 0) > 0
+                      ? `${formatPrice(warranty!)} ${t("currency")}${warrantyDays ? ` · ${t("warrantyDaysShort", { days: String(warrantyDays) })}` : ""}`
+                      : t("warrantyNone")}
+                  </span>
+                  <ChevronDown
+                    className={cn("size-4 shrink-0 text-muted transition-transform duration-150", warrantyShown && "rotate-180")}
+                    aria-hidden
+                  />
+                </button>
+                {warrantyShown && (
+                <div className="space-y-2 border-t border-info/25 px-3 pt-2.5 pb-3">
                 {warrantyAvailable ? (
                   <>
                     <Grid>
@@ -659,17 +677,21 @@ function DeskTicketDialog({
                 ) : (
                   <p className="text-[0.76rem] font-bold text-warning">{t("warrantyUnavailable")}</p>
                 )}
+                </div>
+                )}
               </div>
 
-              <dl className="grid grid-cols-3 gap-2">
+              <dl className={cn("grid gap-2", terms === "deferred" ? "grid-cols-3" : "grid-cols-2")}>
                 <div className="rounded-card border border-brand/35 bg-brand/6 px-3 py-2">
                   <dt className="text-[0.68rem] font-bold text-muted">{t("warrantyTotal")}</dt>
                   <dd className="text-[1rem] font-black text-brand" data-numeric>{formatPrice(total ?? 0)}</dd>
                 </div>
-                <div className="rounded-card border border-warning/40 bg-warning/6 px-3 py-2">
-                  <dt className="text-[0.68rem] font-bold text-muted">{t("financeRemaining")}</dt>
-                  <dd className="text-[1rem] font-black text-warning" data-numeric>{formatPrice(money.remaining)}</dd>
-                </div>
+                {terms === "deferred" && (
+                  <div className="rounded-card border border-warning/40 bg-warning/6 px-3 py-2">
+                    <dt className="text-[0.68rem] font-bold text-muted">{t("financeRemaining")}</dt>
+                    <dd className="text-[1rem] font-black text-warning" data-numeric>{formatPrice(money.remaining)}</dd>
+                  </div>
+                )}
                 <div className="rounded-card border border-success/35 bg-success/6 px-3 py-2">
                   <dt className="text-[0.68rem] font-bold text-muted">{t("financeProfit")}</dt>
                   <dd className={cn("text-[1rem] font-black", money.profit != null && money.profit < 0 ? "text-brand" : "text-success")}>

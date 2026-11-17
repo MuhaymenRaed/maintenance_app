@@ -17,7 +17,9 @@
 
 export type StatusTone = "good" | "progress" | "waiting" | "bad";
 
-const GOOD = new Set(["delivered", "completed", "approved", "ready"]);
+// `work_done` is the bench's part finished — the same green as "ready", one
+// step before it.
+const GOOD = new Set(["delivered", "completed", "approved", "ready", "work_done"]);
 const BAD = new Set(["cancelled", "declined", "void", "write_off"]);
 // `waiting_parts` waits on a supplier, which is the same amber as waiting on a
 // customer; `preparing` and `inspecting` are hands on the work and fall

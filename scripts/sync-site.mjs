@@ -35,6 +35,10 @@ if (!fs.existsSync(path.join(SITE, "lib", "data", "repair-desk.ts"))) {
 
 /** What the app draws or computes with, straight from the site. */
 const ENTRIES = [
+  // The bench itself — its two panels, drawn by the site's own view.
+  "components/admin/repair-desk-view.tsx",
+  // The desk's password prompt; the app switches it on in `app.tsx`.
+  "components/admin/desk-gate.tsx",
   "components/admin/repairs-board.tsx",
   "components/admin/desk-ticket.tsx",
   "components/admin/filter-chips.tsx",

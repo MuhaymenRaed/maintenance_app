@@ -17,6 +17,7 @@ import * as backups from "./backup";
 import { agentInfo, callAgent, restartAgent } from "./print-agent";
 import { logFile } from "./log";
 import { setChrome } from "./window";
+import { setDeskPassword, verifyDeskPassword } from "./desk-lock";
 
 /**
  * Every call the window can make, bound to its handler — and every event the
@@ -98,6 +99,13 @@ export function registerIpc() {
   handle(CH.setAccount, async (input: { email: string; password: string }) => {
     const email = input.email.trim();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !input.password) return { ok: false as const, error: "invalid_credentials" };
+    // ⚠️ Not while work is still waiting to reach the server. It was saved
+    // under this account; sent after the switch it would go under the next
+    // one — a technician's, whose session the database would refuse it under,
+    // or worse, accept. Sync or discard first.
+    if (store.ops.some((op) => op.state === "pending" || op.state === "failed")) {
+      return { ok: false as const, error: "pending_changes" };
+    }
     const tested = await testAccount(email, input.password);
     if (!tested.ok) return tested;
     await saveAccount({ email, password: input.password });
@@ -105,6 +113,9 @@ export function registerIpc() {
     sync.accountChanged();
     return { ok: true as const };
   });
+
+  handle(CH.verifyDeskPassword, (password: string) => verifyDeskPassword(password));
+  handle(CH.setDeskPassword, (input: { current: string; next: string }) => setDeskPassword(input));
 
   handle(CH.backups, () => backups.listBackups());
   handle(CH.backupNow, () => backups.backupNow("manual"));

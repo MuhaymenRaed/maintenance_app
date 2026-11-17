@@ -34,7 +34,15 @@ export const refs = {
   brands: () => store.ref<Brand[]>("brands") ?? [],
   models: () => store.ref<Record<string, StockModel[]>>("models") ?? {},
   issues: () => store.ref<Issue[]>("issues") ?? [],
-  steps: (): StepSupport => store.ref<StepSupport>("steps") ?? { preparing: true, waitingParts: true, inspecting: true },
+  // `workDone` defaults off: offering «انتهاء عمل الصيانة» before the database
+  // has the value is a press every save refuses. The pull asks.
+  steps: (): StepSupport => ({
+    preparing: true,
+    waitingParts: true,
+    inspecting: true,
+    workDone: false,
+    ...store.ref<Partial<StepSupport>>("steps"),
+  }),
   available: (): DeskAvailability =>
     store.ref<DeskAvailability>("available") ?? { service: true, finance: true, warranty: true, customFaults: true },
 };

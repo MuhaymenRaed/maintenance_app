@@ -1,24 +1,30 @@
 "use client";
 
-import { useRef, useState, useSyncExternalStore, useTransition } from "react";
+import { useRef, useState, useSyncExternalStore, useTransition, type ReactNode } from "react";
 import Image from "next/image";
 import { useLocale, useTranslations } from "next-intl";
 import {
-  ChevronLeft,
+  Banknote,
+  ChevronDown,
   Cpu,
   Eye,
+  HandCoins,
   ImageOff,
   ImagePlus,
   Loader2,
   MapPin,
+  Pencil,
+  Phone,
   Printer,
   ShieldCheck,
   Smartphone,
   Store,
   Timer,
   UserCheck,
+  UserRound,
   UserX,
   Wrench,
+  type LucideIcon,
 } from "lucide-react";
 import { StatusPill } from "@/components/account/status-pill";
 import {
@@ -51,6 +57,9 @@ import { groupByDay } from "@/lib/data/queue-window";
 import {
   repairMoney,
   repairTotal,
+  settlesOnStatus,
+  techMayMoveFrom,
+  techMaySet,
   warrantyEnd,
   type DeskRank,
   type PaymentTerms,
@@ -59,7 +68,8 @@ import { uploadPhotos } from "@/lib/upload";
 import { REPAIR_FLOW } from "@/lib/data/orders";
 import { StatusHistory } from "@/components/admin/status-history";
 import { useStatusConfirm } from "@/components/admin/status-confirm";
-import { ProfitReportActions, type ReportContext } from "@/components/admin/profit-report";
+import { useGuardedAction } from "@/components/admin/desk-gate";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { TicketFaults } from "@/components/admin/fault-picker";
 import type { RecentFault } from "@/lib/data/repair-faults";
 import { windowStore } from "@/lib/windows/window-store";
@@ -70,7 +80,7 @@ import type { DeskRow } from "@/lib/queries/repair-desk";
 type RepairCard = DeskRow;
 import type { RepairStatus } from "@/lib/data/orders";
 import { cn } from "@/lib/utils";
-import { formatDayNumeric, formatDayTime } from "@/lib/data/datetime";
+import { formatDayTime } from "@/lib/data/datetime";
 import { liveDocument, OwnerDocumentProvider } from "@/lib/windows/owner-document";
 
 /** Somebody a ticket may be handed to. */
@@ -107,8 +117,7 @@ export function RepairsBoard({
   showDays = false,
   todayDay,
   initialOpenId = null,
-  flow = REPAIR_FLOW.filter((step) => step !== "waiting_parts"),
-  report,
+  flow = REPAIR_FLOW.filter((step) => step !== "waiting_parts" && step !== "work_done"),
   issues = [],
   recentFaults = [],
   faultsEditable = false,
@@ -123,11 +132,6 @@ export function RepairsBoard({
    * only rather than an editor that every save refuses.
    */
   faultsEditable?: boolean;
-  /**
-   * What the profit report prints above its table — the period and the
-   * filters in words. Absent, the report button is not drawn.
-   */
-  report?: ReportContext;
   /**
    * The steps this deployment can store, in order — the page passes
    * `liveFlow(REPAIR_FLOW, …)`. Without 20261107_status_steps.sql
@@ -200,6 +204,14 @@ export function RepairsBoard({
   const [warrantyId, setWarrantyId] = useState<string | null>(null);
   /** The window the warranty was asked for from, where its form opens. */
   const [warrantyFrom, setWarrantyFrom] = useState<Document | null>(null);
+  /**
+   * The ticket whose short view is open. A press anywhere on a row opens it —
+   * the device, the customer and the price, nothing to change — and the full
+   * editor is the pencil (the shop, 2026-11-17).
+   */
+  const [quickId, setQuickId] = useState<string | null>(null);
+  /** The editor is behind the desk's password where there is one: the app. */
+  const guard = useGuardedAction();
   /*
    * The print station's run — read only to show which ticket is printing. The
    * run itself lives in `lib/print/station.ts`, outside this board, so closing
@@ -214,6 +226,7 @@ export function RepairsBoard({
   });
   const warrantyRow =
     rows.find((row) => row.id === warrantyId) ?? (warrantyId ? pinned[warrantyId] : undefined) ?? null;
+  const quickRow = rows.find((row) => row.id === quickId) ?? null;
 
   function openTicket(row: RepairCard) {
     if (openIds.includes(row.id)) {
@@ -222,6 +235,18 @@ export function RepairsBoard({
     }
     setPinned((current) => ({ ...current, [row.id]: row }));
     setOpenIds((current) => [...current, row.id]);
+  }
+
+  /**
+   * The full editor. In the desktop app it asks for the desk's password first,
+   * every time (`components/admin/desk-gate.tsx`); on the site, and for a
+   * technician's own app, it opens at once.
+   */
+  function editTicket(row: RepairCard) {
+    guard.run("edit", () => {
+      setQuickId(null);
+      openTicket(row);
+    });
   }
 
   function closeTicket(id: string) {
@@ -235,8 +260,8 @@ export function RepairsBoard({
 
   /**
    * One press: both receipts to the A5 printer, then the label to the label
-   * printer — no dialog on a machine with QZ Tray, the browser's dialog on one
-   * without. The station reads the ticket fresh before printing, so the facts
+   * printer — no dialog on a PC running the print agent, the browser's dialog on
+   * one without. The station reads the ticket fresh before printing, so the facts
    * here are only what the dialog path falls back to.
    *
    * The date on the paper is stamped by the press — reading the clock during
@@ -294,20 +319,6 @@ export function RepairsBoard({
         </p>
       )}
 
-      {/* What the filters above came to, and the one report built from it. */}
-      {report && seesMoney && (
-        <div className="flex flex-wrap items-center gap-2 rounded-panel border border-line bg-surface px-3.5 py-2.5 shadow-card">
-          <p className="text-[0.78rem] font-bold text-muted">
-            {t("deskListCount", { count: rows.length })}
-          </p>
-          <ProfitReportActions
-            rows={rows}
-            context={report}
-            className="ms-auto"
-          />
-        </div>
-      )}
-
       {rows.length === 0 ? (
         <p className="rounded-panel border border-dashed border-line px-6 py-16 text-center text-[0.9rem] font-bold text-muted">
           {t("noData")}
@@ -327,173 +338,203 @@ export function RepairsBoard({
             />
           )}
         <ul className="space-y-2.5">
-          {group.rows.map((row) => (
+          {group.rows.map((row) => {
+            const price = repairCost(row);
+            const faults = [...row.issues, ...row.customFaults];
+            // Cash or deferred, and what is still owed — the desk's own
+            // bookkeeping, never shown to the customer or a technician.
+            const owes =
+              seesMoney && financeAvailable
+                ? repairMoney({
+                    price: row.price,
+                    warranty: row.warrantyPrice,
+                    cost: row.costPrice,
+                    collected: row.collected,
+                    terms: row.paymentTerms,
+                  }).remaining
+                : 0;
+            return (
             <li key={row.id}>
-              <article className="relative flex items-center gap-3 rounded-panel border border-line bg-surface p-3.5 shadow-card sm:gap-4 sm:px-4">
+              {/*
+                ⚠️ Customer first — the shop, 2026-11-17: "the ticket row must
+                show the name and the personal information of the client …
+                from the ticket row all the needed information will be
+                gathered". The counter rings a person, not a code, so the name
+                and the number lead and are the largest things on the row; the
+                device and its faults follow, and the ticket's own facts close
+                it.
+              */}
+              <article className="relative flex items-stretch gap-3 rounded-panel border border-line bg-surface p-3 shadow-card transition-colors hover:border-brand/45 sm:gap-3.5 sm:p-3.5">
                 <span
-                  className="h-12 w-1.5 shrink-0 rounded-full"
+                  className="w-1.5 shrink-0 rounded-full"
                   style={{ background: TONE_VAR[statusTone(row.status)] }}
                   aria-hidden
                 />
-
-                {row.photosBefore[0] ? (
-                  <span className="relative size-11 shrink-0 overflow-hidden rounded-card border border-line max-sm:hidden">
-                    <Image
-                      src={row.photosBefore[0]}
-                      alt=""
-                      fill
-                      sizes="44px"
-                      className="object-cover"
-                    />
-                  </span>
-                ) : (
-                  <span className="flex size-11 shrink-0 items-center justify-center rounded-card bg-subtle text-muted max-sm:hidden">
-                    {row.service === "software" ? <Cpu className="size-4" aria-hidden /> : <Smartphone className="size-4" aria-hidden />}
-                  </span>
-                )}
 
                 {/* ⚠️ The row's button is a **stretched overlay**, not a wrapper,
                     so the controls at the end of the row can stay real buttons
                     beside it rather than nested inside it — a `<button>` inside
                     a `<button>` is unnested by the parser, and that is a
-                    hydration error rather than a style bug. */}
+                    hydration error rather than a style bug. A press anywhere
+                    on the row opens its short view; changing it is the pencil. */}
                 <button
                   type="button"
-                  onClick={() => openTicket(row)}
-                  aria-label={row.code}
+                  onClick={() => setQuickId(row.id)}
+                  aria-label={t("deskQuickOpen", { name: row.customerName, code: row.code })}
                   className="absolute inset-0 z-0 rounded-panel focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
                 />
-                <div className="pointer-events-none relative z-1 min-w-0 flex-1 text-start">
-                  <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                    <span
-                      className="text-[0.85rem] font-extrabold text-info"
-                      data-numeric
-                    >
-                      {row.code}
-                    </span>
-                    <span
-                      className="text-[0.7rem] font-medium text-muted"
-                      dir="ltr"
-                    >
-                      {formatDayNumeric(locale, row.createdAt)}
-                    </span>
-                  </span>
 
-                  <span className="mt-0.5 block truncate text-[0.85rem] font-extrabold text-ink">
-                    {row.deviceModel}
-                  </span>
-
-                  <span className="mt-0.5 block truncate text-[0.74rem] font-medium text-muted">
-                    {row.customerName}
-                    {/* ⚠️ The margin is on a wrapper. On the `dir="ltr"` span itself
-                        `ms-` resolves to that span's own start, the far side of
-                        the number on an Arabic page, and the name ran into it. */}
+                <div className="pointer-events-none relative z-1 min-w-0 flex-1 space-y-1 text-start">
+                  <p className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5">
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <UserRound className="size-4 shrink-0 text-muted" aria-hidden />
+                      <span className="truncate text-[0.95rem] font-black text-ink">{row.customerName}</span>
+                    </span>
+                    {/* ⚠️ The gap is on the parent. On a `dir="ltr"` span
+                        `ms-` resolves to that span's own start — the far side
+                        of the number on an Arabic page — and the name ran
+                        into it. */}
                     {row.customerPhone && (
-                      <span className="ms-2">
+                      <span className="inline-flex items-center gap-1 text-[0.8rem] font-bold text-ink">
+                        <Phone className="size-3.5 shrink-0 text-muted" aria-hidden />
                         <span dir="ltr" data-numeric>
                           {row.customerPhone}
                         </span>
                       </span>
                     )}
-                    {(row.issues.length > 0 || row.customFaults.length > 0) && (
-                      <span className="ms-2">
-                        · {[...row.issues, ...row.customFaults].join("، ")}
+                    {row.customerPhone2 && (
+                      <span className="text-[0.74rem] font-semibold text-muted">
+                        <span dir="ltr" data-numeric>
+                          {row.customerPhone2}
+                        </span>
+                      </span>
+                    )}
+                  </p>
+
+                  {/* Wraps rather than truncating the faults to «· ال…» beside a
+                      long model name on a phone; the short view lists them all. */}
+                  <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[0.82rem]">
+                    {row.service === "software" ? (
+                      <Cpu className="size-3.5 shrink-0 text-muted" aria-hidden />
+                    ) : (
+                      <Smartphone className="size-3.5 shrink-0 text-muted" aria-hidden />
+                    )}
+                    <span className="shrink-0 font-extrabold text-ink">{row.deviceModel}</span>
+                    {faults.length > 0 && (
+                      <span className="min-w-0 max-w-full truncate font-medium text-muted">· {faults.join("، ")}</span>
+                    )}
+                  </p>
+
+                  <p className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                    <span className="text-[0.74rem] font-extrabold text-info" data-numeric>
+                      {row.code}
+                    </span>
+                    <span className="text-[0.68rem] font-medium text-muted">
+                      {formatDayTime(locale, row.createdAt)}
+                    </span>
+                    <HolderChip row={row} viewerId={viewerId} />
+                    {seesMoney && financeAvailable && (
+                      <TermsChip
+                        terms={row.paymentTerms}
+                        remaining={owes}
+                        cashLabel={t("termsCash")}
+                        deferredLabel={t("termsDeferred")}
+                      />
+                    )}
+                    {seesMoney && (row.warrantyPrice ?? 0) > 0 && (
+                      <span className="inline-flex items-center gap-1 rounded-chip bg-info/10 px-2 py-0.5 text-[0.64rem] font-extrabold text-info">
+                        <ShieldCheck className="size-3" aria-hidden />
+                        {t("warrantyTitle")} <span data-numeric>{formatPrice(row.warrantyPrice!)}</span>
+                      </span>
+                    )}
+                  </p>
+                </div>
+
+                <div className="relative z-1 flex shrink-0 flex-col items-end justify-between gap-2">
+                  <span className="pointer-events-none flex flex-col items-end gap-1">
+                    <StatusPill
+                      status={row.status}
+                      label={tTrack(`status_${row.status}` as "status_received")}
+                    />
+                    {price != null && (
+                      <span className="text-[0.95rem] font-black text-brand" data-numeric>
+                        {formatPrice(price)}
                       </span>
                     )}
                   </span>
-                  <span className="mt-1.5 block">
-                    <HolderChip row={row} viewerId={viewerId} />
+                  <span className="flex items-center gap-1.5">
+                    {/* Ringing the customer is the most common thing anyone does
+                        from this queue, so it does not cost opening the ticket.
+                        Absent where the number was not sent to this reader. */}
+                    {row.customerPhone && (
+                      <WhatsAppButton
+                        phone={row.customerPhone}
+                        message={repairMessage(
+                          row,
+                          t,
+                          tTrack(`status_${row.status}` as "status_received"),
+                        )}
+                        label={`${t("whatsappContact")} — ${row.customerName}`}
+                        variant="icon"
+                      />
+                    )}
+                    {manages && (
+                      <button
+                        type="button"
+                        onClick={(event) => printTicket(row, Date.now(), event.currentTarget.ownerDocument)}
+                        disabled={printingCode !== null}
+                        aria-busy={printingCode === row.code}
+                        aria-label={`${t("deskPrint")} — ${row.code}`}
+                        title={t("deskPrint")}
+                        className="press flex size-9 shrink-0 items-center justify-center rounded-control border border-line text-muted transition-colors hover:border-brand hover:text-brand disabled:cursor-wait disabled:opacity-60"
+                      >
+                        {printingCode === row.code ? (
+                          <Loader2 className="size-4 animate-spin" aria-hidden />
+                        ) : (
+                          <Printer className="size-4" aria-hidden />
+                        )}
+                      </button>
+                    )}
+                    {/* The full editor — beside WhatsApp and print, the shop's
+                        own placement. Absent where this reader may change
+                        nothing on the ticket; the short view still opens. */}
+                    {row.control !== "none" && (
+                      <button
+                        type="button"
+                        onClick={() => editTicket(row)}
+                        aria-label={`${t("deskEditTicket")} — ${row.code}`}
+                        title={t("deskEditTicket")}
+                        className="press flex size-9 shrink-0 items-center justify-center rounded-control border border-brand/40 bg-brand/8 text-brand transition-colors hover:bg-brand hover:text-white"
+                      >
+                        <Pencil className="size-4" aria-hidden />
+                      </button>
+                    )}
                   </span>
                 </div>
-
-                <span className="flex shrink-0 flex-col items-end gap-1.5">
-                  <StatusPill
-                    status={row.status}
-                    label={tTrack(`status_${row.status}` as "status_received")}
-                  />
-                  {repairCost(row) != null && (
-                    <span
-                      className="text-[0.8rem] font-black text-brand"
-                      data-numeric
-                    >
-                      {formatPrice(repairCost(row)!)}
-                    </span>
-                  )}
-                  {/* Cash or deferred, and what is still owed — the desk's own
-                      bookkeeping, never shown to the customer or a technician. */}
-                  {seesMoney && financeAvailable && (
-                    <TermsChip
-                      terms={row.paymentTerms}
-                      remaining={
-                        repairMoney({
-                          price: row.price,
-                          warranty: row.warrantyPrice,
-                          cost: row.costPrice,
-                          collected: row.collected,
-                          terms: row.paymentTerms,
-                        }).remaining
-                      }
-                      cashLabel={t("termsCash")}
-                      deferredLabel={t("termsDeferred")}
-                    />
-                  )}
-                  {seesMoney && (row.warrantyPrice ?? 0) > 0 && (
-                    <span className="inline-flex items-center gap-1 rounded-chip bg-info/10 px-2 py-0.5 text-[0.64rem] font-extrabold text-info">
-                      <ShieldCheck className="size-3" aria-hidden />
-                      {t("warrantyTitle")} <span data-numeric>{formatPrice(row.warrantyPrice!)}</span>
-                    </span>
-                  )}
-                </span>
-
-                {manages && (
-                  <button
-                    type="button"
-                    onClick={(event) => printTicket(row, Date.now(), event.currentTarget.ownerDocument)}
-                    disabled={printingCode !== null}
-                    aria-busy={printingCode === row.code}
-                    aria-label={`${t("deskPrint")} — ${row.code}`}
-                    title={t("deskPrint")}
-                    className="press relative z-1 flex size-9 shrink-0 items-center justify-center rounded-control border border-line text-muted transition-colors hover:border-brand hover:text-brand disabled:cursor-wait disabled:opacity-60 max-sm:hidden"
-                  >
-                    {printingCode === row.code ? (
-                      <Loader2 className="size-4 animate-spin" aria-hidden />
-                    ) : (
-                      <Printer className="size-4" aria-hidden />
-                    )}
-                  </button>
-                )}
-
-                {/* Ringing the customer is the most common thing anyone does
-                    from this queue, so it does not cost opening the ticket.
-                    Absent where the number was not sent to this reader. */}
-                {row.customerPhone && (
-                  <WhatsAppButton
-                    phone={row.customerPhone}
-                    message={repairMessage(
-                      row,
-                      t,
-                      tTrack(`status_${row.status}` as "status_received"),
-                    )}
-                    label={`${t("whatsappContact")} — ${row.customerName}`}
-                    variant="icon"
-                    className="max-sm:hidden"
-                  />
-                )}
-
-                <ChevronLeft
-                  className="size-4 shrink-0 text-muted rtl:rotate-180"
-                  aria-hidden
-                />
               </article>
             </li>
-          ))}
+            );
+          })}
         </ul>
           </section>
           ))}
         </div>
       )}
 
-      {openRows.map((open) => (
+      {openRows.map((open) =>
+        // A technician gets his own editor: the status within his steps, and
+        // the device, the customer and the price to read — nothing else.
+        isTechnician ? (
+          <TechTicketDialog
+            key={open.id}
+            windowId={`repair:${open.id}`}
+            repair={open}
+            flow={flow}
+            error={error}
+            onClose={() => closeTicket(open.id)}
+            onApply={(next, send) => apply(open.id, next, send)}
+          />
+        ) : (
         <RepairDialog
           key={open.id}
           windowId={`repair:${open.id}`}
@@ -538,7 +579,18 @@ export function RepairsBoard({
             closeTicket(open.id);
           }}
         />
-      ))}
+        ),
+      )}
+
+      {quickRow && (
+        <RepairQuickView
+          repair={quickRow}
+          seesMoney={seesMoney}
+          onClose={() => setQuickId(null)}
+          onEdit={quickRow.control !== "none" ? () => editTicket(quickRow) : undefined}
+        />
+      )}
+      {guard.prompt}
 
       {warrantyRow && (
         <OwnerDocumentProvider document={liveDocument(warrantyFrom)}>
@@ -840,16 +892,57 @@ function RepairDialog({
   const confirm = useStatusConfirm();
   /** The fee is required; clearing it is refused rather than saved. */
   const [priceMissing, setPriceMissing] = useState(false);
+  /** Folded until asked for — the shop, 2026-11-17. A summary shows on the fold. */
+  const [warrantyOpen, setWarrantyOpen] = useState(false);
+  /** «تسديد الباقي» asks once before it records money. */
+  const [payingRest, setPayingRest] = useState(false);
 
   function moveTo(status: RepairStatus) {
+    // «تم التسليم» on a deferred ticket settles what it still owes — the
+    // shop's rule of 2026-11-17 (`settlesOnStatus`). Said in the confirm, and
+    // drawn on the frame the move lands; the server writes it after the
+    // status, so a move that fails leaves the ticket owing.
+    const settles =
+      full &&
+      financeAvailable &&
+      total != null &&
+      money.remaining > 0 &&
+      settlesOnStatus(status, repair.paymentTerms);
     confirm.request({
       subject: repair.code,
       from: { key: repair.status, label: statusLabel },
       to: { key: status, label: tTrack(`status_${status}` as "status_received") },
-      note: status === "cancelled" ? t("statusConfirmCancelRepair") : undefined,
-      run: () => onApply({ status }, () => updateRepair(repair.id, { status })),
+      note:
+        status === "cancelled"
+          ? t("statusConfirmCancelRepair")
+          : settles
+            ? t("deskSettleOnDelivery", { amount: formatPrice(money.remaining) })
+            : undefined,
+      run: () => {
+        if (settles) setCollected(total);
+        onApply(settles ? { status, collected: total } : { status }, () =>
+          updateRepair(repair.id, { status }),
+        );
+      },
     });
   }
+
+  /** Fills «الباقي» in one press, instead of retyping «الواصل» as the total. */
+  function payRest() {
+    if (total == null) return;
+    setCollected(total);
+    onApply({ collected: total }, () => updateRepairFinance(repair.id, { collected: total }));
+  }
+
+  const profitFact = (
+    <MoneyFact
+      label={t("financeProfit")}
+      value={money.settled ? money.profit : null}
+      tone={money.profit == null || !money.settled ? "muted" : money.profit < 0 ? "brand" : "success"}
+      empty={money.settled ? t("financeNoCost") : t("financeProfitWaits")}
+      hint={money.warranty > 0 ? t("financeProfitHint") : undefined}
+    />
+  );
 
   function addPhotos(files: FileList | null) {
     if (!files?.length) return;
@@ -911,7 +1004,7 @@ function RepairDialog({
         accent={TONE_VAR[statusTone(repair.status)]}
         footer={
           <>
-            <p className="text-[0.72rem] font-medium text-muted" dir="ltr">
+            <p className="text-[0.72rem] font-medium text-muted">
               {formatDayTime(locale, repair.createdAt)}
             </p>
             {/* ⚠️ On the far side of the footer from "print" and "WhatsApp",
@@ -1263,11 +1356,29 @@ function RepairDialog({
           downstream counts the total — and only a manager ever sees the split.
         */}
         {seesMoney && (
-          <section className="space-y-2.5 rounded-card border-2 border-info/40 bg-info/6 p-3.5">
-            <h3 className="flex items-center gap-2 text-[0.85rem] font-black text-ink">
-              <ShieldCheck className="size-4 text-info" aria-hidden />
-              {t("warrantyTitle")}
-            </h3>
+          <section className="rounded-card border-2 border-info/40 bg-info/6">
+            {/* Folded, with what it holds on the fold, so a ticket with a
+                warranty says so without opening it. */}
+            <button
+              type="button"
+              onClick={() => setWarrantyOpen((value) => !value)}
+              aria-expanded={warrantyOpen}
+              className="flex w-full items-center gap-2 px-3.5 py-3 text-start"
+            >
+              <ShieldCheck className="size-4 shrink-0 text-info" aria-hidden />
+              <span className="flex-1 text-[0.85rem] font-black text-ink">{t("warrantyTitle")}</span>
+              <span className="text-[0.72rem] font-extrabold text-info">
+                {(warranty ?? 0) > 0
+                  ? `${formatPrice(warranty!)} ${t("currency")}${warrantyDays ? ` · ${t("warrantyDaysShort", { days: String(warrantyDays) })}` : ""}`
+                  : t("warrantyNone")}
+              </span>
+              <ChevronDown
+                className={cn("size-4 shrink-0 text-muted transition-transform duration-150", warrantyOpen && "rotate-180")}
+                aria-hidden
+              />
+            </button>
+            {warrantyOpen && (
+            <div className="space-y-2.5 border-t border-info/25 px-3.5 pt-3 pb-3.5">
             <p className="text-[0.74rem] font-medium leading-relaxed text-muted">
               {t("warrantyHint")}
             </p>
@@ -1348,6 +1459,8 @@ function RepairDialog({
                 )}
               </>
             )}
+            </div>
+            )}
           </section>
         )}
 
@@ -1400,47 +1513,64 @@ function RepairDialog({
                     ))}
                   </div>
                 </Field>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Field label={t("financeCost")}>
-                    <MoneyInput
-                      value={costPrice}
-                      clearable
-                      onChange={(value) => setCostPrice(value)}
-                      onCommit={() =>
-                        costPrice !== repair.costPrice &&
-                        onApply({ costPrice }, () => updateRepairFinance(repair.id, { costPrice }))
-                      }
-                      min={0}
-                      disabled={!full}
-                    />
-                  </Field>
-                  <Field label={t("financeCollected")}>
-                    {/* ⚠️ Not offered on cash: a cash ticket is paid in full at
-                        the counter, and the total shows greyed in its place. */}
-                    <MoneyInput
-                      value={repair.paymentTerms === "cash" ? null : collected}
-                      clearable
-                      onChange={(value) => setCollected(value)}
-                      onCommit={() =>
-                        collected !== repair.collected &&
-                        onApply({ collected }, () => updateRepairFinance(repair.id, { collected }))
-                      }
-                      min={0}
-                      disabled={!full || repair.paymentTerms === "cash"}
-                      placeholder={repair.paymentTerms === "cash" && repair.price ? formatPrice(repair.price) : undefined}
-                    />
-                  </Field>
-                </div>
-                <dl className="grid grid-cols-2 gap-2">
-                  <MoneyFact label={t("financeRemaining")} value={money.remaining} tone={money.remaining > 0 ? "warning" : "success"} />
-                  <MoneyFact
-                    label={t("financeProfit")}
-                    value={money.settled ? money.profit : null}
-                    tone={money.profit == null || !money.settled ? "muted" : money.profit < 0 ? "brand" : "success"}
-                    empty={money.settled ? t("financeNoCost") : t("financeProfitWaits")}
-                    hint={money.warranty > 0 ? t("financeProfitHint") : undefined}
+                <Field label={t("financeCost")}>
+                  <MoneyInput
+                    value={costPrice}
+                    clearable
+                    onChange={(value) => setCostPrice(value)}
+                    onCommit={() =>
+                      costPrice !== repair.costPrice &&
+                      onApply({ costPrice }, () => updateRepairFinance(repair.id, { costPrice }))
+                    }
+                    min={0}
+                    disabled={!full}
                   />
-                </dl>
+                </Field>
+                {repair.paymentTerms === "deferred" ? (
+                  /* ⚠️ Only on a deferred ticket — the shop, 2026-11-17: "the
+                     آجل must show its fields only when the user chooses it".
+                     A cash ticket is paid in full at the counter. */
+                  <div className="space-y-2.5 rounded-card border border-warning/35 bg-warning/5 p-3">
+                    <Field label={t("financeCollected")}>
+                      <MoneyInput
+                        value={collected}
+                        clearable
+                        onChange={(value) => setCollected(value)}
+                        onCommit={() =>
+                          collected !== repair.collected &&
+                          onApply({ collected }, () => updateRepairFinance(repair.id, { collected }))
+                        }
+                        min={0}
+                        disabled={!full}
+                      />
+                    </Field>
+                    <dl className="grid grid-cols-2 gap-2">
+                      <MoneyFact label={t("financeRemaining")} value={money.remaining} tone={money.remaining > 0 ? "warning" : "success"} />
+                      {profitFact}
+                    </dl>
+                    {/* The rest in one press, rather than retyping «الواصل» as
+                        the total — and it settles by itself at «تم التسليم». */}
+                    {full && money.remaining > 0 && total != null && (
+                      <button
+                        type="button"
+                        onClick={() => setPayingRest(true)}
+                        className="press inline-flex w-full items-center justify-center gap-2 rounded-control bg-success px-4 py-2.5 text-[0.82rem] font-extrabold text-white transition-opacity hover:opacity-90"
+                      >
+                        <HandCoins className="size-4" aria-hidden />
+                        {t("financePayRest", { amount: formatPrice(money.remaining) })}
+                      </button>
+                    )}
+                    <p className="text-[0.7rem] font-bold leading-relaxed text-muted">{t("financeSettleNote")}</p>
+                  </div>
+                ) : (
+                  <>
+                    <p className="flex items-center gap-2 rounded-card border border-success/30 bg-success/6 px-3 py-2 text-[0.76rem] font-bold text-success">
+                      <Banknote className="size-4 shrink-0" aria-hidden />
+                      {t("financeCashPaid")}
+                    </p>
+                    <dl className="grid gap-2 sm:grid-cols-2">{profitFact}</dl>
+                  </>
+                )}
               </>
             )}
           </Section>
@@ -1474,7 +1604,7 @@ function RepairDialog({
                   </p>
                 )}
                 {repair.preferredAt && (
-                  <p className="text-[0.78rem] font-medium text-muted" dir="ltr">
+                  <p className="text-[0.78rem] font-medium text-muted">
                     {formatDayTime(locale, repair.preferredAt)}
                   </p>
                 )}
@@ -1552,21 +1682,342 @@ function RepairDialog({
             />
           </div>
         </Section>
-      </EntityDialog>
 
-      {lightbox && (
-        <ImageLightbox
-          images={lightbox.urls.map((url) => ({
-            url,
-            alt: repair.deviceModel,
-          }))}
-          startIndex={lightbox.at}
-          onClose={() => setLightbox(null)}
+        {/* ⚠️ Inside the window, never beside it. The ticket is a window of
+            its own on the desktop (`detach`), and anything drawn beside it is
+            drawn in the dashboard: a status confirm or a photograph opening
+            behind the ticket that asked for it, or in a dashboard minimised to
+            the taskbar where nobody can answer it. */}
+        {lightbox && (
+          <ImageLightbox
+            images={lightbox.urls.map((url) => ({
+              url,
+              alt: repair.deviceModel,
+            }))}
+            startIndex={lightbox.at}
+            onClose={() => setLightbox(null)}
+          />
+        )}
+
+        {confirm.dialog}
+
+        <ConfirmDialog
+          open={payingRest}
+          title={t("financePayRestTitle")}
+          body={t("financePayRestBody", { amount: formatPrice(money.remaining) })}
+          confirmLabel={t("financePayRestConfirm")}
+          cancelLabel={t("cancel")}
+          tone="normal"
+          onCancel={() => setPayingRest(false)}
+          onConfirm={() => {
+            setPayingRest(false);
+            payRest();
+          }}
         />
+      </EntityDialog>
+    </>
+  );
+}
+
+/* ------------------------- the ticket at a glance ------------------------ */
+
+/**
+ * What a press anywhere on a row opens.
+ *
+ * The shop, 2026-11-17: the row's press shows "just the information of the
+ * device (model, problems) and the information of the customer, and the price
+ * of repairing only"; changing anything is the pencil beside WhatsApp and
+ * print. So nothing here is an input, and its one control is the way into the
+ * editor — which, in the desktop app, asks for the desk's password.
+ */
+function RepairQuickView({
+  repair,
+  seesMoney,
+  onClose,
+  onEdit,
+}: {
+  repair: RepairCard;
+  seesMoney: boolean;
+  onClose: () => void;
+  /** Absent where this reader may change nothing on the ticket. */
+  onEdit?: () => void;
+}) {
+  const t = useTranslations("Admin");
+  const tTrack = useTranslations("Track");
+  const price = repairCost(repair);
+  const faults = [...repair.issues, ...repair.customFaults];
+
+  return (
+    <EntityDialog
+      windowId={`repair-view:${repair.id}`}
+      title={repair.customerName}
+      subtitle={`${repair.code} · ${repair.deviceModel}`}
+      closeLabel={t("close")}
+      onClose={onClose}
+      width={460}
+      confirmClose={false}
+      accent={TONE_VAR[statusTone(repair.status)]}
+      footer={
+        <>
+          <StatusPill status={repair.status} label={tTrack(`status_${repair.status}` as "status_received")} />
+          {onEdit && (
+            <button
+              type="button"
+              onClick={onEdit}
+              className="press ms-auto inline-flex items-center gap-2 rounded-control bg-brand px-4 py-2 text-[0.8rem] font-extrabold text-white transition-colors hover:bg-brand-hover"
+            >
+              <Pencil className="size-4" aria-hidden />
+              {t("deskEditTicket")}
+            </button>
+          )}
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <QuickBlock icon={repair.service === "software" ? Cpu : Smartphone} title={t("quickDevice")}>
+          <p className="text-[1rem] font-black text-ink">{repair.deviceModel}</p>
+          {faults.length > 0 && (
+            <ul className="mt-2 flex flex-wrap gap-1.5">
+              {faults.map((fault) => (
+                <li
+                  key={fault}
+                  className="rounded-chip border border-line bg-surface px-2.5 py-1 text-[0.74rem] font-bold text-ink"
+                >
+                  {fault}
+                </li>
+              ))}
+            </ul>
+          )}
+          {repair.notes && (
+            <p className="mt-2 text-[0.76rem] font-medium italic leading-relaxed text-muted">“{repair.notes}”</p>
+          )}
+        </QuickBlock>
+
+        <QuickBlock icon={UserRound} title={t("quickCustomer")}>
+          <p className="text-[1rem] font-black text-ink">{repair.customerName}</p>
+          {repair.customerPhone && (
+            <p className="mt-1 flex items-center gap-1.5 text-[0.88rem] font-bold text-ink">
+              <Phone className="size-3.5 shrink-0 text-muted" aria-hidden />
+              <span dir="ltr" data-numeric>
+                {repair.customerPhone}
+              </span>
+            </p>
+          )}
+          {repair.customerPhone2 && (
+            <p className="mt-0.5 flex items-center gap-1.5 text-[0.8rem] font-semibold text-muted">
+              <Phone className="size-3.5 shrink-0" aria-hidden />
+              <span dir="ltr" data-numeric>
+                {repair.customerPhone2}
+              </span>
+            </p>
+          )}
+        </QuickBlock>
+
+        <QuickBlock icon={Banknote} title={t("quickPrice")}>
+          {price != null ? (
+            <p className="text-[1.35rem] font-black leading-tight text-brand">
+              <span data-numeric>{formatPrice(price)}</span>{" "}
+              <span className="text-[0.8rem] font-extrabold">{t("currency")}</span>
+            </p>
+          ) : (
+            <p className="text-[0.82rem] font-bold text-muted">{t("quickNoPrice")}</p>
+          )}
+          {seesMoney && (repair.warrantyPrice ?? 0) > 0 && (
+            <p className="mt-0.5 text-[0.72rem] font-bold text-info">
+              {t("quickIncludesWarranty", { amount: formatPrice(repair.warrantyPrice!) })}
+            </p>
+          )}
+        </QuickBlock>
+      </div>
+    </EntityDialog>
+  );
+}
+
+function QuickBlock({
+  icon: Icon,
+  title,
+  children,
+}: {
+  icon: LucideIcon;
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="rounded-card border border-line bg-canvas p-3.5">
+      <h3 className="mb-2 flex items-center gap-1.5 text-[0.72rem] font-extrabold text-muted">
+        <Icon className="size-3.5" aria-hidden />
+        {title}
+      </h3>
+      {children}
+    </section>
+  );
+}
+
+/* --------------------------- a technician's ticket ------------------------ */
+
+/**
+ * The shop, 2026-11-17: a technician's ticket shows "only the status, the
+ * device info, the customer info, the maintenance cost". He moves the work
+ * along `TECH_STATUSES` — ending on «انتهاء عمل الصيانة», his word to the
+ * manager that his part is done — and reads the rest. Accepting, cancelling
+ * and handing the device back are the manager's, and the server refuses
+ * anything else he might send (`updateRepair`).
+ */
+function TechTicketDialog({
+  windowId,
+  repair,
+  flow,
+  error,
+  onClose,
+  onApply,
+}: {
+  windowId: string;
+  repair: RepairCard;
+  flow: readonly RepairStatus[];
+  error: string | null;
+  onClose: () => void;
+  onApply: (
+    next: Partial<RepairCard>,
+    send: () => Promise<{ ok: boolean; error?: string }>,
+  ) => void;
+}) {
+  const t = useTranslations("Admin");
+  const tTrack = useTranslations("Track");
+  const tRepair = useTranslations("Repair");
+  const locale = useLocale();
+  const confirm = useStatusConfirm();
+
+  const mine = repair.control === "own";
+  // His to move only while it is in his hands — see `techMayMoveFrom`. Once
+  // the manager has it, the steps are not drawn at all: a row of buttons that
+  // would all be refused is a question he cannot answer.
+  const movable = mine && techMayMoveFrom(repair.status);
+  const statusLabel = tTrack(`status_${repair.status}` as "status_received");
+  const steps = flow.filter((status) => techMaySet(status));
+  const price = repairCost(repair);
+  const faults = [...repair.issues, ...repair.customFaults];
+
+  function moveTo(status: RepairStatus) {
+    confirm.request({
+      subject: repair.code,
+      from: { key: repair.status, label: statusLabel },
+      to: { key: status, label: tTrack(`status_${status}` as "status_received") },
+      run: () => onApply({ status }, () => updateRepair(repair.id, { status })),
+    });
+  }
+
+  return (
+    <EntityDialog
+      windowId={windowId}
+      title={`${repair.service === "software" ? t("programmingJob") : tRepair("title")} · ${repair.code}`}
+      subtitle={repair.deviceModel}
+      closeLabel={t("close")}
+      onClose={onClose}
+      width={560}
+      // Nothing here is typed — every status move asks for itself.
+      confirmClose={false}
+      detach
+      accent={TONE_VAR[statusTone(repair.status)]}
+      footer={
+        <>
+          <p className="text-[0.72rem] font-medium text-muted">
+            {formatDayTime(locale, repair.createdAt)}
+          </p>
+          {repair.customerPhone && (
+            <div className="ms-auto">
+              <WhatsAppButton
+                phone={repair.customerPhone}
+                message={repairMessage(repair, t, statusLabel)}
+                label={t("whatsappContact")}
+              />
+            </div>
+          )}
+        </>
+      }
+    >
+      {error && (
+        <p role="alert" className="rounded-card bg-brand/10 px-3.5 py-2.5 text-[0.78rem] font-bold text-brand">
+          {t.has(error) ? t(error as "updateFailed") : t("updateFailed")}
+        </p>
       )}
 
+      {!mine && (
+        <p className="flex items-center gap-2 rounded-card border border-line bg-subtle px-3.5 py-2.5 text-[0.78rem] font-bold text-muted">
+          <Eye className="size-4 shrink-0" aria-hidden />
+          {t("deskReadOnlyTech")}
+        </p>
+      )}
+
+      <Section title={t("setStatus")} hint={mine ? t("techStatusHint") : undefined}>
+        <p className="mb-2.5 flex flex-wrap items-center gap-2 text-[0.76rem] font-bold text-muted">
+          {t("techNow")}
+          <StatusPill status={repair.status} label={statusLabel} />
+        </p>
+        {mine && !movable ? (
+          <p className="rounded-card border border-line bg-subtle px-3.5 py-2.5 text-[0.78rem] font-bold text-muted">
+            {t("techStatusLocked")}
+          </p>
+        ) : (
+        <ol className="flex flex-wrap gap-1.5">
+          {steps.map((status) => {
+            const active = repair.status === status;
+            return (
+              <li key={status}>
+                <button
+                  type="button"
+                  disabled={!mine || active}
+                  onClick={() => moveTo(status)}
+                  aria-current={active ? "step" : undefined}
+                  className={cn(
+                    "press rounded-control border px-2.5 py-1.5 text-[0.72rem] font-extrabold transition-colors",
+                    active
+                      ? "border-transparent text-white"
+                      : status === "work_done"
+                        ? "border-success/60 text-success hover:bg-success/8"
+                        : "border-line text-muted hover:border-brand hover:text-brand",
+                    !mine && !active && "cursor-not-allowed opacity-45",
+                  )}
+                  style={active ? { background: TONE_VAR[statusTone(status)] } : undefined}
+                >
+                  {tTrack(`status_${status}` as "status_received")}
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+        )}
+        <p className="mt-2.5 text-[0.7rem] font-semibold leading-relaxed text-muted">{t("techStatusManager")}</p>
+      </Section>
+
+      <Section title={t("quickDevice")}>
+        <dl className="grid gap-x-4 gap-y-2.5 sm:grid-cols-2">
+          <Fact label={t("repairDevice")} value={repair.deviceModel} />
+          {faults.length > 0 && <Fact label={t("repairIssues")} value={faults.join(" · ")} />}
+          {repair.notes && <Fact label={t("repairProblem")} value={repair.notes} wide />}
+        </dl>
+      </Section>
+
+      <Section title={t("quickCustomer")}>
+        <dl className="grid gap-x-4 gap-y-2.5 sm:grid-cols-2">
+          <Fact label={t("repairCustomer")} value={repair.customerName} />
+          {repair.customerPhone && <Fact label={t("repairPhone")} value={repair.customerPhone} numeric />}
+          {repair.customerPhone2 && <Fact label={t("repairPhoneAlt")} value={repair.customerPhone2} numeric />}
+        </dl>
+      </Section>
+
+      <Section title={t("quickPrice")}>
+        {price != null ? (
+          <p className="text-[1.2rem] font-black text-brand">
+            <span data-numeric>{formatPrice(price)}</span>{" "}
+            <span className="text-[0.78rem] font-extrabold">{t("currency")}</span>
+          </p>
+        ) : (
+          <p className="text-[0.8rem] font-bold text-muted">{t("quickNoPrice")}</p>
+        )}
+      </Section>
+
       {confirm.dialog}
-    </>
+    </EntityDialog>
   );
 }
 

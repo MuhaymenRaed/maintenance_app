@@ -193,5 +193,17 @@
   "aboutRelaunch": "Restart the app",
   "shortcutSearch": "Search the tickets",
   "syncStarted": "Syncing with the dashboard…",
-  "close": "Close"
+  "close": "Close",
+  "accountError_pending_changes": "Some changes have not reached the server yet. Sync or discard them from the sync panel before changing the account.",
+  "lockTitle": "Desk password",
+  "lockHint": "Asked every time a ticket's editor, the statistics or the settings are opened. Not asked while the app is signed in as a technician.",
+  "lockCurrent": "Current password",
+  "lockNew": "New password",
+  "lockAgain": "Type it again",
+  "lockSave": "Change the password",
+  "lockSaved": "The desk password was changed.",
+  "lockError_mismatch": "The two new passwords do not match.",
+  "lockError_wrong_password": "The current password is not right.",
+  "lockError_weak_password": "Choose at least 6 characters.",
+  "techSettingsNote": "The app is signed in as a technician, so only your settings are here. To change the account, enter its email and password under Account."
 }

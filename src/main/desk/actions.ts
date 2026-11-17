@@ -2,7 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { canWith } from "../../site/lib/permissions.ts";
-import { SERVICE_CAPABILITY, type RepairService } from "../../site/lib/data/repair-desk.ts";
+import {
+  repairMoney,
+  SERVICE_CAPABILITY,
+  settlesOnStatus,
+  techMayMoveFrom,
+  techMaySet,
+  type RepairService,
+} from "../../site/lib/data/repair-desk.ts";
 import { toRepairPrintFacts } from "../../site/lib/data/repair-print-facts.ts";
 import type { StatusEvent } from "../../site/lib/data/orders.ts";
 import type { WorldModel } from "../../site/lib/data/device-name.ts";
@@ -59,6 +66,18 @@ export function updateRepair(id: string, patch: RepairPatch): SectionResult {
   const verdict = authorizeTicket(id);
   if (!verdict.ok) return verdict;
   if (verdict.control === "none") return { ok: false, error: "not_your_ticket" };
+  if (verdict.control === "own") {
+    // A technician moves his own ticket along the work steps and types nothing
+    // else — the site's `updateRepair` refuses the same (2026-11-17).
+    if (patch.price !== undefined || patch.quoteNotes !== undefined) return { ok: false, error: "not_your_ticket" };
+    // Both ends, as on the site: where it is going and where it is now.
+    if (
+      patch.status !== undefined &&
+      !(techMayMoveFrom(String(verdict.raw.status ?? "")) && techMaySet(patch.status))
+    ) {
+      return { ok: false, error: "tech_status_refused" };
+    }
+  }
   const touchesWarranty = patch.warranty !== undefined || patch.warrantyDays !== undefined || patch.warrantyStart !== undefined;
   if (touchesWarranty && verdict.control !== "full") return { ok: false, error: "not_your_ticket" };
   if (touchesWarranty && !refs.available().warranty) return { ok: false, error: "warrantyUnavailable" };
@@ -72,7 +91,29 @@ export function updateRepair(id: string, patch: RepairPatch): SectionResult {
     if (patch[key] !== undefined) (clean as Record<string, unknown>)[key] = patch[key];
   }
   if (!Object.keys(clean).length) return { ok: true, id };
-  queued(() => store.addOp(id, "update", clean));
+
+  // «تم التسليم» on a deferred ticket settles «الباقي» — the shop's rule of
+  // 2026-11-17 (`settlesOnStatus`). Queued after the status, in the same
+  // transaction, so the two reach the server in that order.
+  const ledger = financeOf(verdict.raw);
+  const total = num(verdict.raw.actual_cost);
+  const settles =
+    clean.status !== undefined &&
+    verdict.control === "full" &&
+    refs.available().finance &&
+    total != null &&
+    settlesOnStatus(clean.status, ledger?.payment_terms === "deferred" ? "deferred" : "cash") &&
+    repairMoney({
+      price: total,
+      warranty: num(verdict.raw.warranty_price),
+      cost: num(ledger?.cost_price),
+      collected: num(ledger?.collected),
+      terms: "deferred",
+    }).remaining > 0;
+  queued(() => {
+    store.addOp(id, "update", clean);
+    if (settles) store.addOp(id, "finance", { collected: total });
+  });
   return { ok: true, id };
 }
 

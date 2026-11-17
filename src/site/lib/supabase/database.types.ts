@@ -2325,6 +2325,7 @@ export type Database = {
         | "declined"
         | "in_repair"
         | "quality_check"
+        | "work_done"
         | "ready"
         | "completed"
         | "cancelled";
@@ -2499,6 +2500,7 @@ export const Constants = {
         "declined",
         "in_repair",
         "quality_check",
+        "work_done",
         "ready",
         "completed",
         "cancelled",

@@ -159,6 +159,11 @@ export const REPAIR_FLOW = [
   "waiting_parts",
   "in_repair",
   "quality_check",
+  // 2026-11-17 — the technician's "I've finished my part": the manager takes
+  // it from here, rings the customer and hands the device over. Optional —
+  // see `OPTIONAL_STEPS` — because a ticket a manager works alone never
+  // passes through it.
+  "work_done",
   "ready",
   "completed",
 ] as const satisfies readonly RepairStatus[];
@@ -180,7 +185,7 @@ export const TRADE_IN_FLOW = [
  * work is on it or went through it — a ticket that never waited for a part
  * must not show a tick beside "waiting for the part".
  */
-export const OPTIONAL_STEPS: ReadonlySet<string> = new Set(["waiting_parts"]);
+export const OPTIONAL_STEPS: ReadonlySet<string> = new Set(["waiting_parts", "work_done"]);
 
 /**
  * Whether the database has each of the three values 20261107_status_steps.sql
@@ -191,12 +196,15 @@ export type StepSupport = {
   preparing: boolean;
   waitingParts: boolean;
   inspecting: boolean;
+  /** `work_done`, from 20261117_technician_desk.sql. */
+  workDone: boolean;
 };
 
 export const ALL_STEPS: StepSupport = {
   preparing: true,
   waitingParts: true,
   inspecting: true,
+  workDone: true,
 };
 
 /**
@@ -215,7 +223,8 @@ export function liveFlow<T extends string>(
       !(
         (step === "preparing" && !support.preparing) ||
         (step === "waiting_parts" && !support.waitingParts) ||
-        (step === "inspecting" && !support.inspecting)
+        (step === "inspecting" && !support.inspecting) ||
+        (step === "work_done" && !support.workDone)
       ),
   );
 }

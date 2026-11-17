@@ -254,6 +254,9 @@ export type DeskApi = {
 
   account(): Promise<AccountInfo>;
   setAccount(input: { email: string; password: string }): Promise<{ ok: true } | { ok: false; error: string }>;
+  /** The desk's password (`src/main/desk-lock.ts`). True when it opens the desk. */
+  verifyDeskPassword(password: string): Promise<boolean>;
+  setDeskPassword(input: { current: string; next: string }): Promise<{ ok: true } | { ok: false; error: "wrong_password" | "weak_password" }>;
 
   backups(): Promise<BackupInfo[]>;
   backupNow(): Promise<BackupInfo>;
@@ -322,6 +325,8 @@ export const CH = {
   benches: "settings:benches",
   account: "account:get",
   setAccount: "account:set",
+  verifyDeskPassword: "lock:verify",
+  setDeskPassword: "lock:set",
   backups: "backup:list",
   backupNow: "backup:now",
   restoreBackup: "backup:restore",
