@@ -310,7 +310,7 @@ function Printing() {
       <Section title={t("printersTitle")} hint={t("printersHint")}>
         <button
           type="button"
-          onClick={openPrinterSetup}
+          onClick={(event) => openPrinterSetup(event.currentTarget.ownerDocument)}
           className="press inline-flex items-center gap-2 rounded-control bg-brand px-4 py-2.5 text-[0.8rem] font-extrabold text-white transition-colors hover:bg-brand-hover"
         >
           <Printer className="size-4" aria-hidden />

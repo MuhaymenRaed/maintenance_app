@@ -145,6 +145,8 @@ export type PrintRequest = {
   papers: readonly PaperRequest[];
   locale: string;
   test?: boolean;
+  /** The document the press was made in — see `Snapshot.origin`. */
+  from?: Document | null;
 };
 
 export type DialogHandoff = {
@@ -161,9 +163,17 @@ type Snapshot = {
   dialog: DialogHandoff | null;
   /** The printer setup dialog: closed, open, or open because a run needs it. */
   setup: false | "open" | "confirm";
+  /**
+   * The window the print was asked for from: a ticket's detached window, or
+   * null for the dashboard itself. The panel, the browser-dialog path and the
+   * printer setup are drawn there (`components/admin/print-station.tsx`), so
+   * a ticket window used while the dashboard is minimised is told what became
+   * of its own papers — and the setup a run needs opens where the run began.
+   */
+  origin: Document | null;
 };
 
-const IDLE: Snapshot = { run: null, raster: null, dialog: null, setup: false };
+const IDLE: Snapshot = { run: null, raster: null, dialog: null, setup: false, origin: null };
 let state: Snapshot = IDLE;
 const listeners = new Set<() => void>();
 
@@ -259,6 +269,7 @@ export function startPrint(request: PrintRequest): "started" | "busy" {
   context = { request, facts: request.facts, freshLoaded: false };
   setState({
     run,
+    origin: request.from ?? null,
     dialog:
       run.stage === "dialog"
         ? { key: run.id, facts: request.facts, printedAt: request.printedAt, papers: dialogPapers(run) }
@@ -278,7 +289,7 @@ export function startPrint(request: PrintRequest): "started" | "busy" {
  * "PPTII-A" to "HPRT LPQ58" on 2026-11-05) must not leave the label skipped
  * for ever because of a name saved last week.
  */
-function resolvePrinters(list: PrinterInfo[], settings: StationSettings) {
+export function resolvePrinters(list: PrinterInfo[], settings: StationSettings) {
   const guess = suggestRoles(list);
   const installed = new Set(list.map((printer) => printer.name.toLowerCase()));
   const pick = (role: PrinterRole): string | null => {
@@ -298,7 +309,7 @@ function resolvePrinters(list: PrinterInfo[], settings: StationSettings) {
  * The state a printer is in, as one word: its own blocking status if it has
  * one, NOT_CONNECTED for a USB printer whose cable is out, OK otherwise.
  */
-function printerState(printer: PrinterInfo): PrinterState {
+export function printerState(printer: PrinterInfo): PrinterState {
   if (printer.connected === false) return { statusText: "NOT_CONNECTED", severity: "FATAL" };
   const blocking = (printer.statuses ?? []).find((status) => blocksPrinting({ statusText: status }));
   if (blocking) return { statusText: blocking, severity: "FATAL" };
@@ -713,16 +724,21 @@ export function dialogPapers(run: StationRun): PaperRequest[] {
 export function dismissRun() {
   const run = state.run;
   if (!run || (run.stage !== "settled" && run.stage !== "dialog")) return;
-  setState({ run: null, dialog: null, setup: state.setup === "confirm" ? false : state.setup });
+  const setup = state.setup === "confirm" ? false : state.setup;
+  setState({ run: null, dialog: null, setup, origin: setup ? state.origin : null });
   context = null;
 }
 
-export function openPrinterSetup() {
-  setState({ setup: "open" });
+/**
+ * Opens the printer setup in the window `from` belongs to — a press inside a
+ * ticket's detached window opens it there, not behind it in the dashboard.
+ */
+export function openPrinterSetup(from?: Document | null) {
+  setState({ setup: "open", origin: from ?? state.origin });
 }
 
 export function closePrinterSetup() {
-  setState({ setup: false });
+  setState({ setup: false, origin: state.run ? state.origin : null });
 }
 
 /** After the setup saved a mapping, carries on with the run that needed it. */

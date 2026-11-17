@@ -7,7 +7,8 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Select, type SelectOption } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { dialogOverlay } from "@/components/ui/dialog-chrome";
-import { AppWindow, useAppWindow, useWindowed } from "@/components/admin/app-window";
+import { AppWindow, OutsideWindow, useAppWindow, useWindowed } from "@/components/admin/app-window";
+import { useDetachedDocument } from "@/lib/windows/owner-document";
 import {
   caretAfterValueChars,
   countValueChars,
@@ -403,6 +404,7 @@ export function EntityDialog({
   windowId,
   height,
   confirmClose = true,
+  detach,
 }: {
   title: string;
   subtitle?: string;
@@ -424,6 +426,11 @@ export function EntityDialog({
    * viewer — the printer setup, a staff member's standing — turns it off.
    */
   confirmClose?: boolean;
+  /**
+   * Open as a window of its own on the desktop, so it stays on screen when the
+   * dashboard is minimised. See `app-window.tsx`. Ignored outside the dashboard.
+   */
+  detach?: boolean;
 }) {
   /*
    * ⚠️ One hook, read before any branch. Inside the dashboard's
@@ -432,7 +439,15 @@ export function EntityDialog({
    * product pencil) it is the modal it always was.
    */
   const windowed = useWindowed();
-  if (windowed) {
+  /*
+   * ⚠️ Inside a ticket's detached window — the warranty form opened from the
+   * ticket, the printer setup a print from it needed — the dialog is a modal
+   * in THAT window instead. An in-page window lives in the dashboard's own
+   * layer, so it opened behind the ticket that asked for it, or in a
+   * dashboard minimised to the taskbar where nobody could see it.
+   */
+  const detachedIn = useDetachedDocument();
+  if (windowed && !detachedIn) {
     return (
       <AppWindow
         windowId={windowId}
@@ -444,6 +459,7 @@ export function EntityDialog({
         closeLabel={closeLabel}
         onClose={onClose}
         confirmClose={confirmClose}
+        detach={detach}
         footer={footer}
       >
         {children}
@@ -452,86 +468,88 @@ export function EntityDialog({
   }
 
   return (
-    <Dialog.Root open onOpenChange={(next) => !next && onClose()}>
-      <Dialog.Portal>
-        <Dialog.Overlay className={dialogOverlay} />
-        <Dialog.Content
-          aria-describedby={undefined}
-          /*
-           * ⚠️ **`dvh`, not `vh`** — every editor in the back office is read
-           * on a phone at the counter, and `100vh` on mobile Chrome and Safari
-           * is the **large** viewport: the height the page would have with the
-           * browser's own address bar hidden. At 92vh the footer — which holds
-           * Save and Cancel — sat under that bar until the reader scrolled the
-           * page, which inside a scroll-locked dialog they cannot. The
-           * storefront has used `dvh` everywhere for exactly this since the
-           * iOS pass; `EntityDialog` was the one that never followed.
-           *
-           * ⚠️ And a fixed gutter rather than `95vw`. A percentage shrinks
-           * with the screen, so the margin that reads as deliberate at 1280px
-           * is 9px at 390 — a dialog that looks wedged against both edges on
-           * the device it is mostly used on. `calc(100vw - 1.5rem)` is the
-           * same 12px-a-side the rating dialog and the story panel already
-           * take.
-           */
-          className="fixed start-1/2 top-1/2 z-80 flex max-h-[92dvh] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-panel border border-line bg-surface shadow-lift focus:outline-none data-[state=open]:[animation:dialog-content-in_180ms_ease-out] rtl:translate-x-1/2"
-          // The shared keyframe translates by a fixed -50%; under RTL the
-          // element is offset the other way, so the custom property flips it.
-          style={{
-            ["--dialog-content-x" as string]: "-50%",
-            width: `min(${width}px, calc(100vw - 1.5rem))`,
-          }}
-        >
-          {accent && (
-            <span
-              className="h-[3px] shrink-0"
-              style={{ background: accent }}
-              aria-hidden
-            />
-          )}
+    <OutsideWindow>
+      <Dialog.Root open onOpenChange={(next) => !next && onClose()}>
+        <Dialog.Portal container={detachedIn?.body}>
+          <Dialog.Overlay className={dialogOverlay} />
+          <Dialog.Content
+            aria-describedby={undefined}
+            /*
+             * ⚠️ **`dvh`, not `vh`** — every editor in the back office is read
+             * on a phone at the counter, and `100vh` on mobile Chrome and Safari
+             * is the **large** viewport: the height the page would have with the
+             * browser's own address bar hidden. At 92vh the footer — which holds
+             * Save and Cancel — sat under that bar until the reader scrolled the
+             * page, which inside a scroll-locked dialog they cannot. The
+             * storefront has used `dvh` everywhere for exactly this since the
+             * iOS pass; `EntityDialog` was the one that never followed.
+             *
+             * ⚠️ And a fixed gutter rather than `95vw`. A percentage shrinks
+             * with the screen, so the margin that reads as deliberate at 1280px
+             * is 9px at 390 — a dialog that looks wedged against both edges on
+             * the device it is mostly used on. `calc(100vw - 1.5rem)` is the
+             * same 12px-a-side the rating dialog and the story panel already
+             * take.
+             */
+            className="fixed start-1/2 top-1/2 z-80 flex max-h-[92dvh] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-panel border border-line bg-surface shadow-lift focus:outline-none data-[state=open]:[animation:dialog-content-in_180ms_ease-out] rtl:translate-x-1/2"
+            // The shared keyframe translates by a fixed -50%; under RTL the
+            // element is offset the other way, so the custom property flips it.
+            style={{
+              ["--dialog-content-x" as string]: "-50%",
+              width: `min(${width}px, calc(100vw - 1.5rem))`,
+            }}
+          >
+            {accent && (
+              <span
+                className="h-[3px] shrink-0"
+                style={{ background: accent }}
+                aria-hidden
+              />
+            )}
 
-          <header className="flex shrink-0 items-start justify-between gap-3 border-b border-line/70 px-6 py-4 max-sm:px-4">
-            <div className="min-w-0">
-              <Dialog.Title className="text-[1.02rem] font-black leading-tight tracking-[-0.02em] text-ink">
-                {title}
-              </Dialog.Title>
-              {subtitle && (
-                <p className="mt-0.5 truncate text-[0.75rem] font-medium text-muted">
-                  {subtitle}
-                </p>
-              )}
+            <header className="flex shrink-0 items-start justify-between gap-3 border-b border-line/70 px-6 py-4 max-sm:px-4">
+              <div className="min-w-0">
+                <Dialog.Title className="text-[1.02rem] font-black leading-tight tracking-[-0.02em] text-ink">
+                  {title}
+                </Dialog.Title>
+                {subtitle && (
+                  <p className="mt-0.5 truncate text-[0.75rem] font-medium text-muted">
+                    {subtitle}
+                  </p>
+                )}
+              </div>
+              <Dialog.Close asChild>
+                <button
+                  type="button"
+                  aria-label={closeLabel}
+                  className="-me-1.5 -mt-1 flex size-9 shrink-0 items-center justify-center rounded-full text-muted transition-colors hover:bg-subtle hover:text-ink"
+                >
+                  <X className="size-4" aria-hidden />
+                </button>
+              </Dialog.Close>
+            </header>
+
+            {/* Sections separate themselves with a hairline (see `Section`), so
+                the scroller only owns the outer padding. */}
+            <div className="flex-1 overflow-y-auto px-6 py-5 max-sm:px-4">
+              {children}
             </div>
-            <Dialog.Close asChild>
-              <button
-                type="button"
-                aria-label={closeLabel}
-                className="-me-1.5 -mt-1 flex size-9 shrink-0 items-center justify-center rounded-full text-muted transition-colors hover:bg-subtle hover:text-ink"
-              >
-                <X className="size-4" aria-hidden />
-              </button>
-            </Dialog.Close>
-          </header>
 
-          {/* Sections separate themselves with a hairline (see `Section`), so
-              the scroller only owns the outer padding. */}
-          <div className="flex-1 overflow-y-auto px-6 py-5 max-sm:px-4">
-            {children}
-          </div>
-
-          {/*
-            ⚠️ On a phone the footer's own buttons are pushed to the end by
-            `ms-auto` inside `EditorFooter`, which at 390px leaves Save, Cancel
-            and Delete fighting over one line and wrapping into three. Padding
-            comes down and the gap closes so the three fit on two rows rather
-            than three, and `items-stretch` lets a wrapped row fill the width
-            instead of hanging at one end.
-          */}
-          <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t border-line/70 bg-subtle/40 px-6 py-4 max-sm:gap-1.5 max-sm:px-3 max-sm:py-3">
-            {footer}
-          </footer>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+            {/*
+              ⚠️ On a phone the footer's own buttons are pushed to the end by
+              `ms-auto` inside `EditorFooter`, which at 390px leaves Save, Cancel
+              and Delete fighting over one line and wrapping into three. Padding
+              comes down and the gap closes so the three fit on two rows rather
+              than three, and `items-stretch` lets a wrapped row fill the width
+              instead of hanging at one end.
+            */}
+            <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t border-line/70 bg-subtle/40 px-6 py-4 max-sm:gap-1.5 max-sm:px-3 max-sm:py-3">
+              {footer}
+            </footer>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+    </OutsideWindow>
   );
 }
 

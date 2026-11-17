@@ -167,7 +167,7 @@ export function PrinterSetupDialog({ mode }: { mode: "open" | "confirm" }) {
   }
 
   /** `at` is stamped by the press, for the reason the desk's own print is. */
-  function test(paper: StationPaper, at: number) {
+  function test(paper: StationPaper, at: number, from: Document) {
     saveStationSettings({ ...draft, printers: { a5: target("a5"), label: target("label") } });
     const facts: RepairPrintFacts = {
       code: "TEST-0001",
@@ -191,6 +191,7 @@ export function PrinterSetupDialog({ mode }: { mode: "open" | "confirm" }) {
       papers: [{ paper, copies: 1 }],
       locale,
       test: true,
+      from,
     });
     setNotice(started === "busy" ? t("psBusy") : null);
     if (started === "started") closePrinterSetup();
@@ -307,7 +308,7 @@ export function PrinterSetupDialog({ mode }: { mode: "open" | "confirm" }) {
             {a5Printer && supportsA5(a5Printer) === false && draft.a5.page === "a5" && (
               <p className="text-[0.68rem] font-bold text-warning">{t("psSetupNoA5")}</p>
             )}
-            <TestButton disabled={!target("a5") || listing.state !== "ready"} onTest={(at) => test("receipt", at)} />
+            <TestButton disabled={!target("a5") || listing.state !== "ready"} onTest={(at, from) => test("receipt", at, from)} />
           </div>
           <div className="space-y-2">
             <Field label={t("psSetupLabel")}>
@@ -321,7 +322,7 @@ export function PrinterSetupDialog({ mode }: { mode: "open" | "confirm" }) {
             {labelPrinter && narrowMediaOnly(labelPrinter) && label.mode === "tspl" && (
               <p className="text-[0.68rem] font-medium leading-relaxed text-muted">{t("psSetupReceiptDriver")}</p>
             )}
-            <TestButton disabled={!target("label") || listing.state !== "ready"} onTest={(at) => test("label", at)} />
+            <TestButton disabled={!target("label") || listing.state !== "ready"} onTest={(at, from) => test("label", at, from)} />
           </div>
         </Grid>
       </Section>
@@ -442,12 +443,12 @@ export function PrinterSetupDialog({ mode }: { mode: "open" | "confirm" }) {
   );
 }
 
-function TestButton({ disabled, onTest }: { disabled: boolean; onTest: (at: number) => void }) {
+function TestButton({ disabled, onTest }: { disabled: boolean; onTest: (at: number, from: Document) => void }) {
   const t = useTranslations("Admin");
   return (
     <button
       type="button"
-      onClick={() => onTest(Date.now())}
+      onClick={(event) => onTest(Date.now(), event.currentTarget.ownerDocument)}
       disabled={disabled}
       className="press inline-flex items-center gap-1.5 rounded-control border border-line px-3 py-1.5 text-[0.72rem] font-extrabold text-ink hover:border-brand hover:text-brand disabled:cursor-not-allowed disabled:opacity-50"
     >
@@ -511,7 +512,7 @@ export function PrinterSetupButton() {
   return (
     <button
       type="button"
-      onClick={openPrinterSetup}
+      onClick={(event) => openPrinterSetup(event.currentTarget.ownerDocument)}
       className="press inline-flex items-center gap-2 rounded-control border border-line px-3.5 py-2 text-[0.78rem] font-extrabold text-ink transition-colors hover:border-brand hover:text-brand"
     >
       <Printer className="size-4" aria-hidden />

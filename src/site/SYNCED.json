@@ -1,6 +1,6 @@
 {
   "site": "B:\\Programming Projects\\Next JS\\Al_Isnad",
-  "syncedAt": "2026-11-17T06:11:17.129Z",
+  "syncedAt": "2026-11-17T10:43:07.451Z",
   "files": [
     "components/account/status-pill.tsx",
     "components/admin/app-window.tsx",
@@ -57,10 +57,12 @@
     "lib/print/job-status.ts",
     "lib/print/label-fit.ts",
     "lib/print/papers.ts",
+    "lib/print/pdf.ts",
     "lib/print/print-log.ts",
     "lib/print/printer-match.ts",
     "lib/print/qr.ts",
     "lib/print/rasterize.ts",
+    "lib/print/report-pages.ts",
     "lib/print/station-settings.ts",
     "lib/print/station-store.ts",
     "lib/print/station.ts",
@@ -69,6 +71,8 @@
     "lib/supabase/database.types.ts",
     "lib/ui/swallow-click.ts",
     "lib/utils.ts",
+    "lib/windows/detached.ts",
+    "lib/windows/owner-document.tsx",
     "lib/windows/window-store.ts"
   ],
   "packages": [

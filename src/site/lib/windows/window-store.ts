@@ -36,6 +36,14 @@ export type WindowEntry = {
   opened: number;
   /** The window's own close: asks first when the window is a form. */
   requestClose: () => void;
+  /**
+   * A detached window — a real browser window of its own (see
+   * `components/admin/app-window.tsx`). The operating system minimises and
+   * stacks it, so the dock never folds it; it only brings it forward.
+   */
+  detached?: boolean;
+  /** Raises a detached window above the others on the desktop. */
+  raise?: () => void;
 };
 
 type Listener = () => void;
@@ -84,7 +92,7 @@ export const windowStore = {
   },
   register(
     id: string,
-    init: Pick<WindowEntry, "title" | "subtitle" | "accent" | "requestClose">,
+    init: Pick<WindowEntry, "title" | "subtitle" | "accent" | "requestClose" | "detached" | "raise">,
   ) {
     const existing = entries.get(id);
     entries.set(id, {
@@ -93,6 +101,8 @@ export const windowStore = {
       subtitle: init.subtitle,
       accent: init.accent,
       requestClose: init.requestClose,
+      detached: init.detached,
+      raise: init.raise,
       minimized: existing?.minimized ?? false,
       z: ++top,
       opened: existing?.opened ?? ++opened,
@@ -120,6 +130,9 @@ export const windowStore = {
   focus(id: string) {
     const entry = entries.get(id);
     if (!entry) return false;
+    // Asked every time, not only on a change: the board presses a row whose
+    // window is already "in front" here and buried on the desktop.
+    entry.raise?.();
     if (!entry.minimized && entry.z === top) return true;
     entries.set(id, { ...entry, minimized: false, z: ++top });
     emit();
@@ -135,7 +148,7 @@ export const windowStore = {
   toggle(id: string) {
     const entry = entries.get(id);
     if (!entry) return;
-    if (!entry.minimized && windowStore.front() === id) windowStore.minimize(id);
+    if (!entry.detached && !entry.minimized && windowStore.front() === id) windowStore.minimize(id);
     else windowStore.focus(id);
   },
 };

@@ -18,6 +18,8 @@ import { LabelSheet, ReceiptSheet, RepairPrintRun, WarrantySheet } from "@/compo
 import { PrinterSetupDialog } from "@/components/admin/printer-setup";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useAgentPresence } from "@/lib/print/agent-presence";
+import { detachedStore } from "@/lib/windows/detached";
+import { liveDocument, OwnerDocumentProvider } from "@/lib/windows/owner-document";
 import { summarise } from "@/lib/print/job-status";
 import {
   cancelStuckJob,
@@ -41,6 +43,11 @@ import { cn } from "@/lib/utils";
  * the panel that says what happened to each paper, the off-screen stage where
  * the papers are drawn so the station can photograph them, and — when the
  * person chooses it — the old browser-dialog run for whatever is left.
+ *
+ * ⚠️ The panel, the dialog run and the printer setup are drawn in the window
+ * the print was asked for from (`Snapshot.origin`): a ticket's detached window
+ * while it is open, and the dashboard otherwise. The stage stays here — it is
+ * off-screen, and the papers it draws read the dashboard's own fonts.
  */
 export function PrintStationHost() {
   /*
@@ -50,33 +57,53 @@ export function PrintStationHost() {
    */
   useAgentPresence();
 
-  const { run, raster, dialog, setup } = useSyncExternalStore(
+  const { run, raster, dialog, setup, origin } = useSyncExternalStore(
     printStation.subscribe,
     printStation.snapshot,
     printStation.server,
   );
+  /*
+   * Subscribed to the detached windows as well, so a ticket window closed in
+   * the middle of a run hands its panel back to the dashboard rather than
+   * leaving it in a window nobody can see.
+   */
+  useSyncExternalStore(detachedStore.subscribe, detachedStore.version, noWindows);
+  const target = liveDocument(origin);
+
+  /* ⚠️ Not while the printer setup is open: the panel sits above every dialog
+     (z-110) and covered the setup's own controls — the shop's report, with a
+     screenshot. The run carries on underneath; the panel is back the moment
+     the setup closes. The two are always drawn in the same window. */
+  const panel = run && run.stage !== "dialog" && !setup ? <StationPanel run={run} /> : null;
 
   return (
     <>
       {raster && <RasterStage key={raster.id} request={raster} />}
-      {/* ⚠️ Not while the printer setup is open: the panel sits above every
-          dialog (z-110) and covered the setup's own controls — the shop's
-          report, with a screenshot. The run carries on underneath; the panel
-          is back the moment the setup closes. */}
-      {run && run.stage !== "dialog" && !setup && <StationPanel run={run} />}
+      {panel &&
+        (target
+          ? createPortal(<OwnerDocumentProvider document={target}>{panel}</OwnerDocumentProvider>, target.body)
+          : panel)}
       {dialog && (
-        <RepairPrintRun
-          key={dialog.key}
-          facts={dialog.facts}
-          printedAt={dialog.printedAt}
-          jobs={dialog.papers}
-          onDone={dismissRun}
-        />
+        <OwnerDocumentProvider document={target}>
+          <RepairPrintRun
+            key={dialog.key}
+            facts={dialog.facts}
+            printedAt={dialog.printedAt}
+            jobs={dialog.papers}
+            onDone={dismissRun}
+          />
+        </OwnerDocumentProvider>
       )}
-      {setup && <PrinterSetupDialog mode={setup} />}
+      {setup && (
+        <OwnerDocumentProvider document={target}>
+          <PrinterSetupDialog mode={setup} />
+        </OwnerDocumentProvider>
+      )}
     </>
   );
 }
+
+const noWindows = () => 0;
 
 /* ── The stage ────────────────────────────────────────────────────────────── */
 
@@ -301,7 +328,7 @@ function StationPanel({ run }: { run: StationRun }) {
             )}
             <button
               type="button"
-              onClick={openPrinterSetup}
+              onClick={(event) => openPrinterSetup(event.currentTarget.ownerDocument)}
               className="press inline-flex items-center gap-1.5 rounded-control border border-line px-3 py-2 text-[0.74rem] font-extrabold text-ink hover:border-brand hover:text-brand"
             >
               <Settings2 className="size-3.5" aria-hidden />

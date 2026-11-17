@@ -3,6 +3,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { Loader2, TriangleAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useOwnerDocument } from "@/lib/windows/owner-document";
 
 /**
  * "Are you sure?", as a dialog rather than as a button that changes its mind.
@@ -69,9 +70,12 @@ export function ConfirmDialog({
   /** Choices that belong to the act — a switch, a reason — drawn under the body. */
   children?: React.ReactNode;
 }) {
+  const owner = useOwnerDocument();
   return (
     <Dialog.Root open={open} onOpenChange={(next) => !next && onCancel()}>
-      <Dialog.Portal>
+      {/* In the window it was asked from — a detached ticket's own, not the
+          dashboard's behind it. See `lib/windows/owner-document.tsx`. */}
+      <Dialog.Portal container={owner?.body}>
         <Dialog.Overlay className="fixed inset-0 z-85 bg-scrim/55 data-[state=open]:[animation:dialog-overlay-in_120ms_ease-out]" />
         <Dialog.Content
           aria-describedby={undefined}

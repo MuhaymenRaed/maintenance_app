@@ -6,6 +6,7 @@ import Image from "next/image";
 import { useLocale, useTranslations } from "next-intl";
 import { Loader2, Printer, ShieldCheck, type LucideIcon } from "lucide-react";
 import { EntityDialog, Field, input, NumberInput } from "@/components/admin/form-kit";
+import { useOwnerDocument } from "@/lib/windows/owner-document";
 import { updateRepair } from "@/lib/actions/sections";
 import { MARK_DOT, MARK_MONO_PATH, MARK_PATH, MARK_VIEWBOX } from "@/lib/brand/mark";
 import { baghdadDay } from "@/lib/data/date-window";
@@ -248,6 +249,7 @@ export function RepairPrintRun({
 
 function PrintingNote({ paper, step, total }: { paper: string; step: number; total: number }) {
   const t = useTranslations("Admin");
+  const owner = useOwnerDocument() ?? document;
   return createPortal(
     <div role="status" className="fixed inset-x-0 bottom-6 z-110 flex justify-center px-4">
       <p className="pointer-events-none flex items-center gap-2 rounded-chip bg-ink/90 px-4 py-2 text-[0.78rem] font-extrabold text-canvas shadow-lg">
@@ -255,7 +257,7 @@ function PrintingNote({ paper, step, total }: { paper: string; step: number; tot
         {t("printingNow", { paper, step: String(step), total: String(total) })}
       </p>
     </div>,
-    document.body,
+    owner.body,
   );
 }
 
@@ -270,6 +272,10 @@ function PrintingNote({ paper, step, total }: { paper: string; step: number; tot
  * every browser, and a run that waited only for it would stall for ever on the
  * first paper rather than merely failing to clean up — which is what the old
  * single-sheet version could afford and a chain of jobs cannot.
+ *
+ * ⚠️ **"window" is the sheet's own.** A print asked for from a ticket's
+ * detached window is printed by that window, so its dialog opens in front of
+ * the person who asked — and its clock runs while the dashboard is minimised.
  */
 function RepairPrintSheet({
   index,
@@ -310,26 +316,27 @@ function RepairPrintSheet({
   });
 
   useEffect(() => {
+    const view = sheet.current?.ownerDocument.defaultView ?? window;
     let spent = false;
     let stopped = false;
     const timers: number[] = [];
     const end = () => {
       if (spent) return;
       spent = true;
-      timers.push(window.setTimeout(() => report.current?.(), SETTLE_MS));
+      timers.push(view.setTimeout(() => report.current?.(), SETTLE_MS));
     };
-    window.addEventListener("afterprint", end);
+    view.addEventListener("afterprint", end);
     // After the commit, and cancellable: StrictMode runs this twice in
     // development, and two print dialogs is what a bare call would open. A logo
     // still downloading would otherwise print as an empty box.
     timers.push(
-      window.setTimeout(() => {
+      view.setTimeout(() => {
         const pictures = [...(sheet.current?.querySelectorAll("img") ?? [])];
         void Promise.all(
           pictures.map((picture) => picture.decode().catch(() => undefined)),
         ).then(() => {
           if (stopped) return;
-          window.print();
+          view.print();
           end();
         });
       }, 0),
@@ -337,11 +344,12 @@ function RepairPrintSheet({
     return () => {
       stopped = true;
       spent = true;
-      for (const timer of timers) window.clearTimeout(timer);
-      window.removeEventListener("afterprint", end);
+      for (const timer of timers) view.clearTimeout(timer);
+      view.removeEventListener("afterprint", end);
     };
   }, []);
 
+  const owner = useOwnerDocument() ?? document;
   const Sheet = paper === "label" ? LabelSheet : paper === "receipt" ? ReceiptSheet : WarrantySheet;
 
   return createPortal(
@@ -351,7 +359,7 @@ function RepairPrintSheet({
         <Sheet key={copy} facts={facts} printedAt={printedAt} />
       ))}
     </div>,
-    document.body,
+    owner.body,
   );
 }
 
@@ -392,7 +400,7 @@ export function RepairWarrantyDialog({
   const [saving, startSaving] = useTransition();
 
   /** What is on the paper is what is on the ticket, so the two cannot differ. */
-  function print(at: number) {
+  function print(at: number, from: Document) {
     const changed = days !== facts.warrantyDays || start !== facts.warrantyStart;
     if (canEdit && warrantyAvailable && changed) {
       setSaveFailed(false);
@@ -413,6 +421,7 @@ export function RepairWarrantyDialog({
       printedAt: at,
       papers: WARRANTY_RUN,
       locale,
+      from,
     });
     setBusy(started === "busy");
   }
@@ -478,7 +487,7 @@ export function RepairWarrantyDialog({
         )}
         <button
           type="button"
-          onClick={() => print(Date.now())}
+          onClick={(event) => print(Date.now(), event.currentTarget.ownerDocument)}
           disabled={days < 1 || saving}
           className="press inline-flex w-full items-center justify-center gap-2 rounded-control bg-brand px-4 py-2.5 text-[0.84rem] font-extrabold text-white transition-colors hover:bg-brand-hover disabled:opacity-60"
         >
@@ -547,7 +556,7 @@ export function RepairWarrantyDialog({
  * and the dot in its red. Inline geometry from `lib/brand/mark.ts` rather than
  * a picture, so it is as sharp on paper as the type beside it.
  */
-function CompanyMark({ className }: { className?: string }) {
+export function CompanyMark({ className }: { className?: string }) {
   return (
     <svg viewBox={MARK_VIEWBOX} className={cn("shrink-0", className)} aria-hidden>
       <path d={MARK_PATH} fillRule="evenodd" fill="#333333" />
@@ -623,7 +632,7 @@ export function CompanyLockup({ markClass }: { markClass: string }) {
  * The mark's size is passed as a whole class string, written out at the call
  * site: Tailwind only emits a class it can read in the source.
  */
-function Letterhead({ children, markClass }: { children: ReactNode; markClass: string }) {
+export function Letterhead({ children, markClass }: { children: ReactNode; markClass: string }) {
   return (
     <header className="flex items-center justify-between gap-[6mm]">
       <div className="min-w-0 flex-1">{children}</div>
@@ -650,7 +659,7 @@ function Letterhead({ children, markClass }: { children: ReactNode; markClass: s
  * look like a certificate, and the two papers carry genuinely different
  * content. Unity is the letterhead, the palette and the closing gesture.
  */
-function PaperEyebrow({ Icon, children }: { Icon?: LucideIcon; children: ReactNode }) {
+export function PaperEyebrow({ Icon, children }: { Icon?: LucideIcon; children: ReactNode }) {
   return (
     <p className="inline-flex items-center gap-[1.4mm] rounded-full bg-[#e11d2e] px-[3.6mm] py-[1mm] text-[8pt] font-bold leading-none tracking-wide text-white">
       {Icon && <Icon className="size-[3.4mm]" aria-hidden />}
@@ -660,7 +669,7 @@ function PaperEyebrow({ Icon, children }: { Icon?: LucideIcon; children: ReactNo
 }
 
 /** The paper's own title: brand red on both sheets, at one size. */
-function PaperTitle({ children }: { children: ReactNode }) {
+export function PaperTitle({ children }: { children: ReactNode }) {
   return <h1 className="mt-[1.6mm] text-[21pt] font-bold leading-[1.1] text-[#e11d2e]">{children}</h1>;
 }
 
@@ -672,7 +681,7 @@ function PaperTitle({ children }: { children: ReactNode }) {
  * room, so each was squeezed until its own *value* broke in two — a date is
  * not a date once it is split across a line.
  */
-function PaperStamps({ stamps }: { stamps: { label: string; value: string }[] }) {
+export function PaperStamps({ stamps }: { stamps: { label: string; value: string }[] }) {
   return (
     <dl className="mt-[2mm] flex flex-wrap gap-[1.8mm]">
       {stamps.map((stamp) => (
@@ -698,7 +707,7 @@ function PaperStamps({ stamps }: { stamps: { label: string; value: string }[] })
  * mark's own colour, so the rule closes under the lockup rather than running
  * out of the page.
  */
-function PaperRule() {
+export function PaperRule() {
   return (
     <div className="flex h-[0.9mm] overflow-hidden rounded-full" aria-hidden>
       <span className="flex-1 bg-[#e11d2e]" />
@@ -749,7 +758,7 @@ function PaperRule() {
  * against — the first thing lost, and on a thermal head a hairline is two
  * dots. The die cut is the label's border.
  */
-function PaperFrame() {
+export function PaperFrame() {
   return (
     <div
       aria-hidden

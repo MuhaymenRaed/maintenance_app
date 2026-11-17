@@ -190,7 +190,12 @@ export function repairMoney({
   // and hand the bench a profit nobody earned.
   const w = Math.min(p, whole(warranty));
   const base = p - w;
-  const paid = Math.min(p, Math.max(0, collected ?? (terms === "cash" ? p : 0)));
+  // ⚠️ Cash is paid at the counter, whatever figure was typed before — the
+  // shop's rule of 2026-11-17, and why «الواصل» is not offered on a cash
+  // ticket at all. A part-payment is what «آجل» is for. Checked against the
+  // live data before it changed: the one cash ticket that carried a partial
+  // figure was cancelled, and a cancelled ticket carries no money anyway.
+  const paid = terms === "cash" ? p : Math.min(p, Math.max(0, collected ?? 0));
   const remaining = Math.max(0, p - paid);
   return {
     price: p,
@@ -464,11 +469,18 @@ export function deskAuthority({
    * softer one: their tickets are out of reach, they themselves are not.
    */
   const hidden = new Set<string>();
-  if (!viewerIsOwner) {
-    for (const person of people) {
-      if (person.userId !== viewerId && OWNER_ROLES.has(person.role)) {
-        hidden.add(person.userId);
-      }
+  for (const person of people) {
+    if (person.userId === viewerId) continue;
+    /*
+     * ⚠️ **Only a general manager is shown the whole list** — the shop's rule of
+     * 2026-11-17. The general managers (`super_admin`) are hidden from
+     * everybody else, an `admin` included, though an admin is an owner for
+     * every other purpose here: their tickets are out of the admin's reach and
+     * off the admin's pickers. Everybody below the owners loses the admins as
+     * well, the rule this set was written for.
+     */
+    if (person.role === "super_admin" ? role !== "super_admin" : !viewerIsOwner && OWNER_ROLES.has(person.role)) {
+      hidden.add(person.userId);
     }
   }
   const reach = peopleAbove(viewerId, people, deputies);

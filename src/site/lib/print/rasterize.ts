@@ -249,7 +249,29 @@ function inlineCopy(source: Element, families: Set<string>, pictures: [HTMLImage
   return copy;
 }
 
-const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+/**
+ * One painted frame — or, on a page the browser has stopped painting, the same
+ * pause by the clock.
+ *
+ * ⚠️ A hidden page runs no animation frames at all. The papers are drawn in the
+ * dashboard's own document, and a ticket's detached window can ask for a print
+ * while that dashboard is minimised (`lib/windows/detached.ts`): a frame alone
+ * waited for ever, and the run failed thirty seconds later as "drawing the
+ * paper timed out" with nothing printed. On a visible page the frame comes
+ * first and nothing changes; on a hidden one the browser runs the timer, at
+ * worst a second late.
+ */
+const nextFrame = () =>
+  new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    requestAnimationFrame(finish);
+    window.setTimeout(finish, 50);
+  });
 
 export type RasterTarget = {
   /** The paper's size — the canvas is this, the element is drawn inside it. */

@@ -6,7 +6,21 @@ import Image from "next/image";
 import { useTranslations } from "next-intl";
 import { ChevronLeft, Minus, Plus, RotateCcw, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useOwnerDocument } from "@/lib/windows/owner-document";
 import { arrowKeyDirection, imageSwipeDirection } from "@/lib/data/image-swipe";
+
+/**
+ * Stops the page under the viewer scrolling, and gives back what was there.
+ * A function of the document it is handed — a detached ticket's or the
+ * page's — so the viewer locks the window it is actually drawn in.
+ */
+function lockScroll(doc: Document): () => void {
+  const { overflow } = doc.body.style;
+  doc.body.style.overflow = "hidden";
+  return () => {
+    doc.body.style.overflow = overflow;
+  };
+}
 
 /** The page's reading direction, asked at the moment of the gesture. */
 const pageIsRtl = () =>
@@ -45,6 +59,8 @@ export function ImageLightbox({
   onClose: () => void;
 }) {
   const t = useTranslations("Product");
+  // A ticket's photographs open in the ticket's own window when it is detached.
+  const owner = useOwnerDocument();
   const [index, setIndex] = useState(startIndex);
   /** Mirrors the ref only at the limits, so the controls can grey out. */
   const [zoomLabel, setZoomLabel] = useState(1);
@@ -145,12 +161,14 @@ export function ImageLightbox({
       else if (event.key === "0") reset();
     };
 
-    const { overflow } = document.body.style;
-    document.body.style.overflow = "hidden";
-    window.addEventListener("keydown", onKey);
+    // The window the viewer is drawn in — a detached ticket's, or the page's.
+    const doc = stage.current?.ownerDocument ?? document;
+    const win = doc.defaultView ?? window;
+    const unlock = lockScroll(doc);
+    win.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = overflow;
+      win.removeEventListener("keydown", onKey);
+      unlock();
     };
   }, [go, onClose, reset, setZoom]);
 
@@ -362,7 +380,7 @@ export function ImageLightbox({
   );
 
   if (typeof document === "undefined") return null;
-  return createPortal(content, document.body);
+  return createPortal(content, owner?.body ?? document.body);
 }
 
 function Control({

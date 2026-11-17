@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
@@ -17,6 +18,16 @@ import { useTranslations } from "next-intl";
 import { Copy, Minus, Square, X } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { windowStore, type WindowEntry } from "@/lib/windows/window-store";
+import {
+  bindDetached,
+  canDetach,
+  detachedStore,
+  openDetached,
+  raiseDetached,
+  releaseDetached,
+  titleDetached,
+} from "@/lib/windows/detached";
+import { OwnerDocumentProvider } from "@/lib/windows/owner-document";
 import { cn } from "@/lib/utils";
 
 /**
@@ -60,6 +71,19 @@ import { cn } from "@/lib/utils";
  *
  * ⚠️ Positions are physical `left`/`top`, never logical, in both scripts: a
  * window is dragged with a pointer that moves in screen coordinates.
+ *
+ * ---------------------------------------------------------------------------
+ * Detached: a window of its own on the desktop
+ * ---------------------------------------------------------------------------
+ * A window passed `detach` — the repair desk's ticket and new-ticket windows —
+ * opens as a real browser window on a desk, so it stays on screen when the
+ * dashboard's own window is minimised (the shop's instruction of 2026-11-17,
+ * for the site and the desktop app alike). It is the same component in the
+ * same React tree, portalled into the other window: see
+ * `lib/windows/detached.ts` for why that, and not a page of its own. The
+ * operating system moves, sizes, minimises and stacks it; the dock still lists
+ * it, and pressing its chip — or the ticket's row again — brings it forward.
+ * A browser that blocks the pop-up gets the in-page window, saying why.
  */
 
 const HostContext = createContext(false);
@@ -84,6 +108,15 @@ const WindowContext = createContext<WindowApi | null>(null);
 /** The window this component is inside, or null in a plain modal. */
 export function useAppWindow(): WindowApi | null {
   return useContext(WindowContext);
+}
+
+/**
+ * Draws `children` as belonging to no window — for a modal opened from inside
+ * one (see `EntityDialog`), whose Cancel must close the modal and never the
+ * window under it.
+ */
+export function OutsideWindow({ children }: { children: ReactNode }) {
+  return <WindowContext.Provider value={null}>{children}</WindowContext.Provider>;
 }
 
 /**
@@ -222,6 +255,12 @@ export type AppWindowProps = {
    * confirm, because a window brushed shut takes whatever was typed into it.
    */
   confirmClose?: boolean;
+  /**
+   * Open as a window of its own on the desktop rather than inside the page —
+   * on a desk only; a phone or a tablet keeps the in-page window. See the note
+   * at the top of this file.
+   */
+  detach?: boolean;
   footer?: ReactNode;
   children: ReactNode;
 };
@@ -231,9 +270,188 @@ export function AppWindow(props: AppWindowProps) {
   const generated = useId();
   const id = props.windowId ?? `win${generated.replace(/[^a-zA-Z0-9]/g, "")}`;
   if (!isClient) return null;
+  if (props.detach) return <DetachableWindow {...props} id={id} />;
   const node = layer();
   if (!node) return null;
   return createPortal(<WindowFrame {...props} id={id} />, node);
+}
+
+/**
+ * Decides once, when the window opens, whether it is detached. A window that
+ * switched between the two as the screen was resized would tear down the form
+ * inside it and build it again.
+ */
+function DetachableWindow(props: AppWindowProps & { id: string }) {
+  const [detached] = useState(canDetach);
+  if (detached) return <DetachedWindow {...props} />;
+  const node = layer();
+  return node ? createPortal(<WindowFrame {...props} />, node) : null;
+}
+
+/**
+ * The window opened as a browser window of its own, with the form portalled
+ * into it.
+ *
+ * ⚠️ **Opened in a layout effect, and that is load-bearing.** A browser opens
+ * a pop-up only while the press that asked for it still counts as the user's
+ * act, so the window has to be opened in the commit of the render that press
+ * caused — not in a later effect and never after an await.
+ */
+function DetachedWindow(props: AppWindowProps & { id: string }) {
+  const { id, title, subtitle, width = 640, height, onClose, confirmClose = true } = props;
+  const t = useTranslations("Admin");
+  const state = useSyncExternalStore(
+    detachedStore.subscribe,
+    () => detachedStore.get(id),
+    () => null,
+  );
+
+  useLayoutEffect(() => {
+    openDetached(id, {
+      title,
+      width,
+      height: height ?? Math.round((screen.availHeight || 900) * 0.86),
+    });
+    return () => releaseDetached(id);
+    // Opened once per window; its title is kept current below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  // Closed from its own title bar: the owner's close, read when it happens.
+  const closeRef = useRef(onClose);
+  useEffect(() => {
+    closeRef.current = onClose;
+  });
+  useEffect(() => {
+    bindDetached(id, { onGone: () => closeRef.current(), confirmLeave: confirmClose });
+  }, [id, confirmClose, state]);
+
+  // What the taskbar and the window's own frame call it.
+  const open = state?.status === "open";
+  useEffect(() => {
+    if (open) titleDetached(id, subtitle ? `${title} — ${subtitle}` : title);
+  }, [open, id, title, subtitle]);
+
+  if (!state) return null;
+  if (state.status === "blocked") {
+    const node = layer();
+    return node ? createPortal(<WindowFrame {...props} notice={t("winPopupBlocked")} />, node) : null;
+  }
+  return createPortal(
+    <OwnerDocumentProvider document={state.win.document}>
+      <DetachedFrame {...props} />
+    </OwnerDocumentProvider>,
+    state.root,
+  );
+}
+
+/**
+ * What fills a detached window: the title, the form, the footer. No title-bar
+ * buttons of its own beyond close — the operating system's frame already
+ * moves, sizes and minimises it — and close is kept because it asks in the
+ * dashboard's own words, where the frame's × gets the browser's "leave?".
+ */
+function DetachedFrame({
+  id,
+  title,
+  subtitle,
+  accent,
+  closeLabel,
+  onClose,
+  confirmClose = true,
+  footer,
+  children,
+}: AppWindowProps & { id: string }) {
+  const t = useTranslations("Admin");
+  const titleId = `${id}-title`;
+  const frame = useRef<HTMLDivElement>(null);
+  const [asking, setAsking] = useState<(() => void) | null>(null);
+
+  const closeRef = useRef<(then?: () => void) => void>(() => {});
+  useEffect(() => {
+    closeRef.current = (then?: () => void) => {
+      const act = then ?? onClose;
+      if (!confirmClose) {
+        act();
+        return;
+      }
+      raiseDetached(id);
+      setAsking(() => act);
+    };
+  });
+  const requestClose = useCallback((then?: () => void) => closeRef.current(then), []);
+
+  useEffect(() => {
+    windowStore.register(id, {
+      title,
+      subtitle,
+      accent,
+      requestClose: () => closeRef.current(),
+      detached: true,
+      raise: () => raiseDetached(id),
+    });
+    frame.current?.focus({ preventScroll: true });
+    return () => windowStore.unregister(id);
+    // Registered once per window; the title is kept current below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  useEffect(() => {
+    windowStore.patch(id, { title, subtitle, accent });
+  }, [id, title, subtitle, accent]);
+
+  return (
+    <WindowContext.Provider value={{ id, requestClose }}>
+      <div
+        ref={frame}
+        tabIndex={-1}
+        aria-labelledby={titleId}
+        onKeyDown={(event) => {
+          if (event.key !== "Escape" || event.defaultPrevented || asking) return;
+          event.preventDefault();
+          event.stopPropagation();
+          requestClose();
+        }}
+        className="flex h-dvh flex-col bg-surface text-ink outline-none"
+      >
+        {accent && <span className="h-[3px] shrink-0" style={{ background: accent }} aria-hidden />}
+
+        <header className="flex shrink-0 items-center gap-2 border-b border-line/70 px-6 py-3">
+          <div className="min-w-0 flex-1">
+            <h1 id={titleId} className="truncate text-[1.02rem] font-black leading-tight tracking-[-0.02em] text-ink">
+              {title}
+            </h1>
+            {subtitle && <p className="mt-0.5 truncate text-[0.74rem] font-medium text-muted">{subtitle}</p>}
+          </div>
+          <WindowButton label={closeLabel} onClick={() => requestClose()} danger>
+            <X className="size-4" aria-hidden />
+          </WindowButton>
+        </header>
+
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-5">{children}</div>
+
+        {footer && (
+          <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t border-line/70 bg-subtle/40 px-6 py-3.5">
+            {footer}
+          </footer>
+        )}
+      </div>
+
+      <ConfirmDialog
+        open={asking !== null}
+        title={t("winCloseTitle")}
+        body={`${title} — ${t("winCloseBody")}`}
+        confirmLabel={t("winCloseConfirm")}
+        cancelLabel={t("winKeepOpen")}
+        onConfirm={() => {
+          const act = asking;
+          setAsking(null);
+          act?.();
+        }}
+        onCancel={() => setAsking(null)}
+      />
+    </WindowContext.Provider>
+  );
 }
 
 function WindowFrame({
@@ -248,7 +466,12 @@ function WindowFrame({
   confirmClose = true,
   footer,
   children,
-}: AppWindowProps & { id: string }) {
+  notice,
+}: AppWindowProps & {
+  id: string;
+  /** A line under the title — why a window meant to be detached is not. */
+  notice?: string;
+}) {
   const t = useTranslations("Admin");
   const titleId = `${id}-title`;
   const frame = useRef<HTMLDivElement>(null);
@@ -461,6 +684,12 @@ function WindowFrame({
             </WindowButton>
           </div>
         </header>
+
+        {notice && (
+          <p role="status" className="shrink-0 border-b border-warning/30 bg-warning/10 px-4 py-2 text-[0.74rem] font-bold leading-relaxed text-warning">
+            {notice}
+          </p>
+        )}
 
         {/* Sections separate themselves with a hairline (see `Section`), so
             the scroller only owns the outer padding. */}

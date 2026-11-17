@@ -59,7 +59,7 @@ import { uploadPhotos } from "@/lib/upload";
 import { REPAIR_FLOW } from "@/lib/data/orders";
 import { StatusHistory } from "@/components/admin/status-history";
 import { useStatusConfirm } from "@/components/admin/status-confirm";
-import { ProfitReportButton, type ReportContext } from "@/components/admin/profit-report";
+import { ProfitReportActions, type ReportContext } from "@/components/admin/profit-report";
 import { TicketFaults } from "@/components/admin/fault-picker";
 import type { RecentFault } from "@/lib/data/repair-faults";
 import { windowStore } from "@/lib/windows/window-store";
@@ -71,6 +71,7 @@ type RepairCard = DeskRow;
 import type { RepairStatus } from "@/lib/data/orders";
 import { cn } from "@/lib/utils";
 import { formatDayNumeric, formatDayTime } from "@/lib/data/datetime";
+import { liveDocument, OwnerDocumentProvider } from "@/lib/windows/owner-document";
 
 /** Somebody a ticket may be handed to. */
 export type DeskHolder = { id: string; name: string; rank: DeskRank };
@@ -197,6 +198,8 @@ export function RepairsBoard({
   }
   const [error, setError] = useState<string | null>(null);
   const [warrantyId, setWarrantyId] = useState<string | null>(null);
+  /** The window the warranty was asked for from, where its form opens. */
+  const [warrantyFrom, setWarrantyFrom] = useState<Document | null>(null);
   /*
    * The print station's run — read only to show which ticket is printing. The
    * run itself lives in `lib/print/station.ts`, outside this board, so closing
@@ -239,13 +242,14 @@ export function RepairsBoard({
    * The date on the paper is stamped by the press — reading the clock during
    * render is impure, and it is when the desk asked for it.
    */
-  function printTicket(row: RepairCard, printedAt: number) {
+  function printTicket(row: RepairCard, printedAt: number, from: Document) {
     const started = startPrint({
       ticketId: row.id,
       facts: printFacts(row),
       printedAt,
       papers: TICKET_RUN,
       locale,
+      from,
     });
     if (started === "busy") toast(t("psBusy"));
   }
@@ -296,7 +300,7 @@ export function RepairsBoard({
           <p className="text-[0.78rem] font-bold text-muted">
             {t("deskListCount", { count: rows.length })}
           </p>
-          <ProfitReportButton
+          <ProfitReportActions
             rows={rows}
             context={report}
             className="ms-auto"
@@ -444,7 +448,7 @@ export function RepairsBoard({
                 {manages && (
                   <button
                     type="button"
-                    onClick={() => printTicket(row, Date.now())}
+                    onClick={(event) => printTicket(row, Date.now(), event.currentTarget.ownerDocument)}
                     disabled={printingCode !== null}
                     aria-busy={printingCode === row.code}
                     aria-label={`${t("deskPrint")} — ${row.code}`}
@@ -510,9 +514,12 @@ export function RepairsBoard({
           onPatch={(next) => patch(open.id, next)}
           onClose={() => closeTicket(open.id)}
           onApply={(next, send) => apply(open.id, next, send)}
-          onPrint={() => printTicket(open, Date.now())}
+          onPrint={(from) => printTicket(open, Date.now(), from)}
           printing={printingCode !== null}
-          onWarranty={() => setWarrantyId(open.id)}
+          onWarranty={(from) => {
+            setWarrantyId(open.id);
+            setWarrantyFrom(from);
+          }}
           onDeleted={() => {
             /*
              * The row and the dialog go on the same frame — see the note on
@@ -534,14 +541,16 @@ export function RepairsBoard({
       ))}
 
       {warrantyRow && (
-        <RepairWarrantyDialog
-          facts={printFacts(warrantyRow)}
-          ticketId={warrantyRow.id}
-          canEdit={warrantyRow.control === "full"}
-          warrantyAvailable={warrantyAvailable}
-          today={todayDay}
-          onClose={() => setWarrantyId(null)}
-        />
+        <OwnerDocumentProvider document={liveDocument(warrantyFrom)}>
+          <RepairWarrantyDialog
+            facts={printFacts(warrantyRow)}
+            ticketId={warrantyRow.id}
+            canEdit={warrantyRow.control === "full"}
+            warrantyAvailable={warrantyAvailable}
+            today={todayDay}
+            onClose={() => setWarrantyId(null)}
+          />
+        </OwnerDocumentProvider>
       )}
     </div>
   );
@@ -781,11 +790,12 @@ function RepairDialog({
     next: Partial<RepairCard>,
     send: () => Promise<{ ok: boolean; error?: string }>,
   ) => void;
-  onPrint: () => void;
+  /** Takes the document the press was made in, so the print reports there. */
+  onPrint: (from: Document) => void;
   /** A print run is going; the button waits rather than starting a second. */
   printing: boolean;
   /** Opens the warranty paper, which asks for a length and a start date. */
-  onWarranty: () => void;
+  onWarranty: (from: Document) => void;
   onDeleted: () => void;
 }) {
   const t = useTranslations("Admin");
@@ -895,6 +905,9 @@ function RepairDialog({
         closeLabel={t("close")}
         onClose={onClose}
         width={660}
+        // A window of its own on the desktop, which stays when the dashboard
+        // is minimised — the shop's instruction of 2026-11-17.
+        detach
         accent={TONE_VAR[statusTone(repair.status)]}
         footer={
           <>
@@ -920,7 +933,7 @@ function RepairDialog({
                       it keeps a control of its own. */}
                   <button
                     type="button"
-                    onClick={onPrint}
+                    onClick={(event) => onPrint(event.currentTarget.ownerDocument)}
                     disabled={printing}
                     aria-busy={printing}
                     className="press inline-flex items-center gap-2 rounded-control border border-line px-3.5 py-2 text-[0.78rem] font-extrabold text-ink transition-colors hover:border-brand hover:text-brand disabled:cursor-wait disabled:opacity-60"
@@ -930,7 +943,7 @@ function RepairDialog({
                   </button>
                   <button
                     type="button"
-                    onClick={onWarranty}
+                    onClick={(event) => onWarranty(event.currentTarget.ownerDocument)}
                     className="press inline-flex items-center gap-2 rounded-control border border-line px-3.5 py-2 text-[0.78rem] font-extrabold text-ink transition-colors hover:border-info hover:text-info"
                   >
                     <ShieldCheck className="size-4" aria-hidden />
@@ -1361,10 +1374,18 @@ function RepairDialog({
                         role="radio"
                         aria-checked={repair.paymentTerms === terms}
                         disabled={!full}
-                        onClick={() =>
-                          repair.paymentTerms !== terms &&
-                          onApply({ paymentTerms: terms }, () => updateRepairFinance(repair.id, { paymentTerms: terms }))
-                        }
+                        onClick={() => {
+                          if (repair.paymentTerms === terms) return;
+                          // Cash is paid in full, so the figure goes with the switch.
+                          if (terms === "cash") {
+                            setCollected(null);
+                            onApply({ paymentTerms: terms, collected: null }, () =>
+                              updateRepairFinance(repair.id, { paymentTerms: terms, collected: null }),
+                            );
+                          } else {
+                            onApply({ paymentTerms: terms }, () => updateRepairFinance(repair.id, { paymentTerms: terms }));
+                          }
+                        }}
                         className={cn(
                           "rounded-[calc(var(--radius-control)-2px)] px-3.5 py-1.5 text-[0.76rem] font-extrabold transition-colors",
                           repair.paymentTerms === terms
@@ -1394,8 +1415,10 @@ function RepairDialog({
                     />
                   </Field>
                   <Field label={t("financeCollected")}>
+                    {/* ⚠️ Not offered on cash: a cash ticket is paid in full at
+                        the counter, and the total shows greyed in its place. */}
                     <MoneyInput
-                      value={collected}
+                      value={repair.paymentTerms === "cash" ? null : collected}
                       clearable
                       onChange={(value) => setCollected(value)}
                       onCommit={() =>
@@ -1403,7 +1426,8 @@ function RepairDialog({
                         onApply({ collected }, () => updateRepairFinance(repair.id, { collected }))
                       }
                       min={0}
-                      disabled={!full}
+                      disabled={!full || repair.paymentTerms === "cash"}
+                      placeholder={repair.paymentTerms === "cash" && repair.price ? formatPrice(repair.price) : undefined}
                     />
                   </Field>
                 </div>

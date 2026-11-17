@@ -10,6 +10,7 @@ import {
   usePopoverAnchor,
 } from "@/lib/hooks/use-popover-anchor";
 import { useScrollUnderLock } from "@/lib/hooks/use-scroll-under-lock";
+import { isDomNode, useOwnerDocument } from "@/lib/windows/owner-document";
 import { swallowNextClick } from "@/lib/ui/swallow-click";
 import { DRAG_SLOP, PickerBusyLine, PickerGlyph } from "@/components/ui/select";
 
@@ -194,6 +195,8 @@ export function SearchableSelect({
    */
   const listOpen = open && !loading;
   const box = usePopoverAnchor(fieldRef, listOpen, { maxHeight: 288 });
+  // The window this field is in — a detached ticket's list opens in the ticket.
+  const owner = useOwnerDocument();
   // Wheel and touch, for a panel a dialog's scroll lock would otherwise
   // freeze. See the hook — the cause is outside this codebase.
   const underLock = useScrollUnderLock();
@@ -321,8 +324,11 @@ export function SearchableSelect({
 
     const away = (event: Event) => {
       const target = event.target;
+      // ⚠️ Duck-typed, never `instanceof Node`: in a detached window the
+      // target is the other window's Node, and the test would be false for
+      // every press inside the list — closing it on the press meant to pick.
       if (
-        target instanceof Node &&
+        isDomNode(target) &&
         (rootRef.current?.contains(target) || listRef.current?.contains(target))
       ) {
         return;
@@ -332,11 +338,12 @@ export function SearchableSelect({
       setActive(0);
     };
 
-    document.addEventListener("pointerdown", away);
-    document.addEventListener("focusin", away);
+    const doc = rootRef.current?.ownerDocument ?? document;
+    doc.addEventListener("pointerdown", away);
+    doc.addEventListener("focusin", away);
     return () => {
-      document.removeEventListener("pointerdown", away);
-      document.removeEventListener("focusin", away);
+      doc.removeEventListener("pointerdown", away);
+      doc.removeEventListener("focusin", away);
     };
   }, [open]);
 
@@ -471,7 +478,7 @@ export function SearchableSelect({
         {loading && <PickerBusyLine />}
       </div>
 
-      {listOpen && box &&
+      {listOpen && box && owner &&
         createPortal(
         <ul
           id={listId}
@@ -559,7 +566,7 @@ export function SearchableSelect({
             );
           })}
         </ul>,
-          document.body,
+          owner.body,
         )}
     </div>
   );

@@ -9,6 +9,7 @@ import {
   usePopoverAnchor,
 } from "@/lib/hooks/use-popover-anchor";
 import { useScrollUnderLock } from "@/lib/hooks/use-scroll-under-lock";
+import { useOwnerDocument } from "@/lib/windows/owner-document";
 import { swallowNextClick } from "@/lib/ui/swallow-click";
 import { cn } from "@/lib/utils";
 
@@ -204,6 +205,8 @@ export function Select({
   // why an `absolute` list cannot work inside this app's dialogs.
   const listOpen = open && !loading;
   const box = usePopoverAnchor(trigger, listOpen);
+  // The window this field is in — a detached ticket's list opens in the ticket.
+  const owner = useOwnerDocument();
   // Wheel and touch, for a panel a dialog's scroll lock would otherwise
   // freeze. See the hook — the cause is outside this codebase.
   const underLock = useScrollUnderLock();
@@ -220,9 +223,10 @@ export function Select({
       }
       setOpen(false);
     };
-    document.addEventListener("pointerdown", onDown);
+    const doc = trigger.current?.ownerDocument ?? document;
+    doc.addEventListener("pointerdown", onDown);
     return () => {
-      document.removeEventListener("pointerdown", onDown);
+      doc.removeEventListener("pointerdown", onDown);
     };
   }, [open]);
 
@@ -358,7 +362,7 @@ export function Select({
         {loading && <PickerBusyLine />}
       </button>
 
-      {listOpen && box
+      {listOpen && box && owner
         ? createPortal(
             <div
               ref={list}
@@ -445,7 +449,7 @@ export function Select({
                 );
               })}
             </div>,
-            document.body,
+            owner.body,
           )
         : null}
     </div>

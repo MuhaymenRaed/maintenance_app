@@ -131,9 +131,60 @@ export function createWindow(): BrowserWindow {
 
   // Links out of the app — WhatsApp, a phone number, the dashboard — open in
   // the system's own browser or dialler, never inside the desk.
-  window.webContents.setWindowOpenHandler(({ url }) => {
+  //
+  // The one window the page may open is its own: a ticket, or a new ticket,
+  // detached from the desk so it stays on screen when the desk is minimised —
+  // the shop's instruction of 2026-11-17. The page opens it blank, under a name
+  // starting `alesnad-win-`, and draws the form into it itself
+  // (`lib/windows/detached.ts` in the site, vendored under `src/site`).
+  //
+  // ⚠️ No `parent`. On Windows an owned window is minimised and hidden with its
+  // owner, which is exactly what the shop asked not to happen.
+  window.webContents.setWindowOpenHandler(({ url, frameName }) => {
+    if ((url === "about:blank" || url === "") && frameName.startsWith("alesnad-win-")) {
+      const palette = isDark() ? CHROME.dark : CHROME.light;
+      return {
+        action: "allow",
+        overrideBrowserWindowOptions: {
+          minWidth: 420,
+          minHeight: 360,
+          backgroundColor: palette.background,
+          icon: fs.existsSync(paths.icon) ? paths.icon : undefined,
+          autoHideMenuBar: true,
+        },
+      };
+    }
     if (/^(https?:|mailto:|tel:|whatsapp:)/i.test(url)) void shell.openExternal(url);
     return { action: "deny" };
+  });
+
+  /*
+   * A ticket window follows the desk's own rules: a link out of it opens in
+   * the system's browser, and nothing navigates it away from the ticket.
+   *
+   * ⚠️ And while one is open the desk keeps its full pace when minimised. The
+   * ticket window is drawn by THIS window's page, so a minimised desk that the
+   * browser throttles is a ticket window whose timers run a second late and
+   * whose papers take several seconds to draw. Turned back on with the last
+   * one, so a desk with no ticket window open behaves exactly as before — the
+   * page's visibility included, which background throttling also governs.
+   */
+  let children = 0;
+  window.webContents.on("did-create-window", (child) => {
+    children += 1;
+    window.webContents.setBackgroundThrottling(false);
+    child.on("closed", () => {
+      children = Math.max(0, children - 1);
+      if (children === 0 && !window.isDestroyed()) window.webContents.setBackgroundThrottling(true);
+    });
+    child.webContents.setWindowOpenHandler(({ url }) => {
+      if (/^(https?:|mailto:|tel:|whatsapp:)/i.test(url)) void shell.openExternal(url);
+      return { action: "deny" };
+    });
+    child.webContents.on("will-navigate", (event, url) => {
+      event.preventDefault();
+      if (/^(https?:|mailto:|tel:)/i.test(url)) void shell.openExternal(url);
+    });
   });
   window.webContents.on("will-navigate", (event, url) => {
     const target = new URL(url);

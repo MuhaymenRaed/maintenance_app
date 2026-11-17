@@ -70,6 +70,12 @@ export type PopoverBox = {
   maxWidth: number;
   maxHeight: number;
   above: boolean;
+  /**
+   * The height of the window the field is in. `popoverStyle` anchors a
+   * flipped list by its bottom, and reading `window.innerHeight` there would
+   * be the dashboard's own window even for a field in a detached ticket.
+   */
+  viewportHeight: number;
 };
 
 /**
@@ -87,23 +93,32 @@ export type PopoverBox = {
  * browsers without it fall back to the layout viewport, which is what they
  * had.
  */
-function viewport() {
-  const vv = window.visualViewport;
+function viewport(view: Window) {
+  const vv = view.visualViewport;
   return vv
     ? { x: vv.offsetLeft, y: vv.offsetTop, w: vv.width, h: vv.height }
-    : { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight };
+    : { x: 0, y: 0, w: view.innerWidth, h: view.innerHeight };
+}
+
+/**
+ * The window a control is drawn in — the dashboard's, or a detached ticket's
+ * (see `lib/windows/owner-document.tsx`). Every measurement and every listener
+ * below is against it, never against the global `window`.
+ */
+function windowOf(node: HTMLElement | null): Window {
+  return node?.ownerDocument.defaultView ?? window;
 }
 
 /** `place` again whenever the visible window moves, not only on resize. */
-function watchViewport(place: () => void) {
-  const vv = window.visualViewport;
-  window.addEventListener("scroll", place, true);
-  window.addEventListener("resize", place);
+function watchViewport(view: Window, place: () => void) {
+  const vv = view.visualViewport;
+  view.addEventListener("scroll", place, true);
+  view.addEventListener("resize", place);
   vv?.addEventListener("resize", place);
   vv?.addEventListener("scroll", place);
   return () => {
-    window.removeEventListener("scroll", place, true);
-    window.removeEventListener("resize", place);
+    view.removeEventListener("scroll", place, true);
+    view.removeEventListener("resize", place);
     vv?.removeEventListener("resize", place);
     vv?.removeEventListener("scroll", place);
   };
@@ -131,23 +146,24 @@ export function usePopoverAnchor(
    */
   useLayoutEffect(() => {
     if (!open) return;
+    const view = windowOf(trigger.current);
 
     const place = () => {
       const node = trigger.current;
       if (!node) return;
       const rect = node.getBoundingClientRect();
-      const v = viewport();
+      const v = viewport(view);
       const below = v.y + v.h - rect.bottom - gutter;
       const room = rect.top - v.y - gutter;
       const above = below < 180 && room > below;
       // Off the trigger, not off `<html>` — see the note at the top.
-      const rtl = getComputedStyle(node).direction === "rtl";
+      const rtl = view.getComputedStyle(node).direction === "rtl";
       setBox({
         top: above ? Math.max(v.y + gutter, rect.top - 4) : rect.bottom + 4,
         // Anchored by the trigger's *start* edge, so a list wider than its
         // field grows into the page rather than off the side of it.
         left: rtl ? undefined : rect.left,
-        right: rtl ? window.innerWidth - rect.right : undefined,
+        right: rtl ? view.innerWidth - rect.right : undefined,
         minWidth: rect.width,
         maxWidth: Math.max(
           rect.width,
@@ -155,6 +171,7 @@ export function usePopoverAnchor(
         ),
         maxHeight: Math.min(maxHeight, above ? room : below),
         above,
+        viewportHeight: view.innerHeight,
       });
     };
 
@@ -163,7 +180,7 @@ export function usePopoverAnchor(
     // Capture, so a scrolling *dialog body* is heard as well as the document —
     // the list is in `<body>` and would otherwise stay put while the field it
     // belongs to scrolls away underneath it.
-    return watchViewport(place);
+    return watchViewport(view, place);
   }, [open, trigger, maxHeight, gutter]);
 
   return box;
@@ -179,7 +196,7 @@ export function usePopoverAnchor(
 export function popoverStyle(box: PopoverBox): React.CSSProperties {
   return {
     top: box.above ? undefined : box.top,
-    bottom: box.above ? window.innerHeight - box.top : undefined,
+    bottom: box.above ? box.viewportHeight - box.top : undefined,
     left: box.left,
     right: box.right,
     // No `width`. A `fixed` box with neither width nor both insets set is
@@ -256,12 +273,13 @@ export function useCenteredPanel(
 
   useLayoutEffect(() => {
     if (!open) return;
+    const view = windowOf(trigger.current);
 
     const place = () => {
       const node = trigger.current;
       if (!node) return;
       const rect = node.getBoundingClientRect();
-      const v = viewport();
+      const v = viewport(view);
       const width = Math.min(cap, v.w - gutter * 2);
       const centred = rect.left + rect.width / 2 - width / 2;
       const top = rect.bottom + 8;
@@ -278,7 +296,7 @@ export function useCenteredPanel(
 
     place();
     // Capture, so an ancestor scroller is heard as well as the document.
-    return watchViewport(place);
+    return watchViewport(view, place);
   }, [open, trigger, cap, gutter]);
 
   return box;
@@ -330,15 +348,16 @@ export function useAnchoredPanel(
 
   useLayoutEffect(() => {
     if (!open) return;
+    const view = windowOf(trigger.current);
 
     const place = () => {
       const node = trigger.current;
       if (!node) return;
       const rect = node.getBoundingClientRect();
-      const rtl = getComputedStyle(node).direction === "rtl";
-      const v = viewport();
+      const rtl = view.getComputedStyle(node).direction === "rtl";
+      const v = viewport(view);
       // A phone. See `CenteredPanelBox.sheet`.
-      if (window.innerWidth < 640) {
+      if (view.innerWidth < 640) {
         setBox({
           top: 0,
           left: 0,
@@ -371,7 +390,7 @@ export function useAnchoredPanel(
     };
 
     place();
-    return watchViewport(place);
+    return watchViewport(view, place);
   }, [open, trigger, cap, gutter, align, heightShare]);
 
   return box;

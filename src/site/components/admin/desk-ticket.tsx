@@ -299,7 +299,7 @@ function DeskTicketDialog({
         warranty,
         warrantyDays,
         costPrice: cost,
-        collected,
+        collected: terms === "cash" ? null : collected,
         paymentTerms: terms,
         holderId,
       });
@@ -346,6 +346,8 @@ function DeskTicketDialog({
   return (
     <EntityDialog
       windowId={`desk-new-${service}-${number}`}
+      // A window of its own on the desktop — see the ticket window's note.
+      detach
       title={
         done
           ? `${service === "software" ? t("deskNewProgramming") : t("deskNewRepair")} · ${done.code}`
@@ -366,7 +368,7 @@ function DeskTicketDialog({
                   it keeps a control of its own. */}
               <button
                 type="button"
-                onClick={() => {
+                onClick={(event) => {
                   if (!printFacts || !done) return;
                   // The date on the paper is the press's, and the station
                   // reads the ticket it just saved before printing it.
@@ -376,6 +378,7 @@ function DeskTicketDialog({
                     printedAt: Date.now(),
                     papers: TICKET_RUN,
                     locale,
+                    from: event.currentTarget.ownerDocument,
                   });
                   setPrintBusy(started === "busy");
                 }}
@@ -561,7 +564,11 @@ function DeskTicketDialog({
                       type="button"
                       role="radio"
                       aria-checked={terms === option}
-                      onClick={() => setTerms(option)}
+                      onClick={() => {
+                        setTerms(option);
+                        // Cash is paid in full, so the figure goes with the switch.
+                        if (option === "cash") setCollected(null);
+                      }}
                       className={cn(
                         "rounded-[calc(var(--radius-control)-2px)] px-3.5 py-1.5 text-[0.76rem] font-extrabold transition-colors",
                         terms === option
@@ -597,7 +604,16 @@ function DeskTicketDialog({
                   <MoneyInput value={cost} clearable onChange={setCost} min={0} />
                 </Field>
                 <Field label={t("financeCollected")}>
-                  <MoneyInput value={collected} clearable onChange={setCollected} min={0} placeholder={terms === "cash" && total ? formatPrice(total) : undefined} />
+                  {/* ⚠️ Not offered on cash: a cash ticket is paid in full at
+                      the counter, and the total shows greyed in its place. */}
+                  <MoneyInput
+                    value={terms === "cash" ? null : collected}
+                    clearable
+                    onChange={setCollected}
+                    min={0}
+                    disabled={terms === "cash"}
+                    placeholder={terms === "cash" && total ? formatPrice(total) : undefined}
+                  />
                 </Field>
               </Grid>
 
