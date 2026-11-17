@@ -68,7 +68,7 @@ import { uploadPhotos } from "@/lib/upload";
 import { REPAIR_FLOW } from "@/lib/data/orders";
 import { StatusHistory } from "@/components/admin/status-history";
 import { useStatusConfirm } from "@/components/admin/status-confirm";
-import { useGuardedAction } from "@/components/admin/desk-gate";
+import { useDeskGate, useGuardedAction } from "@/components/admin/desk-gate";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { TicketFaults } from "@/components/admin/fault-picker";
 import type { RecentFault } from "@/lib/data/repair-faults";
@@ -186,8 +186,25 @@ export function RepairsBoard({
    * filter that no longer lists its ticket: the reader changed what the list
    * shows, not what they were working on.
    */
-  const [openIds, setOpenIds] = useState<string[]>(initialOpenId ? [initialOpenId] : []);
+  /*
+   * ⚠️ An arrival by `?open=<id>` goes through the same door as a press. In
+   * the desk app that is a Windows notification, the bell or the sync panel;
+   * on the site, a staff alert. Where the desk's password is asked (the app,
+   * signed in as the shop) the arrival opens the **short view**, and the
+   * pencil asks from there. It used to fill `openIds` directly, which put
+   * the full editor on screen without the password — found by a security
+   * review, 2026-11-17. Where nothing is asked (the site, a technician's app)
+   * it opens the editor, as it always did.
+   */
+  const arriveInEditor = !useDeskGate().required;
+  const [openIds, setOpenIds] = useState<string[]>(initialOpenId && arriveInEditor ? [initialOpenId] : []);
   const [pinned, setPinned] = useState<Record<string, RepairCard>>({});
+  /**
+   * The ticket whose short view is open. A press anywhere on a row opens it —
+   * the device, the customer and the price, nothing to change — and the full
+   * editor is the pencil (the shop, 2026-11-17).
+   */
+  const [quickId, setQuickId] = useState<string | null>(initialOpenId && !arriveInEditor ? initialOpenId : null);
   /*
    * The board is no longer remounted by a filter change (its windows would go
    * with it), so a later `?open=<id>` — a staff alert pressed while the board
@@ -196,7 +213,9 @@ export function RepairsBoard({
   const [seenOpen, setSeenOpen] = useState(initialOpenId);
   if (initialOpenId !== seenOpen) {
     setSeenOpen(initialOpenId);
-    if (initialOpenId && !openIds.includes(initialOpenId)) {
+    if (initialOpenId && !arriveInEditor) {
+      setQuickId(initialOpenId);
+    } else if (initialOpenId && !openIds.includes(initialOpenId)) {
       setOpenIds([...openIds, initialOpenId]);
     }
   }
@@ -204,12 +223,6 @@ export function RepairsBoard({
   const [warrantyId, setWarrantyId] = useState<string | null>(null);
   /** The window the warranty was asked for from, where its form opens. */
   const [warrantyFrom, setWarrantyFrom] = useState<Document | null>(null);
-  /**
-   * The ticket whose short view is open. A press anywhere on a row opens it —
-   * the device, the customer and the price, nothing to change — and the full
-   * editor is the pencil (the shop, 2026-11-17).
-   */
-  const [quickId, setQuickId] = useState<string | null>(null);
   /** The editor is behind the desk's password where there is one: the app. */
   const guard = useGuardedAction();
   /*
