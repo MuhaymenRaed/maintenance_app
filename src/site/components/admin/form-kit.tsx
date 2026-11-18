@@ -281,7 +281,7 @@ type MoneyInputProps =
  * ticket window closed by its own ×, by Escape or by the desk app's frame
  * unmounts the field with the caret still in it, and an unmounted input fires
  * no blur — so the figure was typed, shown and never sent. Now the commit runs
- * `SETTLE_MS` after the last keystroke, and once more on unmount if one is
+ * `SETTLE_MS` after the last keystroke and once more on unmount if one is
  * still waiting. Callers already compare with what is stored and skip an
  * unchanged figure, so the blur after a settled save sends nothing twice.
  *
@@ -289,7 +289,9 @@ type MoneyInputProps =
  * through retyping, and committing that would put the old price back under
  * their fingers (the repair fee refuses an empty value and restores it).
  */
-const SETTLE_MS = 900;
+// In a ticket every save asks first (`edit-confirm.tsx`), so a pause is what opens the
+// question: long enough not to interrupt a slow typist mid-figure.
+const SETTLE_MS = 1200;
 function useSettledCommit(onCommit: (() => void) | undefined) {
   const latest = useRef(onCommit);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);

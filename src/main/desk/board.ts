@@ -141,6 +141,7 @@ export function shapeRow(
     control: ticketControl(scope.authority, viewerId, raw.assigned_to),
     sync: store.syncStateOf(id),
     localCode: Boolean(record?.createdHere && !record.serverId),
+    editedAt: raw.quote_sent_at ?? null,
     // Opened on this computer: the shop's own, whatever the server says.
     origin: record?.createdHere ? "counter" : originOf(record?.serverId ?? null),
   };
@@ -199,14 +200,14 @@ export function deskPage(params: DeskPageParams, service: RepairService): DeskPa
   const asked = params.view;
   const view: DeskView = isTech
     ? "mine"
-    : asked === "all" || asked === "mine" || asked === "pending"
+    : asked === "all" || asked === "mine" || asked === "pending" || asked === "edited"
       ? asked
       : defaultView;
 
   const window = resolveQueueWindow(
     { when: params.when, from: params.from, to: params.to, days: params.days },
     now,
-    { fallback: view === "all" ? "all" : "open", open: true },
+    { fallback: view === "all" || view === "edited" ? "all" : "open", open: true },
   );
   const search = cleanSearch(params.q);
   const flow = liveFlow(REPAIR_FLOW, refs.steps()) as RepairStatus[];
@@ -301,6 +302,7 @@ function buildBoard(
     // ⚠️ A technician reads only the tickets in his own name, whatever view was
     // asked for — the site's `getRepairDesk` holds the same line.
     if ((view === "mine" || scope.authority.rank === "technician") && raw.assigned_to !== viewerId) continue;
+    if (view === "edited" && !raw.quote_sent_at) continue;
     if (
       needle &&
       ![
@@ -372,13 +374,15 @@ function deskCounts(
   let mine = 0;
   let pending = 0;
   let olderOpen = 0;
+  // Over every ticket on the bench, open or not — an edited ticket may be done.
+  const edited = tickets.filter(({ raw }) => Boolean(raw.quote_sent_at)).length;
   for (const { raw } of tickets) {
     if (!isOpenTicket(raw.status)) continue;
     if (raw.assigned_to === viewerId) mine += 1;
     if (!raw.assigned_to || !technicians.has(raw.assigned_to)) pending += 1;
     if (since && raw.created_at < since) olderOpen += 1;
   }
-  return { mine, pending, olderOpen };
+  return { mine, pending, olderOpen, edited };
 }
 
 /** What one reader may do to one ticket, from the local copy — `authorizeRepair`. */

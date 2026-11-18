@@ -14,6 +14,7 @@ import {
   Loader2,
   MapPin,
   Pencil,
+  PencilLine,
   Phone,
   Printer,
   ShieldCheck,
@@ -71,6 +72,7 @@ import { StatusHistory } from "@/components/admin/status-history";
 import { useStatusConfirm } from "@/components/admin/status-confirm";
 import { useDeskGate, useGuardedAction } from "@/components/admin/desk-gate";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { useEditConfirm } from "@/components/admin/edit-confirm";
 import { TicketFaults } from "@/components/admin/fault-picker";
 import type { RecentFault } from "@/lib/data/repair-faults";
 import { windowStore } from "@/lib/windows/window-store";
@@ -467,6 +469,17 @@ export function RepairsBoard({
                       {formatDayTime(locale, row.createdAt)}
                     </span>
                     <OriginMark origin={row.origin} />
+                    {/* Something it says was changed after it was opened —
+                        what the «المعدّلة» tab lists (2026-11-18). */}
+                    {row.editedAt && (
+                      <span
+                        title={t("deskEditedHint", { when: formatDayTime(locale, row.editedAt) })}
+                        className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-chip bg-brand/10 px-1.5 py-0.5 text-[0.62rem] font-extrabold text-brand"
+                      >
+                        <PencilLine className="size-3" aria-hidden />
+                        {t("deskEditedMark")}
+                      </span>
+                    )}
                     <HolderChip row={row} viewerId={viewerId} />
                     {seesMoney && financeAvailable && (
                       <TermsChip
@@ -925,6 +938,15 @@ function RepairDialog({
   const rankLabel = (rank: DeskRank) => t(`rank_${rank}`);
   /** Asked before any status moves — see `status-confirm.tsx`. */
   const confirm = useStatusConfirm();
+  /**
+   * Asked before any edit inside the ticket is saved — see `edit-confirm.tsx`.
+   * Every field below goes through `askEdit`; «تراجع» puts it back.
+   */
+  const edits = useEditConfirm();
+  const shown = (value: number | null | undefined) => (value == null ? t("editEmpty") : formatPrice(value));
+  function askEdit(field: string, from: string, to: string, run: () => void, revert?: () => void) {
+    edits.request({ subject: repair.code, field, from, to, run, revert });
+  }
   /** The fee is required; clearing it is refused rather than saved. */
   const [priceMissing, setPriceMissing] = useState(false);
   /** Folded until asked for — the shop, 2026-11-17. A summary shows on the fold. */
@@ -1341,8 +1363,15 @@ function RepairDialog({
                     return;
                   }
                   if (base !== repair.basePrice) {
-                    onApply({ basePrice: base, actualCost: total, price: total }, () =>
-                      updateRepair(repair.id, { price: base }),
+                    askEdit(
+                      t(seesMoney ? "financeBasePrice" : "financePrice"),
+                      shown(repair.basePrice),
+                      shown(base),
+                      () =>
+                        onApply({ basePrice: base, actualCost: total, price: total }, () =>
+                          updateRepair(repair.id, { price: base }),
+                        ),
+                      () => setBase(repair.basePrice),
                     );
                   }
                 }}
@@ -1362,8 +1391,12 @@ function RepairDialog({
                 onChange={(event) => setNote(event.target.value)}
                 onBlur={() =>
                   note !== (repair.quoteNotes ?? "") &&
-                  onApply({ quoteNotes: note }, () =>
-                    updateRepair(repair.id, { quoteNotes: note }),
+                  askEdit(
+                    t("repairResult"),
+                    repair.quoteNotes || t("editEmpty"),
+                    note || t("editEmpty"),
+                    () => onApply({ quoteNotes: note }, () => updateRepair(repair.id, { quoteNotes: note })),
+                    () => setNote(repair.quoteNotes ?? ""),
                   )
                 }
                 className={cn(input, "resize-y")}
@@ -1431,8 +1464,15 @@ function RepairDialog({
                       onChange={setWarranty}
                       onCommit={() =>
                         warranty !== repair.warrantyPrice &&
-                        onApply({ warrantyPrice: warranty, actualCost: total, price: total }, () =>
-                          updateRepair(repair.id, { warranty }),
+                        askEdit(
+                          t("warrantyPrice"),
+                          shown(repair.warrantyPrice),
+                          shown(warranty),
+                          () =>
+                            onApply({ warrantyPrice: warranty, actualCost: total, price: total }, () =>
+                              updateRepair(repair.id, { warranty }),
+                            ),
+                          () => setWarranty(repair.warrantyPrice),
                         )
                       }
                       min={0}
@@ -1446,7 +1486,13 @@ function RepairDialog({
                       onChange={setWarrantyDays}
                       onCommit={() =>
                         warrantyDays !== repair.warrantyDays &&
-                        onApply({ warrantyDays }, () => updateRepair(repair.id, { warrantyDays }))
+                        askEdit(
+                          t("warrantyDurationField"),
+                          repair.warrantyDays == null ? t("editEmpty") : String(repair.warrantyDays),
+                          warrantyDays == null ? t("editEmpty") : String(warrantyDays),
+                          () => onApply({ warrantyDays }, () => updateRepair(repair.id, { warrantyDays })),
+                          () => setWarrantyDays(repair.warrantyDays),
+                        )
                       }
                       min={1}
                       max={3650}
@@ -1460,8 +1506,15 @@ function RepairDialog({
                       onChange={(event) => setWarrantyStart(event.target.value)}
                       onBlur={() =>
                         warrantyStart !== (repair.warrantyStart ?? "") &&
-                        onApply({ warrantyStart: warrantyStart || null }, () =>
-                          updateRepair(repair.id, { warrantyStart: warrantyStart || null }),
+                        askEdit(
+                          t("warrantyFrom"),
+                          repair.warrantyStart || t("editEmpty"),
+                          warrantyStart || t("editEmpty"),
+                          () =>
+                            onApply({ warrantyStart: warrantyStart || null }, () =>
+                              updateRepair(repair.id, { warrantyStart: warrantyStart || null }),
+                            ),
+                          () => setWarrantyStart(repair.warrantyStart ?? ""),
                         )
                       }
                       disabled={!full}
@@ -1524,15 +1577,22 @@ function RepairDialog({
                         disabled={!full}
                         onClick={() => {
                           if (repair.paymentTerms === terms) return;
-                          // Cash is paid in full, so the figure goes with the switch.
-                          if (terms === "cash") {
-                            setCollected(null);
-                            onApply({ paymentTerms: terms, collected: null }, () =>
-                              updateRepairFinance(repair.id, { paymentTerms: terms, collected: null }),
-                            );
-                          } else {
-                            onApply({ paymentTerms: terms }, () => updateRepairFinance(repair.id, { paymentTerms: terms }));
-                          }
+                          askEdit(
+                            t("financeTerms"),
+                            t(repair.paymentTerms === "cash" ? "termsCash" : "termsDeferred"),
+                            t(terms === "cash" ? "termsCash" : "termsDeferred"),
+                            () => {
+                              // Cash is paid in full, so the figure goes with the switch.
+                              if (terms === "cash") {
+                                setCollected(null);
+                                onApply({ paymentTerms: terms, collected: null }, () =>
+                                  updateRepairFinance(repair.id, { paymentTerms: terms, collected: null }),
+                                );
+                              } else {
+                                onApply({ paymentTerms: terms }, () => updateRepairFinance(repair.id, { paymentTerms: terms }));
+                              }
+                            },
+                          );
                         }}
                         className={cn(
                           "rounded-[calc(var(--radius-control)-2px)] px-3.5 py-1.5 text-[0.76rem] font-extrabold transition-colors",
@@ -1555,7 +1615,13 @@ function RepairDialog({
                     onChange={(value) => setCostPrice(value)}
                     onCommit={() =>
                       costPrice !== repair.costPrice &&
-                      onApply({ costPrice }, () => updateRepairFinance(repair.id, { costPrice }))
+                      askEdit(
+                        t("financeCost"),
+                        shown(repair.costPrice),
+                        shown(costPrice),
+                        () => onApply({ costPrice }, () => updateRepairFinance(repair.id, { costPrice })),
+                        () => setCostPrice(repair.costPrice),
+                      )
                     }
                     min={0}
                     disabled={!full}
@@ -1573,7 +1639,13 @@ function RepairDialog({
                         onChange={(value) => setCollected(value)}
                         onCommit={() =>
                           collected !== repair.collected &&
-                          onApply({ collected }, () => updateRepairFinance(repair.id, { collected }))
+                          askEdit(
+                            t("financeCollected"),
+                            shown(repair.collected),
+                            shown(collected),
+                            () => onApply({ collected }, () => updateRepairFinance(repair.id, { collected })),
+                            () => setCollected(repair.collected),
+                          )
                         }
                         min={0}
                         disabled={!full}
@@ -1735,6 +1807,7 @@ function RepairDialog({
         )}
 
         {confirm.dialog}
+        {edits.dialog}
 
         <ConfirmDialog
           open={payingRest}

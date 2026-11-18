@@ -4,7 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { repairBase, repairTotal, type RepairService } from "../../site/lib/data/repair-desk.ts";
 import { cleanFaultName } from "../../site/lib/data/repair-faults.ts";
 import { store, type OpRecord } from "../db/store";
-import { markerFor, num, typedFaultCode, type OpPayload, type RawTicket } from "../desk/raw";
+import { isContentEdit, markerFor, num, typedFaultCode, type OpPayload, type RawTicket } from "../desk/raw";
 import { refs } from "../desk/refs";
 import { getSettings } from "../settings";
 import { paths, PHOTO_SCHEME } from "../config";
@@ -321,6 +321,7 @@ async function sendUpdate(client: SupabaseClient, userId: string, role: string, 
     .select("id");
   check(result, "update");
   if (!result.data?.length) throw new SyncFailure("refused", "forbidden");
+  if (isContentEdit(patch)) await markEdited(client, id);
   await activity(client, userId, role, {
     action: patch.status ? "repairs.status" : "repairs.quote",
     entityId: id,
@@ -331,6 +332,18 @@ async function sendUpdate(client: SupabaseClient, userId: string, role: string, 
     },
   });
   return id;
+}
+
+/**
+ * The site's `markRepairEdited`: puts the ticket on «المعدّلة». Its own write,
+ * after the change has been accepted, and it never fails that change.
+ */
+async function markEdited(client: SupabaseClient, id: string) {
+  try {
+    await client.from("repair_tickets").update({ quote_sent_at: new Date().toISOString() }).eq("id", id);
+  } catch {
+    // Swallowed on purpose.
+  }
 }
 
 /* ── `updateRepairFinance` ────────────────────────────────────────────── */
@@ -345,6 +358,7 @@ async function sendFinance(client: SupabaseClient, userId: string, role: string,
   const result = await client.from("repair_ticket_finance").upsert(row, { onConflict: "ticket_id" }).select("ticket_id");
   check(result, "finance");
   if (!result.data?.length) throw new SyncFailure("refused", "forbidden");
+  if (!patch.settle) await markEdited(client, id);
   await activity(client, userId, role, {
     action: "repairs.finance",
     entityId: id,
@@ -394,6 +408,7 @@ async function sendFaults(client: SupabaseClient, userId: string, role: string, 
     }
     throw failure;
   }
+  await markEdited(client, id);
   await activity(client, userId, role, { action: "repairs.faults", entityId: id, detail: { faults: codes.length } });
   return id;
 }

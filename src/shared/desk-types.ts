@@ -66,6 +66,8 @@ export type DeskRow = RepairCard & {
   customFaults: string[];
   /** Entered at the shop, or booked on the site — `learnOrigins`. Null when it cannot be told. */
   origin?: "counter" | "web" | null;
+  /** When its content was last changed after it was opened (`quote_sent_at`); null if never. */
+  editedAt?: string | null;
   /** مبلغ الصيانة كله — what the customer pays, warranty included. */
   price: number | null;
   /** The repair alone. */
@@ -97,7 +99,7 @@ export type DeskPerson = {
 
 export type DeskScope = { authority: DeskAuthority; people: DeskPerson[] };
 
-export type DeskView = "all" | "mine" | "pending";
+export type DeskView = "all" | "mine" | "pending" | "edited";
 
 export type DeskTechRow = DeskTotals & { holderId: string | null; name: string };
 

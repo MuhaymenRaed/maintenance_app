@@ -1,6 +1,6 @@
 {
   "site": "B:\\Programming Projects\\Next JS\\Al_Isnad",
-  "syncedAt": "2026-11-18T09:07:39.197Z",
+  "syncedAt": "2026-11-18T09:57:25.836Z",
   "files": [
     "components/account/status-pill.tsx",
     "components/admin/app-window.tsx",
@@ -8,6 +8,7 @@
     "components/admin/day-rule.tsx",
     "components/admin/desk-gate.tsx",
     "components/admin/desk-ticket.tsx",
+    "components/admin/edit-confirm.tsx",
     "components/admin/fault-picker.tsx",
     "components/admin/filter-chips.tsx",
     "components/admin/form-kit.tsx",

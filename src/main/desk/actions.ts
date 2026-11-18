@@ -113,7 +113,7 @@ export function updateRepair(id: string, patch: RepairPatch): SectionResult {
     }).remaining > 0;
   queued(() => {
     store.addOp(id, "update", clean);
-    if (settles) store.addOp(id, "finance", { collected: total });
+    if (settles) store.addOp(id, "finance", { collected: total, settle: true });
   });
   return { ok: true, id };
 }

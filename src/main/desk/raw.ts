@@ -29,7 +29,7 @@ import type { DeskTicketInput, FinancePatch, OpKind, RepairPatch } from "../../s
 
 export const TICKET_SELECT = `id, code, status, created_at, updated_at, is_deleted, user_id, branch_id,
   device_model, brand_code, customer_name, customer_phone, customer_phone2, fulfillment,
-  address_line, preferred_at, notes, quote_amount, quote_notes, actual_cost,
+  address_line, preferred_at, notes, quote_amount, quote_notes, quote_sent_at, actual_cost,
   photos_before, photos_after, technician_id, assigned_to, accepted_by, admin_note,
   service, warranty_price, warranty_days, warranty_start, custom_faults,
   branches ( name_ar, name_en ),
@@ -64,6 +64,12 @@ export type RawTicket = {
   notes: string | null;
   quote_amount: number | string | null;
   quote_notes: string | null;
+  /**
+   * When the ticket's content was last changed after it was opened — the
+   * site's `EDITED_COLUMN` (the retired quote step's column, given this
+   * meaning on 2026-11-18). Status moves and hand-overs never write it.
+   */
+  quote_sent_at?: string | null;
   actual_cost: number | string | null;
   photos_before: string[] | null;
   photos_after: string[] | null;
@@ -135,6 +141,17 @@ export function cloneRaw(raw: RawTicket): RawTicket {
   return structuredClone(raw);
 }
 
+/** A change to what the ticket says — not its status, not its holder. Puts it on «المعدّلة». */
+export function isContentEdit(patch: RepairPatch): boolean {
+  return (
+    patch.price !== undefined ||
+    patch.warranty !== undefined ||
+    patch.quoteNotes !== undefined ||
+    patch.warrantyDays !== undefined ||
+    patch.warrantyStart !== undefined
+  );
+}
+
 /** One waiting change, laid over a ticket. Pure; returns the same object it was given. */
 export function applyOp(raw: RawTicket, op: AnyOp): RawTicket {
   switch (op.kind) {
@@ -152,6 +169,7 @@ export function applyOp(raw: RawTicket, op: AnyOp): RawTicket {
       }
       if (patch.status !== undefined) raw.status = patch.status;
       if (patch.quoteNotes !== undefined) raw.quote_notes = patch.quoteNotes;
+      if (isContentEdit(patch)) raw.quote_sent_at = new Date().toISOString();
       if (patch.warrantyDays !== undefined) raw.warranty_days = whole(patch.warrantyDays) || null;
       if (patch.warrantyStart !== undefined) raw.warranty_start = patch.warrantyStart || null;
       return raw;
@@ -164,6 +182,7 @@ export function applyOp(raw: RawTicket, op: AnyOp): RawTicket {
       if (patch.collected !== undefined) next.collected = whole(patch.collected);
       if (patch.paymentTerms !== undefined) next.payment_terms = patch.paymentTerms === "deferred" ? "deferred" : "cash";
       raw.repair_ticket_finance = next;
+      if (!patch.settle) raw.quote_sent_at = new Date().toISOString();
       return raw;
     }
     case "assign": {
@@ -187,6 +206,7 @@ export function applyOp(raw: RawTicket, op: AnyOp): RawTicket {
         repair_issues: { name_ar: fault.name_ar, name_en: fault.name_en },
       }));
       if (op.payload.custom !== null) raw.custom_faults = op.payload.custom;
+      raw.quote_sent_at = new Date().toISOString();
       return raw;
     }
     case "create":

@@ -7,6 +7,7 @@ import { ChipMultiSelect } from "@/components/ui/chip-multi-select";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EntityDialog, input } from "@/components/admin/form-kit";
 import { editRepairIssue, updateRepairFaults } from "@/lib/actions/repair-desk";
+import { useEditConfirm } from "@/components/admin/edit-confirm";
 import { faultEdits, withFaultEdits } from "@/lib/repair/fault-edits";
 import type { RepairService } from "@/lib/data/repair-desk";
 import { cn } from "@/lib/utils";
@@ -280,7 +281,7 @@ export function TicketFaults({
   recent,
   onPatch,
 }: {
-  repair: Pick<DeskRow, "id" | "faults" | "customFaults" | "service">;
+  repair: Pick<DeskRow, "id" | "code" | "faults" | "customFaults" | "service">;
   issues: readonly { code: string; name: string }[];
   recent: readonly RecentFault[];
   /** What the database now holds, written onto the board's row. */
@@ -297,6 +298,15 @@ export function TicketFaults({
     [repair.faults, repair.customFaults],
   );
   const shown = draft ?? saved;
+  /** Asked before the faults change — see `edit-confirm.tsx`. */
+  const edits = useEditConfirm();
+  const names = useMemo(() => {
+    const byCode = new Map<string, string>();
+    for (const issue of issues) byCode.set(issue.code, issue.name);
+    for (const fault of repair.faults) byCode.set(fault.code, fault.name);
+    return (values: readonly string[]) =>
+      values.map((value) => byCode.get(value) ?? faultText(value)).join("، ") || t("editEmpty");
+  }, [issues, repair.faults, t]);
 
   function change(next: string[]) {
     const picked = splitFaults(next);
@@ -305,6 +315,19 @@ export function TicketFaults({
       setState({ error: "deskFaultKeepOne" });
       return;
     }
+    // Shown at once and saved only once confirmed; «تراجع» puts it back.
+    setDraft(next);
+    edits.request({
+      subject: repair.code,
+      field: t("editFaults"),
+      from: names(shown),
+      to: names(next),
+      run: () => save(next, picked),
+      revert: () => setDraft(null),
+    });
+  }
+
+  function save(next: string[], picked: ReturnType<typeof splitFaults>) {
     setState("idle");
     setDraft(next);
     start(async () => {
@@ -341,6 +364,7 @@ export function TicketFaults({
         extra={repair.faults}
         manage={repair.service}
       />
+      {edits.dialog}
       <p className="flex min-h-4 items-center gap-1.5 text-[0.7rem] font-bold" aria-live="polite">
         {pending ? (
           <span className="inline-flex items-center gap-1.5 text-muted">

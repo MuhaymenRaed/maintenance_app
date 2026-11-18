@@ -33,6 +33,11 @@ export type FinancePatch = {
   costPrice?: number | null;
   collected?: number | null;
   paymentTerms?: PaymentTerms;
+  /**
+   * The app's own: «الباقي» settled by «تم التسليم» — a consequence of a
+   * status move, so it does not put the ticket on the «المعدّلة» list.
+   */
+  settle?: boolean;
 };
 
 export type DeskTicketInput = {

@@ -90,7 +90,7 @@ export type RepairDeskViewData = {
   terms: PaymentTerms | null;
   tech: string | null;
   board: DeskBoard;
-  counts: { mine: number; pending: number; olderOpen: number };
+  counts: { mine: number; pending: number; olderOpen: number; /** Absent from an older desk app build. */ edited?: number };
   branches: { id: string; name: string }[];
   brands: { code: string; name: string }[];
   models: Record<string, StockModel[]>;
@@ -215,7 +215,9 @@ export function RepairDeskView({
       ? t("deskScopeMine")
       : view === "pending"
         ? t("deskScopePending")
-        : tech
+        : view === "edited"
+          ? t("deskScopeEdited")
+          : tech
           ? t("deskScopeTech", { name: tech === "none" ? t("unassigned") : (nameOf(tech) ?? "") })
           : t("deskScopeAll");
 
@@ -347,6 +349,7 @@ export function RepairDeskView({
                   { value: null, label: t("deskTabAll") },
                   { value: "mine", label: t("deskTabMine"), count: counts.mine },
                   { value: "pending", label: t("deskTabPending"), count: counts.pending },
+                  { value: "edited", label: t("deskTabEdited"), count: counts.edited },
                 ]}
               />
             )}
