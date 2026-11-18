@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { app, BrowserWindow, nativeTheme, screen, shell } from "electron";
+import { app, BrowserWindow, dialog, nativeTheme, screen, shell } from "electron";
 import { CH } from "../shared/contract";
 import { getSettings } from "./settings";
 import { paths, SCHEME } from "./config";
+import { words } from "./i18n";
 
 /**
  * The one window.
@@ -184,6 +185,44 @@ export function createWindow(): BrowserWindow {
     child.webContents.on("will-navigate", (event, url) => {
       event.preventDefault();
       if (/^(https?:|mailto:|tel:)/i.test(url)) void shell.openExternal(url);
+    });
+
+    /*
+     * ⚠️ The frame's own × on a form. The page guards a form with
+     * `beforeunload` (`lib/windows/detached.ts` in the site), which a browser
+     * turns into its "leave this page?" question — but Electron asks nothing
+     * and simply cancels the close, so the × did nothing at all. Asked here
+     * instead, in the dashboard's own words, and closed on a yes; a window with
+     * no form never comes here, its close is not held. The page's own close
+     * button is hidden in these windows (`app.css`), so this × is the one.
+     */
+    let asking = false;
+    let leaving = false;
+    child.webContents.on("will-prevent-unload", (event) => {
+      if (leaving) {
+        event.preventDefault();
+        return;
+      }
+      if (asking) return;
+      asking = true;
+      const w = words();
+      void dialog
+        .showMessageBox(child, {
+          type: "question",
+          title: w.winCloseTitle,
+          message: w.winCloseTitle,
+          detail: w.winCloseBody,
+          buttons: [w.winCloseConfirm, w.winKeepOpen],
+          defaultId: 1,
+          cancelId: 1,
+          noLink: true,
+        })
+        .then(({ response }) => {
+          asking = false;
+          if (response !== 0 || child.isDestroyed()) return;
+          leaving = true;
+          child.close();
+        });
     });
   });
   window.webContents.on("will-navigate", (event, url) => {

@@ -2,6 +2,7 @@ import type {
   CreateTicketResult,
   DeskResult,
   DeskTicketInput,
+  FaultEditInput,
   FaultsInput,
   FaultsResult,
   FinancePatch,
@@ -24,7 +25,7 @@ import type {
  * and one of its figures did not, and that is as true of a column this
  * deployment lacks as of a refusal at the till.
  */
-export type { DeskResult, DeskTicketInput };
+export type { DeskResult, DeskTicketInput, FaultEditInput };
 
 export function assignRepair(ticketId: string, holderId: string | null): Promise<DeskResult> {
   return window.desk.assignRepair(ticketId, holderId);
@@ -36,6 +37,11 @@ export function updateRepairFinance(ticketId: string, patch: FinancePatch): Prom
 
 export function createDeskTicket(input: DeskTicketInput): Promise<CreateTicketResult> {
   return window.desk.createDeskTicket(input);
+}
+
+/** A fault on the bench's list, renamed or taken off — see `editRepairIssue` in `src/main/desk/actions.ts`. */
+export function editRepairIssue(input: FaultEditInput): Promise<DeskResult> {
+  return window.desk.editRepairIssue(input);
 }
 
 /** A ticket's faults after it was opened — see `updateRepairFaults` in `src/main/desk/actions.ts`. */

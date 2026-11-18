@@ -15,6 +15,7 @@ const WORDS = {
     trayOffline: "غير متصل — يعمل محلياً",
     trayPending: (n: number) => `${n} تعديل بانتظار الرفع`,
     newTicketTitle: (code: string) => `حجز صيانة جديد ${code}`,
+    handedTitle: (code: string) => `أُسندت إليك التذكرة ${code}`,
     newTicketBody: (device: string, name: string) => `${device} — ${name}`,
     movedTitle: (code: string) => `تحديث على ${code}`,
     movedBody: (device: string) => `تغيّرت حالة ${device} من لوحة التحكم`,
@@ -33,6 +34,11 @@ const WORDS = {
     restore: "استعادة",
     cancel: "إلغاء",
     importFilter: "قاعدة بيانات الصيانة",
+    // The dashboard's own words for closing a window (`Admin.winClose*`).
+    winCloseTitle: "إغلاق النافذة؟",
+    winCloseBody: "ستُفقد أي معلومات كتبتها هنا ولم تُحفظ بعد.",
+    winCloseConfirm: "نعم، أغلقها",
+    winKeepOpen: "إبقاؤها مفتوحة",
   },
   en: {
     appName: "Al-Esnad Maintenance",
@@ -43,6 +49,7 @@ const WORDS = {
     trayOffline: "Offline — working locally",
     trayPending: (n: number) => `${n} change${n === 1 ? "" : "s"} waiting to upload`,
     newTicketTitle: (code: string) => `New repair booking ${code}`,
+    handedTitle: (code: string) => `${code} was handed to you`,
     newTicketBody: (device: string, name: string) => `${device} — ${name}`,
     movedTitle: (code: string) => `${code} was updated`,
     movedBody: (device: string) => `${device} changed status on the dashboard`,
@@ -61,6 +68,10 @@ const WORDS = {
     restore: "Restore",
     cancel: "Cancel",
     importFilter: "Repair desk database",
+    winCloseTitle: "Close this window?",
+    winCloseBody: "Anything typed here that has not been saved will be lost.",
+    winCloseConfirm: "Yes, close it",
+    winKeepOpen: "Keep it open",
   },
 };
 

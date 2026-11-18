@@ -544,6 +544,7 @@ function DeskTicketDialog({
                   }}
                   issues={issues}
                   recent={recentFaults}
+                  manage={service}
                 />
                 {error === "issue_required" && (
                   <span role="alert" className="mt-1 block text-[0.72rem] font-bold text-brand">

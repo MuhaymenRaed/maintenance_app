@@ -7,7 +7,7 @@ import { raise } from "../notify";
 import { words } from "../i18n";
 import { logger } from "../log";
 import { asFailure, ensureSession, sessionEmail, supabase, SyncFailure } from "./client";
-import { pullAllTickets, pullChanges, pullRefs, type PullOutcome } from "./pull";
+import { learnOrigins, pullAllTickets, pullChanges, pullRefs, type PullOutcome } from "./pull";
 import { pushAll } from "./push";
 
 const log = logger("sync");
@@ -202,13 +202,33 @@ class SyncEngine extends EventEmitter {
     const outcome = fullDue ? await pullAllTickets(client) : await pullChanges(client);
     store.setMeta("lastPullAt", new Date().toISOString());
     this.set({ lastPullAt: store.meta("lastPullAt") });
-    if (outcome.changed || refsDue) store.bump();
+    const learned = await learnOrigins(client);
+    if (outcome.changed || refsDue || learned) store.bump();
     this.announce(outcome);
   }
 
   private announce(outcome: PullOutcome) {
     const service = getSettings().service;
     const onBench = (raw: { service?: string | null }) => (raw.service === "software" ? "software" : "hardware") === service;
+    /*
+     * A technician is told about his own tickets and nothing else (the shop,
+     * 2026-11-18): a ticket handed to him, and a change to one he holds. A new
+     * booking on the bench is the managers' to hand out, so it is not his news
+     * until it is handed to him — the dashboard's alerts draw the same line.
+     */
+    const viewer = store.ref<{ id: string; role: string }>("viewer");
+    if (viewer?.role === "technician") {
+      const mine = (raw: { assigned_to?: string | null }) => raw.assigned_to === viewer.id;
+      const handed = [...outcome.arrived, ...outcome.handed].filter((raw) => onBench(raw) && mine(raw));
+      for (const raw of handed.slice(0, 5)) {
+        raise("new_ticket", words().handedTitle(raw.code), words().newTicketBody(raw.device_model, raw.customer_name), store.idForServer(raw.id) ?? raw.id);
+      }
+      const told = new Set(handed.map((raw) => raw.id));
+      for (const { after } of outcome.moved.filter(({ after }) => onBench(after) && mine(after) && !told.has(after.id)).slice(0, 5)) {
+        raise("changed", words().movedTitle(after.code), words().movedBody(after.device_model), store.idForServer(after.id) ?? after.id);
+      }
+      return;
+    }
     for (const raw of outcome.arrived.filter(onBench).slice(0, 5)) {
       raise("new_ticket", words().newTicketTitle(raw.code), words().newTicketBody(raw.device_model, raw.customer_name), store.idForServer(raw.id) ?? raw.id);
     }

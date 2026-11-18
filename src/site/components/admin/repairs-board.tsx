@@ -27,6 +27,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { StatusPill } from "@/components/account/status-pill";
+import { OriginMark } from "@/components/admin/origin-mark";
 import {
   EntityDialog,
   Field,
@@ -256,10 +257,30 @@ export function RepairsBoard({
    * technician's own app, it opens at once.
    */
   function editTicket(row: RepairCard) {
+    // Already open: bring it forward — never a second window on one ticket,
+    // and no password asked again for a window already unlocked.
+    if (openIds.includes(row.id)) {
+      setQuickId(null);
+      windowStore.focus(`repair:${row.id}`);
+      return;
+    }
     guard.run("edit", () => {
       setQuickId(null);
       openTicket(row);
     });
+  }
+
+  /**
+   * One ticket, one window (the shop, 2026-11-18): a press on a row whose
+   * editor is already open brings that editor forward instead of opening the
+   * short view beside it.
+   */
+  function viewTicket(row: RepairCard) {
+    if (openIds.includes(row.id)) {
+      windowStore.focus(`repair:${row.id}`);
+      return;
+    }
+    setQuickId(row.id);
   }
 
   function closeTicket(id: string) {
@@ -392,7 +413,7 @@ export function RepairsBoard({
                     on the row opens its short view; changing it is the pencil. */}
                 <button
                   type="button"
-                  onClick={() => setQuickId(row.id)}
+                  onClick={() => viewTicket(row)}
                   aria-label={t("deskQuickOpen", { name: row.customerName, code: row.code })}
                   className="absolute inset-0 z-0 rounded-panel focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
                 />
@@ -445,6 +466,7 @@ export function RepairsBoard({
                     <span className="text-[0.68rem] font-medium text-muted">
                       {formatDayTime(locale, row.createdAt)}
                     </span>
+                    <OriginMark origin={row.origin} />
                     <HolderChip row={row} viewerId={viewerId} />
                     {seesMoney && financeAvailable && (
                       <TermsChip

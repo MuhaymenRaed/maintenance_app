@@ -18,6 +18,7 @@ import type {
   CreateTicketResult,
   DeskResult,
   DeskTicketInput,
+  FaultEditInput,
   FaultsInput,
   FaultsResult,
   FinancePatch,
@@ -346,6 +347,65 @@ function typedFaults(service: RepairService, names: readonly string[]): OpPayloa
 }
 
 /* ── Reads the dialogs make ───────────────────────────────────────────── */
+
+/**
+ * A fault on the bench's list, renamed or taken off — the site's
+ * `editRepairIssue`, asked the same questions.
+ *
+ * ⚠️ Online only, and said so. The list is the shop's, shared by every
+ * counter and by the site, so a rename is not something to queue on one
+ * computer and send later — two counters renaming one fault offline would
+ * each be told it worked. It writes at once, then lays the change over this
+ * computer's copy of the list so every picker shows it straight away.
+ */
+export async function editRepairIssue(input: FaultEditInput): Promise<DeskResult> {
+  const service: RepairService = input.service === "software" ? "software" : "hardware";
+  const viewer = refs.viewer();
+  if (!viewer) return { ok: false, error: "not_signed_in" };
+  if (!canWith(viewer.role, viewer.grant, SERVICE_CAPABILITY[service])) return { ok: false, error: "forbidden" };
+  if (!deskScope(service)?.authority.manages) return { ok: false, error: "forbidden" };
+  if (sync.status.state === "offline") return { ok: false, error: "needs_connection" };
+  if (!/^[a-z0-9_-]{1,64}$/i.test(input.code)) return { ok: false, error: "save_failed" };
+  try {
+    const client = supabase();
+    const read = await client.from("repair_issues").select("code, name_ar, name_en, is_deleted").eq("service", service);
+    if (read.error) return { ok: false, error: "save_failed" };
+    const bench = (read.data ?? []) as { code: string; name_ar: string; name_en: string; is_deleted: boolean }[];
+    const row = bench.find((candidate) => candidate.code === input.code);
+    if (!row) return { ok: false, error: "record_not_found" };
+    let change: Record<string, unknown>;
+    if (input.retire) {
+      change = { is_deleted: true };
+    } else {
+      const name = cleanFaultName(input.name ?? "");
+      if (name.length < 2) return { ok: false, error: "fault_name_short" };
+      const key = name.toLowerCase();
+      const taken = bench.some(
+        (other) =>
+          other.code !== row.code &&
+          !other.is_deleted &&
+          (other.name_ar.toLowerCase() === key || other.name_en.toLowerCase() === key),
+      );
+      if (taken) return { ok: false, error: "fault_name_taken" };
+      const typed = row.name_ar === row.name_en;
+      change = typed ? { name_ar: name, name_en: name } : input.locale === "en" ? { name_en: name } : { name_ar: name };
+    }
+    const write = await client.from("repair_issues").update(change).eq("code", row.code).select("code");
+    if (write.error || !write.data?.length) return { ok: false, error: write.error ? "save_failed" : "forbidden" };
+    const list = refs.issues();
+    store.setRef(
+      "issues",
+      input.retire
+        ? list.filter((issue) => issue.code !== row.code)
+        : list.map((issue) => (issue.code === row.code ? { ...issue, ...change } : issue)),
+    );
+    store.bump();
+    return { ok: true, id: row.code };
+  } catch (error) {
+    log.warn("editRepairIssue failed", error);
+    return { ok: false, error: "needs_connection" };
+  }
+}
 
 export async function loadStatusHistory(kind: string, id: string): Promise<{ available: boolean; events: StatusEvent[] }> {
   if (kind !== "repair") return { available: false, events: [] };

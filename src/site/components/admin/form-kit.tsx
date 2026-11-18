@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Check, ChevronDown, Info, Loader2, Trash2, X } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -186,6 +186,7 @@ export function NumberInput({
   // One cast at the boundary rather than fifteen at the call sites: the union
   // above is what callers see, and inside there is only one implementation.
   const emit = onChange as (value: number | null) => void;
+  const settle = useSettledCommit(onCommit);
   return (
     <input
       type="number"
@@ -200,6 +201,7 @@ export function NumberInput({
         const raw = event.target.value;
         if (raw === "") {
           emit(clearable ? null : 0);
+          settle.typed(false);
           return;
         }
         // `0012` → `12`, but `0` and `0.5` are left alone: the lookahead only
@@ -207,12 +209,13 @@ export function NumberInput({
         const cleaned = raw.replace(/^(-?)0+(?=\d)/, "$1");
         if (cleaned !== raw) event.target.value = cleaned;
         emit(Number(cleaned) || 0);
+        settle.typed(true);
       }}
       // A required field left blank should read as the zero it is about to be
       // saved as rather than as an unanswered question.
       onBlur={(event) => {
         if (!clearable && event.target.value === "") emit(0);
-        onCommit?.();
+        settle.now();
       }}
       dir="ltr"
       data-numeric
@@ -270,6 +273,59 @@ type MoneyInputProps =
       onChange: (value: number) => void;
     });
 
+/**
+ * Saves a field a moment after the typing stops, as well as on blur.
+ *
+ * ⚠️ Blur alone lost edits, and silently (the shop, 2026-11-18: "after I edit
+ * the cost it is not updated in the row even when I restart the app"). A
+ * ticket window closed by its own ×, by Escape or by the desk app's frame
+ * unmounts the field with the caret still in it, and an unmounted input fires
+ * no blur — so the figure was typed, shown and never sent. Now the commit runs
+ * `SETTLE_MS` after the last keystroke, and once more on unmount if one is
+ * still waiting. Callers already compare with what is stored and skip an
+ * unchanged figure, so the blur after a settled save sends nothing twice.
+ *
+ * Only a field holding a figure is settled: an empty box is somebody halfway
+ * through retyping, and committing that would put the old price back under
+ * their fingers (the repair fee refuses an empty value and restores it).
+ */
+const SETTLE_MS = 900;
+function useSettledCommit(onCommit: (() => void) | undefined) {
+  const latest = useRef(onCommit);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    latest.current = onCommit;
+  });
+  useEffect(
+    () => () => {
+      if (timer.current == null) return;
+      clearTimeout(timer.current);
+      timer.current = null;
+      latest.current?.();
+    },
+    [],
+  );
+  return {
+    /** A keystroke: wait for the next pause, if the box holds a figure. */
+    typed(hasFigure: boolean) {
+      if (!onCommit) return;
+      if (timer.current != null) clearTimeout(timer.current);
+      timer.current = null;
+      if (!hasFigure) return;
+      timer.current = setTimeout(() => {
+        timer.current = null;
+        latest.current?.();
+      }, SETTLE_MS);
+    },
+    /** Blur: commit now, and drop the pause that was waiting. */
+    now() {
+      if (timer.current != null) clearTimeout(timer.current);
+      timer.current = null;
+      latest.current?.();
+    },
+  };
+}
+
 export function MoneyInput({
   value,
   onChange,
@@ -281,6 +337,7 @@ export function MoneyInput({
   onCommit,
 }: MoneyInputProps) {
   const emit = onChange as (value: number | null) => void;
+  const settle = useSettledCommit(onCommit);
 
   /*
    * The box holds a draft and the parent holds a figure, so the two have to be
@@ -343,6 +400,7 @@ export function MoneyInput({
         if (!cut) return;
         event.preventDefault();
         const draft = commit(cut.text);
+        settle.typed(draft.value != null);
         const before = countValueChars(cut.text.slice(0, cut.caret));
         el.value = draft.text;
         const caret = caretAfterValueChars(draft.text, before);
@@ -352,6 +410,7 @@ export function MoneyInput({
         const el = event.currentTarget;
         const before = countValueChars(el.value.slice(0, el.selectionStart ?? el.value.length));
         const draft = commit(el.value);
+        settle.typed(draft.value != null);
         el.value = draft.text;
         const caret = caretAfterValueChars(draft.text, before);
         el.setSelectionRange(caret, caret);
@@ -366,7 +425,7 @@ export function MoneyInput({
         } else if (!clearable && readMoney(event.target.value).value === 0) {
           setText("");
         }
-        onCommit?.();
+        settle.now();
       }}
       dir="ltr"
       data-numeric

@@ -86,6 +86,15 @@ export type FaultsResult =
   | { ok: true; faults: { code: string; name: string }[]; custom: string[] }
   | { ok: false; error: string };
 
+/** `editRepairIssue` — a fault on the bench's list, renamed or taken off. */
+export type FaultEditInput = {
+  service: RepairService;
+  code: string;
+  name?: string;
+  retire?: boolean;
+  locale: "ar" | "en";
+};
+
 export type RecordKind = "order" | "repair" | "trade_in";
 
 export type PrintFactsResult =
@@ -232,6 +241,7 @@ export type DeskApi = {
   updateRepairFinance(id: string, patch: FinancePatch): Promise<DeskResult>;
   createDeskTicket(input: DeskTicketInput): Promise<CreateTicketResult>;
   updateRepairFaults(id: string, input: FaultsInput): Promise<FaultsResult>;
+  editRepairIssue(input: FaultEditInput): Promise<DeskResult>;
   deleteRecord(input: { kind: RecordKind; id: string; label?: string; reason?: string }): Promise<RecordResult>;
   loadStatusHistory(kind: "order" | "repair" | "trade_in", id: string): Promise<{ available: boolean; events: StatusEvent[] }>;
   loadWorldModels(brandCode: string, locale: string): Promise<WorldModel[]>;
@@ -307,6 +317,7 @@ export const CH = {
   updateRepairFinance: "desk:updateRepairFinance",
   createDeskTicket: "desk:createDeskTicket",
   updateRepairFaults: "desk:updateRepairFaults",
+  editRepairIssue: "desk:editRepairIssue",
   deleteRecord: "desk:deleteRecord",
   loadStatusHistory: "desk:loadStatusHistory",
   loadWorldModels: "desk:loadWorldModels",

@@ -1,7 +1,7 @@
 {
   "name": "al-esnad-maintenance",
   "productName": "Al-Esnad Maintenance",
-  "version": "1.1.5",
+  "version": "1.1.7",
   "private": true,
   "description": "The Al-Esnad repair desk as a desktop app that works offline and syncs with the shop's dashboard.",
   "keywords": [],

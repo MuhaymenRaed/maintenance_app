@@ -152,14 +152,32 @@ function cloneStyle(node: HTMLLinkElement | HTMLStyleElement, into: Document): N
  * the dashboard loads later — a lazily loaded chunk, a hot reload — and a
  * theme switch made while the window is open.
  */
-function mirror(doc: Document): () => void {
+function mirror(doc: Document, onStyled: () => void): () => void {
   const clones = new Map<Node, Node>();
+  /** The stylesheet links still loading in the new window. */
+  const waiting = new Set<Node>();
+  let styled = false;
+  const settle = () => {
+    if (styled || waiting.size > 0) return;
+    styled = true;
+    onStyled();
+  };
   for (const node of document.head.childNodes) {
     if (!isStyle(node)) continue;
     const clone = cloneStyle(node, doc);
     clones.set(node, clone);
+    if (clone.nodeName === "LINK") {
+      waiting.add(clone);
+      const done = () => {
+        waiting.delete(clone);
+        settle();
+      };
+      clone.addEventListener("load", done, { once: true });
+      clone.addEventListener("error", done, { once: true });
+    }
     doc.head.appendChild(clone);
   }
+  settle();
   copyRoot(document.documentElement, doc.documentElement);
   doc.body.className = document.body.className;
 
@@ -186,6 +204,9 @@ function mirror(doc: Document): () => void {
     root.disconnect();
   };
 }
+
+/** How long a new window waits for its stylesheets before showing the form anyway. */
+const STYLE_WAIT_MS = 2500;
 
 let unloadHooked = false;
 
@@ -244,10 +265,33 @@ export function openDetached(
   );
   doc.close();
   doc.title = title;
-  const stopMirror = mirror(doc);
+  /*
+   * ⚠️ Hidden until its stylesheets have loaded. A `<link>` copied into a new
+   * document loads again there, even from the cache, so for the first frames
+   * the form was drawn bare — Times New Roman, native buttons, the faults as a
+   * bulleted list (the shop's screenshot, 2026-11-18). The page's own ground
+   * colour goes on at once, so the window opens as a calm empty panel rather
+   * than white, and the form appears whole. A sheet that never answers is not
+   * waited on for ever: `STYLE_WAIT_MS` shows the form regardless.
+   */
+  doc.body.style.margin = "0";
+  try {
+    doc.body.style.background = getComputedStyle(document.body).backgroundColor;
+  } catch {
+    // The ground is a nicety.
+  }
   const root = doc.createElement("div");
   root.id = "window-root";
+  root.style.visibility = "hidden";
   doc.body.appendChild(root);
+  let revealed = false;
+  const reveal = () => {
+    if (revealed) return;
+    revealed = true;
+    root.style.removeProperty("visibility");
+  };
+  const stopMirror = mirror(doc, reveal);
+  window.setTimeout(reveal, STYLE_WAIT_MS);
 
   const opened = win;
   const entry: Entry = {

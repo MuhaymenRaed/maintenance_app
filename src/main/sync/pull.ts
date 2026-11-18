@@ -220,6 +220,8 @@ export type PullOutcome = {
   arrived: RawTicket[];
   /** Tickets somebody else moved to another status. */
   moved: { before: RawTicket; after: RawTicket }[];
+  /** Tickets somebody else handed to a new holder — a technician is told when it is him. */
+  handed: RawTicket[];
   changed: boolean;
 };
 
@@ -238,6 +240,15 @@ function record(raw: RawTicket, outcome: PullOutcome, announce: boolean): boolea
   ) {
     outcome.moved.push({ before: result.before, after: raw });
   }
+  if (
+    !result.isNew &&
+    result.before &&
+    result.before.assigned_to !== raw.assigned_to &&
+    raw.assigned_to &&
+    !store.ops.some((op) => op.ticketId === result.id)
+  ) {
+    outcome.handed.push(raw);
+  }
   return true;
 }
 
@@ -249,7 +260,7 @@ export async function pullAllTickets(client: SupabaseClient): Promise<PullOutcom
       client.from("repair_tickets").select(TICKET_SELECT).eq("is_deleted", false).order("created_at").order("id").range(from, to) as never,
     "tickets",
   );
-  const outcome: PullOutcome = { arrived: [], moved: [], changed: false };
+  const outcome: PullOutcome = { arrived: [], moved: [], handed: [], changed: false };
   let cursor = store.meta("ticketsCursor");
   let financeCursor = store.meta("financeCursor");
   store.transaction(() => {
@@ -279,7 +290,7 @@ export async function pullAllTickets(client: SupabaseClient): Promise<PullOutcom
 
 /** Everything changed since the last pull — every few seconds while online. */
 export async function pullChanges(client: SupabaseClient): Promise<PullOutcome> {
-  const outcome: PullOutcome = { arrived: [], moved: [], changed: false };
+  const outcome: PullOutcome = { arrived: [], moved: [], handed: [], changed: false };
   const cursor = store.meta("ticketsCursor");
   if (!cursor) return pullAllTickets(client);
 
@@ -346,6 +357,54 @@ export async function pullChanges(client: SupabaseClient): Promise<PullOutcome> 
 }
 
 /** One ticket, read fresh — after a change to it was accepted, and before printing it. */
+/**
+ * Where each ticket came from — the counter, or a customer's booking on the
+ * site — learned once per ticket and kept in the `origins` ref (the shop,
+ * 2026-11-18). The site's `lib/queries/record-origin.ts` reads the same
+ * thing the same way: the ticket's first status event, whose `actor` is a
+ * member of staff for a ticket entered at the shop and a customer or nobody
+ * for a booking. A ticket with no first event (older than the trigger) is
+ * remembered as "" — asked once, and drawn with no mark.
+ *
+ * Never fails a sync: a mark is a nicety, and the next pass asks again.
+ */
+export async function learnOrigins(client: SupabaseClient): Promise<boolean> {
+  const known = { ...(store.ref<Record<string, string>>("origins") ?? {}) };
+  const missing = [...store.tickets.values()]
+    .filter((record) => record.serverId && !record.deleted && known[record.serverId] === undefined)
+    .map((record) => record.serverId!);
+  if (!missing.length) return false;
+  const staff = store.ref<Record<string, unknown>>("directory") ?? {};
+  const first = new Map<string, string | null>();
+  try {
+    for (let at = 0; at < missing.length; at += 150) {
+      const batch = missing.slice(at, at + 150);
+      const result = await client
+        .from("status_events")
+        .select("entity_id, actor, at, id")
+        .eq("kind", "repair")
+        .in("entity_id", batch)
+        .order("at", { ascending: true })
+        .order("id", { ascending: true });
+      if (result.error) return false;
+      for (const row of (result.data ?? []) as { entity_id: string; actor: string | null }[]) {
+        if (!first.has(row.entity_id)) first.set(row.entity_id, row.actor);
+      }
+    }
+  } catch {
+    return false;
+  }
+  for (const id of missing) {
+    if (!first.has(id)) known[id] = "";
+    else {
+      const actor = first.get(id) ?? null;
+      known[id] = actor && staff[actor] ? "counter" : "web";
+    }
+  }
+  store.setRef("origins", known);
+  return true;
+}
+
 export async function pullTicket(client: SupabaseClient, serverId: string): Promise<RawTicket | null> {
   const result = await client.from("repair_tickets").select(TICKET_SELECT).eq("id", serverId).maybeSingle();
   if (result.error) throw failureOf(result, "ticket");

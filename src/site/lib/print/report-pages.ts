@@ -85,6 +85,25 @@ export const REPORT_PAPERS = {
  * row is not something to cut in half — except on the first page, where a row
  * that a later page CAN hold moves on and leaves page one to the totals.
  */
+/**
+ * `paginate`, with something that has to follow the last row — the report's
+ * totals, which close it (the shop, 2026-11-18: "the rows of the infos must be
+ * shown after the table, at the end of the report"). The totals stay whole:
+ * when the last page has no room left for `tail`, they get a page of their own.
+ */
+export function paginateWithTail(
+  heights: readonly number[],
+  first: number,
+  next: number,
+  tail: number,
+): number[][] {
+  const pages = paginate(heights, first, next);
+  const last = pages[pages.length - 1];
+  const room = (pages.length === 1 ? first : next) - last.reduce((sum, index) => sum + heights[index], 0);
+  if (room < tail) pages.push([]);
+  return pages;
+}
+
 export function paginate(heights: readonly number[], first: number, next: number): number[][] {
   const pages: number[][] = [[]];
   let room = first;

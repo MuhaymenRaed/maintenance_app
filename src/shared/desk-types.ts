@@ -64,6 +64,8 @@ export type DeskRow = RepairCard & {
   /** The same faults as pairs, so the ticket window's editor can name each chip. */
   faults: { code: string; name: string }[];
   customFaults: string[];
+  /** Entered at the shop, or booked on the site — `learnOrigins`. Null when it cannot be told. */
+  origin?: "counter" | "web" | null;
   /** مبلغ الصيانة كله — what the customer pays, warranty included. */
   price: number | null;
   /** The repair alone. */

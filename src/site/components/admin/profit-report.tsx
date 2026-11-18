@@ -39,7 +39,7 @@ import {
 } from "@/lib/print/agent-client";
 import type { PrinterInfo } from "@/lib/print/printer-match";
 import type { PdfImagePage } from "@/lib/print/pdf";
-import { paginate, REPORT_PAPERS, type ReportPaper } from "@/lib/print/report-pages";
+import { paginateWithTail, REPORT_PAPERS, type ReportPaper } from "@/lib/print/report-pages";
 import { connectionProblem, openPrinterSetup, printerState, resolvePrinters } from "@/lib/print/station";
 import type { StationSettings } from "@/lib/print/station-settings";
 import { stationSettings, stationSettingsStore } from "@/lib/print/station-store";
@@ -149,13 +149,27 @@ type Totals = {
   outstanding: number;
   /** «واصل بالخزنة» — every dinar collected, the warranty inside it once. See `DeskTotals.till`. */
   till: number;
+  /** «أسعار الشراء من المخزن» — what the parts cost the shop, on the tickets that record it. */
+  cost: number;
+  /** «واصل آجل» — what has come in on deferred tickets so far. */
+  deferred: number;
 };
 
 type BuiltReport = { rows: ReportRow[]; totals: Totals };
 
 /** The rows, in the order they came in, and the totals over them. */
 export function buildProfitReport(rows: readonly ReportSourceRow[], unassigned: string): BuiltReport {
-  const totals: Totals = { count: 0, amount: 0, warranty: 0, profit: 0, missingCost: 0, outstanding: 0, till: 0 };
+  const totals: Totals = {
+    count: 0,
+    amount: 0,
+    warranty: 0,
+    profit: 0,
+    missingCost: 0,
+    outstanding: 0,
+    till: 0,
+    cost: 0,
+    deferred: 0,
+  };
   const out: ReportRow[] = [];
   const kept = rows
     .filter((row) => row.status !== "cancelled" && row.status !== "declined")
@@ -177,6 +191,8 @@ export function buildProfitReport(rows: readonly ReportSourceRow[], unassigned: 
     totals.warranty += money.warranty;
     totals.outstanding += money.remaining;
     totals.till += money.collected;
+    if (money.cost != null) totals.cost += money.cost;
+    if (row.paymentTerms === "deferred") totals.deferred += money.collected;
     if (profit != null) totals.profit += profit;
     else if (priced && money.base > 0) totals.missingCost += 1;
 
@@ -653,7 +669,8 @@ function ReportStage({ task }: { task: ReportTask }) {
       const heights = [...root.querySelectorAll<HTMLElement>('[data-measure="next"] tbody tr')].map(
         (row) => row.getBoundingClientRect().height,
       );
-      setLayout(paginate(heights, room("first"), room("next")));
+      const tail = root.querySelector<HTMLElement>("[data-measure-tail]")?.getBoundingClientRect().height ?? 0;
+      setLayout(paginateWithTail(heights, room("first"), room("next"), tail));
     })().catch((error: unknown) => {
       if (alive) task.fail(error instanceof Error ? error : new Error(String(error)));
     });
@@ -676,6 +693,9 @@ function ReportStage({ task }: { task: ReportTask }) {
       <div ref={measured} aria-hidden inert dir={dir} lang={locale} style={OFFSCREEN}>
         <ReportPage {...common} measure="first" first lines={[]} startIndex={0} pageNo={1} pageCount={1} />
         <ReportPage {...common} measure="next" first={false} lines={report.rows} startIndex={0} pageNo={1} pageCount={1} />
+        <div data-measure-tail style={{ width: `${paper.sheetWidthMm - 20}mm` }}>
+          <ReportSummary totals={report.totals} />
+        </div>
       </div>,
       document.body,
     );
@@ -686,6 +706,7 @@ function ReportStage({ task }: { task: ReportTask }) {
       key={index}
       {...common}
       first={index === 0}
+      last={index === layout.length - 1}
       lines={indices.map((row) => report.rows[row])}
       startIndex={indices[0] ?? 0}
       pageNo={index + 1}
@@ -735,6 +756,7 @@ function ReportPage({
   context,
   printedAt,
   first,
+  last = false,
   lines,
   startIndex,
   pageNo,
@@ -746,6 +768,8 @@ function ReportPage({
   context: ReportContext;
   printedAt: number;
   first: boolean;
+  /** The page the totals close. */
+  last?: boolean;
   lines: readonly ReportRow[];
   startIndex: number;
   pageNo: number;
@@ -796,8 +820,6 @@ function ReportPage({
         </div>
       )}
 
-      {first && <ReportSummary totals={report.totals} />}
-
       {first && (
         <div className="mt-[2.6mm] flex shrink-0 flex-wrap items-center gap-[1.6mm] text-[7.8pt] font-semibold leading-[1.3]">
           <span className="rounded-full border-[0.25mm] border-[#f2c4ca] px-[2.6mm] py-[0.8mm]">
@@ -812,7 +834,8 @@ function ReportPage({
       )}
 
       <div data-slot className="mt-[3mm] min-h-0 flex-1 overflow-hidden">
-        <ReportTable lines={lines} startIndex={startIndex} />
+        {(lines.length > 0 || measure) && <ReportTable lines={lines} startIndex={startIndex} />}
+        {last && !measure && <ReportSummary totals={report.totals} />}
       </div>
 
       <footer className="mt-[2.4mm] flex shrink-0 items-center justify-between gap-[4mm] border-0 border-t-[0.25mm] border-solid border-[#f2c4ca] pt-[1.8mm] text-[7.4pt] font-semibold leading-[1.3]">
@@ -828,12 +851,13 @@ function ReportPage({
 }
 
 /**
- * The six figures, from the reader's start: what was charged, the warranty
- * within it, what is actually in the till (2026-11-17), the profit — the one
- * figure in red, because it is the reason the report is printed — how many
- * devices, and what is still owed. Two rows of three, so a seven-digit figure
- * keeps its size; the first page is measured with them, so the table below
- * starts where they end.
+ * The six figures that close the report, after the last row (the shop,
+ * 2026-11-18), in the shop's order from the reader's start: what is in the
+ * till, what the parts cost, the profit without the warranty — the one figure
+ * in red, because it is the reason the report is printed — the warranty, what
+ * came in on deferred tickets, and how many devices. Two rows of three, so a
+ * seven-digit figure keeps its size. They are measured once and given a page
+ * of their own when the last page is full (`paginateWithTail`).
  *
  * ⚠️ The figure sits in a span inside the cell, never on it: `data-numeric`
  * pins `direction: ltr`, so on the cell it would push the number to the LEFT
@@ -841,16 +865,17 @@ function ReportPage({
  */
 function ReportSummary({ totals }: { totals: Totals }) {
   const t = useTranslations("Admin");
+  // The shop's order, 2026-11-18 — read from the reader's start, three a row.
   const cards = [
-    { key: "amount", label: t("profitReportTotalAmount"), value: money(totals.amount) },
-    { key: "warranty", label: t("profitReportTotalWarranty"), value: money(totals.warranty) },
-    { key: "till", label: t("profitReportTill"), value: money(totals.till) },
+    { key: "till", label: t("profitReportTillFull"), value: money(totals.till) },
+    { key: "cost", label: t("profitReportTotalCost"), value: money(totals.cost) },
     { key: "profit", label: t("profitReportTotalProfit"), value: money(totals.profit), strong: true },
+    { key: "warranty", label: t("profitReportTotalWarranty"), value: money(totals.warranty) },
+    { key: "deferred", label: t("profitReportDeferred"), value: money(totals.deferred) },
     { key: "count", label: t("profitReportTotalCount"), value: String(totals.count) },
-    { key: "outstanding", label: t("profitReportOutstanding"), value: money(totals.outstanding) },
   ];
   return (
-    <section className="mt-[3.4mm] shrink-0">
+    <section className="shrink-0 pt-[3.4mm]">
       <dl className="grid grid-cols-3 gap-[2mm]">
         {cards.map((card) => (
           <div

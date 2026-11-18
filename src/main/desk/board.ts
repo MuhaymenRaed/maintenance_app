@@ -68,6 +68,13 @@ export function deskScope(service: RepairService): DeskScope | null {
   };
 }
 
+/** Counter or booking, as `learnOrigins` filed it; null when it cannot be told. */
+function originOf(serverId: string | null): "counter" | "web" | null {
+  if (!serverId) return null;
+  const value = store.ref<Record<string, string>>("origins")?.[serverId];
+  return value === "counter" || value === "web" ? value : null;
+}
+
 /** One ticket shaped for the board, in one language — `getRepairDesk`'s mapping. */
 export function shapeRow(
   id: string,
@@ -134,6 +141,8 @@ export function shapeRow(
     control: ticketControl(scope.authority, viewerId, raw.assigned_to),
     sync: store.syncStateOf(id),
     localCode: Boolean(record?.createdHere && !record.serverId),
+    // Opened on this computer: the shop's own, whatever the server says.
+    origin: record?.createdHere ? "counter" : originOf(record?.serverId ?? null),
   };
   return scope.authority.seesMoney ? row : forTechnician(row);
 }

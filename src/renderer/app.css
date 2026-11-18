@@ -207,3 +207,14 @@ html:not(.desk-ready) body {
 .desk-rise {
   animation: desk-rise 260ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
+
+/*
+ * A ticket window of its own (`#window-root` is the root the site's
+ * `lib/windows/detached.ts` draws into, and only there): the frame's own ×
+ * closes it, asking first in the main process (`src/main/window.ts`), so the
+ * page's close button beside the title would only be a second ×. Escape and
+ * the form's own Cancel still close it from inside.
+ */
+#window-root > div > header > button {
+  display: none;
+}
