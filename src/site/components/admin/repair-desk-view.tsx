@@ -100,6 +100,11 @@ export type RepairDeskViewData = {
   today: string;
   canDelete: boolean;
   faultsEditable: boolean;
+  /**
+   * The bench's default holder (`work_defaults`) — the counter's new-ticket
+   * dialog opens on it. Null or absent: it opens on whoever is typing.
+   */
+  defaultHolderId?: string | null;
 };
 
 export type DeskPanel = "tickets" | "stats";
@@ -224,10 +229,13 @@ export function RepairDeskView({
   const techOptions = [
     { value: "", label: t("deskAllTechs") },
     // `visible`, not `people`: an owner's name is not offered to anybody below
-    // them — see `deskAuthority`. And `worksTheBench`, because the control says
-    // "technician" and used to list every manager beside them.
+    // them — see `deskAuthority`. Every person on the bench, managers too (the
+    // shop, 2026-11-18): a ticket is held by a manager as often as by a
+    // technician, and a filter that cannot find it hides it. The ones who
+    // work at the bench come first.
     ...people
-      .filter((person) => authority.visible.includes(person.userId) && worksTheBench(person))
+      .filter((person) => authority.visible.includes(person.userId))
+      .sort((a, b) => Number(worksTheBench(b)) - Number(worksTheBench(a)))
       .map((person) => ({ value: person.userId, label: person.name })),
     { value: "none", label: t("unassigned") },
   ];
@@ -282,6 +290,7 @@ export function RepairDeskView({
             issues={data.issues}
             holders={holders}
             viewerId={viewer.id}
+            defaultHolderId={data.defaultHolderId ?? null}
             today={today}
             financeAvailable={board.available.finance}
             warrantyAvailable={board.available.warranty}

@@ -95,6 +95,18 @@ export async function pullRefs(client: SupabaseClient, userId: string, email: st
       for (const row of (result.data ?? []) as { id: string; name: string; role: string }[]) map[row.id] = { name: row.name, role: row.role };
       store.setRef("directory", map);
     }],
+    ["workDefaults", async () => {
+      // Who holds new work by default — `work_defaults`, 20261118. Absent until
+      // that file runs, and the counter's dialog then opens on the account
+      // signed in here, as it always did.
+      const result = await client.from("work_defaults").select("kind, user_id");
+      if (result.error) return;
+      const map: Record<string, string> = {};
+      for (const row of (result.data ?? []) as { kind: string; user_id: string | null }[]) {
+        if (row.user_id) map[row.kind] = row.user_id;
+      }
+      store.setRef("workDefaults", map);
+    }],
     ["branches", async () => {
       const result = await client.from("branches").select("id, name_ar, name_en").eq("is_deleted", false).eq("is_active", true).order("sort_order");
       check(result, "branches");

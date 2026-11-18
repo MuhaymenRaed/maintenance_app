@@ -272,7 +272,7 @@ async function sendCreate(client: SupabaseClient, userId: string, role: string, 
 
     // The holder goes on last, as the dashboard does it: once a ticket is
     // passed up it is out of an assistant's reach.
-    const holder = await client.from("repair_tickets").update(holderColumns(input.holderId, payload.technicianId)).eq("id", serverId);
+    const holder = await client.from("repair_tickets").update(holderColumns(input.holderId || null, payload.technicianId)).eq("id", serverId);
     if (holder.error) {
       const failure = failureOf(holder, "create (holder)");
       if (failure.kind !== "refused") throw failure;

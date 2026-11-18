@@ -194,7 +194,8 @@ export async function createDeskTicket(input: DeskTicketInput): Promise<CreateTi
   if (!canWith(viewer.role, viewer.grant, SERVICE_CAPABILITY[service])) return { ok: false, error: "forbidden" };
   const scope = deskScope(service);
   if (!scope?.authority.manages) return { ok: false, error: "forbidden" };
-  if (!scope.authority.assignable.includes(input.holderId)) return { ok: false, error: "not_your_team" };
+  // Nobody is a real answer — the site's `createDeskTicket` says the same.
+  if (input.holderId && !scope.authority.assignable.includes(input.holderId)) return { ok: false, error: "not_your_team" };
 
   if (input.customerName.trim().length < 2) return { ok: false, error: "customer_name_required" };
   if (!/^07\d{9}$/.test(input.customerPhone.replace(/[\s()-]/g, ""))) return { ok: false, error: "phone_invalid" };

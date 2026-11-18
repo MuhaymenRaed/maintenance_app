@@ -274,6 +274,8 @@ export function deskPage(params: DeskPageParams, service: RepairService): DeskPa
     today: baghdadDay(now),
     now,
     canDelete: canWith(viewer.role, viewer.grant, "records.delete"),
+    defaultHolderId:
+      store.ref<Record<string, string>>("workDefaults")?.[service === "software" ? "repair_software" : "repair_hardware"] ?? null,
   };
 }
 

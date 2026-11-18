@@ -139,6 +139,7 @@ function Desk({
         today: data.today,
         canDelete: data.canDelete,
         faultsEditable: Boolean(data.board.available.faultsEdit),
+        defaultHolderId: data.defaultHolderId ?? null,
       }}
     />
   );

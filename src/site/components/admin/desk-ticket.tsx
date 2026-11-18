@@ -58,10 +58,13 @@ export function DeskTicketButton({
   issues,
   holders,
   viewerId,
+  defaultHolderId = null,
   today,
   financeAvailable,
   warrantyAvailable,
 }: {
+  /** The bench's default holder — the dialog opens on it when the reader may hand to it. */
+  defaultHolderId?: string | null;
   service: RepairService;
   branches: Branch[];
   brands: Brand[];
@@ -120,6 +123,7 @@ export function DeskTicketButton({
           issues={issues}
           holders={holders}
           viewerId={viewerId}
+          defaultHolderId={defaultHolderId}
           today={today}
           financeAvailable={financeAvailable}
           warrantyAvailable={warrantyAvailable}
@@ -141,11 +145,13 @@ function DeskTicketDialog({
   issues,
   holders,
   viewerId,
+  defaultHolderId,
   today,
   financeAvailable,
   warrantyAvailable,
   onClose,
 }: {
+  defaultHolderId: string | null;
   /** Which "new ticket" window this is — the dock tells several apart by it. */
   number: number;
   service: RepairService;
@@ -191,7 +197,14 @@ function DeskTicketDialog({
   const [warrantyDays, setWarrantyDays] = useState<number | null>(null);
   const [cost, setCost] = useState<number | null>(null);
   const [collected, setCollected] = useState<number | null>(null);
-  const [holderId, setHolderId] = useState(viewerId);
+  /*
+   * The bench's default account (`work_defaults` — فريق الصيانة on the repair
+   * desk) until the counter hands it to somebody else (the shop, 2026-11-18).
+   * Only when this reader may hand to it; otherwise whoever is typing, as before.
+   */
+  const [holderId, setHolderId] = useState(
+    defaultHolderId && holders.some((holder) => holder.id === defaultHolderId) ? defaultHolderId : viewerId,
+  );
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<{
     id: string;
@@ -719,13 +732,17 @@ function DeskTicketDialog({
                 <SelectField
                   value={holderId}
                   onChange={setHolderId}
-                  options={holders.map((holder) => ({
-                    value: holder.id,
-                    label:
-                      holder.id === viewerId
-                        ? t("deskAssignSelf", { rank: rankLabel(holder.rank) })
-                        : `${holder.name} — ${rankLabel(holder.rank)}`,
-                  }))}
+                  options={[
+                    // Nobody yet — it waits on «بانتظار فني» (2026-11-18).
+                    { value: "", label: t("unassigned") },
+                    ...holders.map((holder) => ({
+                      value: holder.id,
+                      label:
+                        holder.id === viewerId
+                          ? t("deskAssignSelf", { rank: rankLabel(holder.rank) })
+                          : `${holder.name} — ${rankLabel(holder.rank)}`,
+                    })),
+                  ]}
                 />
               </Field>
             </Section>

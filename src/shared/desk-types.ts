@@ -181,6 +181,8 @@ export type DeskPageData =
       today: string;
       now: number;
       canDelete: boolean;
+      /** The bench's default holder (`work_defaults`) — what the counter's dialog opens on. */
+      defaultHolderId?: string | null;
     };
 
 /** The papers' facts, as `loadRepairPrintFacts` answers. */

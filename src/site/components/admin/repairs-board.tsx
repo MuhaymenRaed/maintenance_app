@@ -20,7 +20,6 @@ import {
   ShieldCheck,
   Smartphone,
   Store,
-  Timer,
   UserCheck,
   UserRound,
   UserX,
@@ -480,7 +479,7 @@ export function RepairsBoard({
                         {t("deskEditedMark")}
                       </span>
                     )}
-                    <HolderChip row={row} viewerId={viewerId} />
+                    {!isTechnician && <HolderChip row={row} viewerId={viewerId} />}
                     {seesMoney && financeAvailable && (
                       <TermsChip
                         terms={row.paymentTerms}
@@ -677,32 +676,47 @@ function printFacts(row: RepairCard): RepairPrintFacts {
   });
 }
 
-/** Who holds a ticket. Amber while it waits with a manager for a technician. */
+/**
+ * Who holds a ticket, by name — the person the counter handed it to (the shop,
+ * 2026-11-18: "the guy the card is assigned to must be shown to managers by his
+ * name"). A disc with their initial and the name beside it; the reader's own
+ * tickets say «لك» in the brand colour; nobody is a dashed «غير مسند».
+ *
+ * ⚠️ No timer and no «مؤقتاً»: nothing is timed, and the word read as a ticket
+ * that would move on by itself. A technician is not shown it at all — every
+ * ticket on his list is his.
+ */
 function HolderChip({ row, viewerId }: { row: RepairCard; viewerId: string }) {
   const t = useTranslations("Admin");
-  const waiting = row.holderId && row.holderRank !== "technician";
-  const Icon = !row.holderId ? UserX : waiting ? Timer : UserCheck;
-  const label = !row.holderId
-    ? t("unassigned")
-    : row.holderId === viewerId
-      ? t("workMine")
-      : waiting
-        ? t("deskHeldTemp", { name: row.holderName ?? t("workColleague") })
-        : (row.holderName ?? t("workColleague"));
-
+  if (!row.holderId) {
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1 rounded-chip border border-dashed border-line-strong px-2 py-0.5 text-[0.64rem] font-extrabold text-muted">
+        <UserX className="size-3 shrink-0" aria-hidden />
+        {t("unassigned")}
+      </span>
+    );
+  }
+  const mine = row.holderId === viewerId;
+  const name = row.holderName ?? t("workColleague");
+  const initial = Array.from(name.trim())[0] ?? "؟";
   return (
     <span
+      title={t("deskHeldBy", { name })}
       className={cn(
-        "inline-flex max-w-full items-center gap-1 rounded-chip px-2 py-0.5 text-[0.64rem] font-extrabold",
-        !row.holderId
-          ? "bg-subtle text-muted"
-          : waiting
-            ? "bg-warning/14 text-warning"
-            : "bg-success/12 text-success",
+        "inline-flex min-w-0 max-w-56 items-center gap-1.5 rounded-full py-0.5 ps-0.5 pe-2.5 text-[0.66rem] font-extrabold",
+        mine ? "bg-brand/10 text-brand" : "bg-info/10 text-ink",
       )}
     >
-      <Icon className="size-3 shrink-0" aria-hidden />
-      <span className="truncate">{label}</span>
+      <span
+        aria-hidden
+        className={cn(
+          "flex size-[1.15rem] shrink-0 items-center justify-center rounded-full text-[0.6rem] font-black text-white",
+          mine ? "bg-brand" : row.holderRank === "technician" ? "bg-success" : "bg-info",
+        )}
+      >
+        {mine ? <UserCheck className="size-2.5" /> : initial}
+      </span>
+      <span className="truncate">{mine ? t("workMine") : name}</span>
     </span>
   );
 }
