@@ -177,3 +177,72 @@ export function valueForTyped(
   const match = options.find((option) => faultKey(option.label) === key);
   return match ? match.value : newFaultValue(name);
 }
+
+/* ── Whether a change to a ticket's faults is an edit ───────────────────── */
+
+/** Letters apart, after folding — Levenshtein over the folded names. */
+function lettersApart(a: string, b: string): number {
+  const left = Array.from(a);
+  const right = Array.from(b);
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= left.length; i += 1) {
+    const current = [i];
+    for (let j = 1; j <= right.length; j += 1) {
+      current[j] = Math.min(
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + (left[i - 1] === right[j - 1] ? 0 : 1),
+      );
+    }
+    previous = current;
+  }
+  return previous[right.length];
+}
+
+/**
+ * Two names for one fault — the same words once folded, or a spelling slip
+ * apart: a letter or two, and never more than a quarter of the name. Measured
+ * on the folded form, so «الشاشه» and «الشاشة» are already one before any
+ * letter is counted.
+ */
+export function sameFaultSpelling(a: string, b: string): boolean {
+  const left = faultKey(a).replace(/\s+/g, "");
+  const right = faultKey(b).replace(/\s+/g, "");
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const longest = Math.max(Array.from(left).length, Array.from(right).length);
+  const allowed = Math.min(2, Math.max(1, Math.floor(longest / 4)));
+  return lettersApart(left, right) <= allowed;
+}
+
+/**
+ * Whether a ticket's faults changed in a way that makes it «معدّلة».
+ *
+ * The shop, 2026-11-20: "when I edit the name of some problem because of a
+ * spelling issue, the ticket must not be considered as معدلة, only when I
+ * remove a problem from the ticket or add a new one". So a fault that stays —
+ * by its code, or swapped one-for-one for the same fault spelt better — is no
+ * edit; one added or taken off is.
+ *
+ * Each side is the ticket's faults as `{ code, name }`, where a typed fault
+ * with no code (`custom_faults`) passes a null code. A rename on the bench's
+ * list keeps the code and never reaches here at all.
+ */
+export function faultsChangedMeaning(
+  before: readonly { code: string | null; name: string }[],
+  after: readonly { code: string | null; name: string }[],
+): boolean {
+  if (before.length !== after.length) return true;
+  const afterCodes = new Set(after.flatMap((fault) => (fault.code ? [fault.code] : [])));
+  const beforeCodes = new Set(before.flatMap((fault) => (fault.code ? [fault.code] : [])));
+  const gone = before.filter((fault) => !fault.code || !afterCodes.has(fault.code));
+  const come = after.filter((fault) => !fault.code || !beforeCodes.has(fault.code));
+  if (gone.length !== come.length) return true;
+  const left = [...come];
+  for (const fault of gone) {
+    const at = left.findIndex((candidate) => sameFaultSpelling(fault.name, candidate.name));
+    if (at < 0) return true;
+    left.splice(at, 1);
+  }
+  return false;
+}

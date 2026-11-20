@@ -18,6 +18,15 @@ import { baghdadDay } from "../../site/lib/data/date-window.ts";
 import { recentDevicesFrom } from "../../site/lib/data/recent-devices.ts";
 import { recentFaultsFrom } from "../../site/lib/data/repair-faults.ts";
 import { MAKE_CODES } from "../../site/lib/data/device-name.ts";
+import {
+  computeFigures,
+  moneyAcross,
+  owesMoney,
+  STATS_GROUPS,
+  type PaymentBook,
+  type PaymentEntry,
+  type StatsStatus,
+} from "../../site/lib/data/desk-figures.ts";
 import type {
   DeskBoard,
   DeskPageData,
@@ -25,7 +34,7 @@ import type {
   DeskPerson,
   DeskRow,
   DeskScope,
-  DeskTechRow,
+  DeskStats,
   DeskView,
 } from "../../shared/desk-types";
 import { store } from "../db/store";
@@ -133,6 +142,7 @@ export function shapeRow(
     costPrice: num(ledger?.cost_price),
     collected: num(ledger?.collected),
     paymentTerms: ledger?.payment_terms === "deferred" ? "deferred" : "cash",
+    financeAt: ledger?.updated_at ?? null,
     holderId: raw.assigned_to,
     holderName,
     holderRank: !raw.assigned_to
@@ -200,19 +210,29 @@ export function deskPage(params: DeskPageParams, service: RepairService): DeskPa
   const asked = params.view;
   const view: DeskView = isTech
     ? "mine"
-    : asked === "all" || asked === "mine" || asked === "pending" || asked === "edited"
+    : asked === "all" || asked === "mine" || asked === "pending" || asked === "edited" ||
+        (asked === "owing" && authority.seesMoney)
       ? asked
       : defaultView;
 
-  const window = resolveQueueWindow(
-    { when: params.when, from: params.from, to: params.to, days: params.days },
-    now,
-    { fallback: view === "all" || view === "edited" ? "all" : "open", open: true },
-  );
+  const period = { when: params.when, from: params.from, to: params.to, days: params.days };
+  const window = resolveQueueWindow(period, now, {
+    fallback: view === "all" || view === "edited" || view === "owing" ? "all" : "open",
+    open: true,
+  });
+  // The figures' own reading of the same address — every day unless a period
+  // was chosen — as the site's page does.
+  const hasStats = authority.seesMoney && !isTech;
+  const statsWindow = hasStats ? resolveQueueWindow(period, now, { fallback: "all", open: true }) : null;
   const search = cleanSearch(params.q);
   const flow = liveFlow(REPAIR_FLOW, refs.steps()) as RepairStatus[];
   const statuses: RepairStatus[] = [...flow, "cancelled"];
   const status = statuses.includes(params.status as RepairStatus) ? params.status! : null;
+  const statsStatus: StatsStatus =
+    params.sstatus &&
+    ((STATS_GROUPS as readonly string[]).includes(params.sstatus) || statuses.includes(params.sstatus as RepairStatus))
+      ? params.sstatus
+      : "all";
   const terms: PaymentTerms | null =
     authority.seesMoney && (params.terms === "cash" || params.terms === "deferred") ? params.terms : null;
   const asPerson = params.tech;
@@ -225,8 +245,20 @@ export function deskPage(params: DeskPageParams, service: RepairService): DeskPa
         : null;
 
   const tickets = benchTickets(service);
-  const board = buildBoard(tickets, { locale, scope, viewerId: viewer.id, window, search, status, terms, holderId: tech, view });
-  const counts = deskCounts(tickets, viewer.id, people, window.since);
+  const board = buildBoard(tickets, {
+    locale,
+    scope,
+    viewerId: viewer.id,
+    window,
+    statsWindow,
+    statsStatus,
+    search,
+    status,
+    terms,
+    holderId: tech,
+    view,
+  });
+  const counts = deskCounts(tickets, viewer.id, people, window.since, hasStats);
 
   const ar = locale === "ar";
   return {
@@ -243,6 +275,7 @@ export function deskPage(params: DeskPageParams, service: RepairService): DeskPa
     window,
     search,
     status,
+    statsStatus,
     statuses,
     flow,
     terms,
@@ -279,6 +312,26 @@ export function deskPage(params: DeskPageParams, service: RepairService): DeskPa
   };
 }
 
+/**
+ * The ledger of when each part of a ticket's money came in, by this
+ * computer's ticket id — `pullPayments`. Null while the table is not on the
+ * server; the figures then use the money row's own date, as the site does.
+ */
+function paymentBook(): PaymentBook {
+  const held = store.ref<Record<string, PaymentEntry[]> | null>("payments");
+  if (!held) return null;
+  const book: Record<string, PaymentEntry[]> = {};
+  for (const [serverId, entries] of Object.entries(held)) {
+    const id = store.idForServer(serverId) ?? serverId;
+    book[id] = entries;
+  }
+  return book;
+}
+
+/**
+ * `getRepairDesk`, over this computer's copy — both panels from one pass, as
+ * the site's read does, so moving between them is instant here too.
+ */
 function buildBoard(
   tickets: { id: string; raw: RawTicket }[],
   options: {
@@ -286,6 +339,8 @@ function buildBoard(
     scope: DeskScope;
     viewerId: string;
     window: ReturnType<typeof resolveQueueWindow>;
+    statsWindow: ReturnType<typeof resolveQueueWindow> | null;
+    statsStatus: StatsStatus;
     search: string;
     status: string | null;
     terms: PaymentTerms | null;
@@ -293,18 +348,17 @@ function buildBoard(
     view: DeskView;
   },
 ): DeskBoard {
-  const { locale, scope, viewerId, window, search, status, terms, holderId, view } = options;
+  const { locale, scope, viewerId, window, statsWindow, statsStatus, search, status, terms, holderId, view } = options;
   const needle = search.toLocaleLowerCase();
+  const isTech = scope.authority.rank === "technician";
+  const figures = scope.authority.seesMoney && !isTech ? statsWindow : null;
+  // The figures' period always holds the tickets panel's — see the site.
+  const readWindow = figures ?? window;
 
-  const everything: DeskRow[] = [];
-  for (const { id, raw } of tickets) {
-    if (window.since && raw.created_at < window.since) continue;
-    if (window.until && raw.created_at >= window.until) continue;
-    if (window.when === "open" && !isOpenTicket(raw.status)) continue;
+  const found = (id: string, raw: RawTicket) => {
     // ⚠️ A technician reads only the tickets in his own name, whatever view was
     // asked for — the site's `getRepairDesk` holds the same line.
-    if ((view === "mine" || scope.authority.rank === "technician") && raw.assigned_to !== viewerId) continue;
-    if (view === "edited" && !raw.quote_sent_at) continue;
+    if (isTech && raw.assigned_to !== viewerId) return false;
     if (
       needle &&
       ![
@@ -318,48 +372,94 @@ function buildBoard(
         store.tickets.get(id)?.localCode,
       ].some((value) => contains(value, needle))
     ) {
+      return false;
+    }
+    return true;
+  };
+
+  const opened: DeskRow[] = [];
+  const before: { id: string; raw: RawTicket }[] = [];
+  for (const { id, raw } of tickets) {
+    if (!found(id, raw)) continue;
+    if (readWindow.since && raw.created_at < readWindow.since) {
+      before.push({ id, raw });
       continue;
     }
-    everything.push(shapeRow(id, raw, locale, scope, viewerId));
+    if (readWindow.until && raw.created_at >= readWindow.until) continue;
+    if (readWindow.when === "open" && !isOpenTicket(raw.status)) continue;
+    opened.push(shapeRow(id, raw, locale, scope, viewerId));
   }
 
-  const all =
-    view === "pending"
-      ? everything.filter((row) => isOpenTicket(row.status) && row.holderRank !== "technician")
-      : everything;
+  // Tickets opened before the figures' period whose money came in within it.
+  const book = figures ? paymentBook() : null;
+  const earlier: DeskRow[] = [];
+  if (figures?.since) {
+    for (const { id, raw } of before) {
+      const row = shapeRow(id, raw, locale, scope, viewerId);
+      if (moneyAcross(row, book, figures, true).within !== 0) earlier.push(row);
+    }
+  }
+
+  /* ── The tickets panel ── */
+  const inPanelWindow = (row: DeskRow) =>
+    (!window.since || row.createdAt >= window.since) &&
+    (!window.until || row.createdAt < window.until) &&
+    (window.when !== "open" || isOpenTicket(row.status));
+  const byView = (row: DeskRow) =>
+    view === "mine"
+      ? row.holderId === viewerId
+      : view === "edited"
+        ? Boolean(row.editedAt)
+        : view === "pending"
+          ? isOpenTicket(row.status) && row.holderRank !== "technician"
+          : view === "owing"
+            ? owesMoney(row)
+            : true;
+  const listed = opened.filter((row) => inPanelWindow(row) && byView(row));
+  if (view === "all" && figures && window.since === figures.since && window.until === figures.until) {
+    for (const row of earlier) listed.push({ ...row, paidWithin: moneyAcross(row, book, figures, true).within });
+  }
 
   const counts: Record<string, number> = {};
-  for (const row of all) counts[row.status] = (counts[row.status] ?? 0) + 1;
+  for (const row of listed) counts[row.status] = (counts[row.status] ?? 0) + 1;
 
-  const inScope = all.filter(
+  const inScope = listed.filter(
     (row) =>
       (!terms || row.paymentTerms === terms) &&
       (!holderId || (holderId === "none" ? !row.holderId : row.holderId === holderId)),
   );
 
   const totals = emptyTotals();
-  for (const row of inScope) addToTotals(totals, row);
+  for (const row of inScope) if (!row.paidWithin) addToTotals(totals, row);
 
-  const perHolder = new Map<string, DeskTechRow>();
-  for (const row of all) {
-    if (terms && row.paymentTerms !== terms) continue;
-    const key = row.holderId ?? "";
-    let entry = perHolder.get(key);
-    if (!entry) {
-      entry = { ...emptyTotals(), holderId: row.holderId, name: row.holderName ?? "" };
-      perHolder.set(key, entry);
-    }
-    addToTotals(entry, row);
+  /* ── The figures panel ── */
+  let stats: DeskStats | null = null;
+  if (figures) {
+    const result = computeFigures({
+      opened,
+      earlier,
+      book,
+      bounds: figures,
+      filters: { status: statsStatus, terms, holderId },
+      // This computer holds the whole ledger, and changes not yet sent.
+      complete: true,
+    });
+    stats = {
+      status: statsStatus,
+      window: figures,
+      totals: result.totals,
+      byTech: result.byTech,
+      rows: result.rows,
+      paidRows: result.paidRows.map((row) => ({ ...row, paidWithin: moneyAcross(row, book, figures, true).within })),
+      ledger: book !== null,
+    };
   }
-  const byTech = [...perHolder.values()].sort(
-    (a, b) => Number(!a.holderId) - Number(!b.holderId) || b.revenue - a.revenue || b.tickets - a.tickets,
-  );
 
   return {
     rows: status ? inScope.filter((row) => row.status === status) : inScope,
     counts,
     totals,
-    byTech,
+    stats,
     available: refs.available(),
     truncated: false,
   };
@@ -371,20 +471,37 @@ function deskCounts(
   viewerId: string,
   people: readonly DeskPerson[],
   since: string | null,
+  money: boolean,
 ) {
   const technicians = new Set(people.filter((person) => person.rank === "technician").map((person) => person.userId));
   let mine = 0;
   let pending = 0;
   let olderOpen = 0;
+  let owing = 0;
   // Over every ticket on the bench, open or not — an edited ticket may be done.
   const edited = tickets.filter(({ raw }) => Boolean(raw.quote_sent_at)).length;
   for (const { raw } of tickets) {
+    if (money) {
+      const ledger = financeOf(raw);
+      if (
+        owesMoney({
+          status: raw.status,
+          price: num(raw.actual_cost) ?? num(raw.quote_amount),
+          warrantyPrice: null,
+          costPrice: null,
+          collected: num(ledger?.collected),
+          paymentTerms: ledger?.payment_terms === "deferred" ? "deferred" : "cash",
+        })
+      ) {
+        owing += 1;
+      }
+    }
     if (!isOpenTicket(raw.status)) continue;
     if (raw.assigned_to === viewerId) mine += 1;
     if (!raw.assigned_to || !technicians.has(raw.assigned_to)) pending += 1;
     if (since && raw.created_at < since) olderOpen += 1;
   }
-  return { mine, pending, olderOpen, edited };
+  return { mine, pending, olderOpen, edited, owing };
 }
 
 /** What one reader may do to one ticket, from the local copy — `authorizeRepair`. */

@@ -225,3 +225,12 @@ export async function waitForAgent(ms: number): Promise<boolean> {
 export function agentEverSeen(): boolean {
   return true;
 }
+
+/**
+ * The site asks this before it tries the agent at all, so a phone never asks
+ * the browser for a local app (2026-11-20). This window is always the counter
+ * PC's own, with the agent shipped beside it.
+ */
+export function canHostAgent(): boolean {
+  return true;
+}

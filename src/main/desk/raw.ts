@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { RepairStatus } from "../../site/lib/data/orders.ts";
 import { repairBase, repairTotal, type PaymentTerms, type RepairService } from "../../site/lib/data/repair-desk.ts";
-import { cleanFaultName } from "../../site/lib/data/repair-faults.ts";
+import { cleanFaultName, faultsChangedMeaning } from "../../site/lib/data/repair-faults.ts";
 import type { DeskTicketInput, FinancePatch, OpKind, RepairPatch } from "../../shared/contract";
 
 /**
@@ -94,6 +94,18 @@ export const num = (value: number | string | null | undefined): number | null =>
 const whole = (value: number | null | undefined) =>
   value == null || !Number.isFinite(value) ? null : Math.max(0, Math.round(value));
 
+/** A ticket's faults by code and Arabic name, its old typed ones with no code. */
+export function faultsOfRaw(raw: RawTicket | null | undefined): { code: string | null; name: string }[] {
+  if (!raw) return [];
+  return [
+    ...(raw.repair_ticket_issues ?? []).map((link) => ({
+      code: link.issue_code as string | null,
+      name: link.repair_issues?.name_ar ?? link.issue_code,
+    })),
+    ...(raw.custom_faults ?? []).filter((text) => text.trim()).map((text) => ({ code: null, name: text })),
+  ];
+}
+
 export function financeOf(raw: RawTicket): RawFinance | null {
   const ledger = raw.repair_ticket_finance;
   return (Array.isArray(ledger) ? ledger[0] : ledger) ?? null;
@@ -181,6 +193,9 @@ export function applyOp(raw: RawTicket, op: AnyOp): RawTicket {
       if (patch.costPrice !== undefined) next.cost_price = whole(patch.costPrice);
       if (patch.collected !== undefined) next.collected = whole(patch.collected);
       if (patch.paymentTerms !== undefined) next.payment_terms = patch.paymentTerms === "deferred" ? "deferred" : "cash";
+      // Dated by the change itself, so money taken offline counts on the day
+      // it was taken until the server's ledger dates it (desk-figures.ts).
+      next.updated_at = (op as { createdAt?: string }).createdAt ?? new Date().toISOString();
       raw.repair_ticket_finance = next;
       if (!patch.settle) raw.quote_sent_at = new Date().toISOString();
       return raw;
@@ -201,12 +216,15 @@ export function applyOp(raw: RawTicket, op: AnyOp): RawTicket {
       return raw;
     }
     case "faults": {
+      const before = faultsOfRaw(raw);
       raw.repair_ticket_issues = op.payload.faults.map((fault) => ({
         issue_code: fault.code,
         repair_issues: { name_ar: fault.name_ar, name_en: fault.name_en },
       }));
       if (op.payload.custom !== null) raw.custom_faults = op.payload.custom;
-      raw.quote_sent_at = new Date().toISOString();
+      // «المعدّلة» only for a fault added or taken off — never the same fault
+      // spelt better (the shop, 2026-11-20; the site's `faultsChangedMeaning`).
+      if (faultsChangedMeaning(before, faultsOfRaw(raw))) raw.quote_sent_at = new Date().toISOString();
       return raw;
     }
     case "create":

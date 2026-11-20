@@ -1,6 +1,6 @@
 {
   "site": "B:\\Programming Projects\\Next JS\\Al_Isnad",
-  "syncedAt": "2026-11-18T11:11:46.941Z",
+  "syncedAt": "2026-11-20T06:52:09.448Z",
   "files": [
     "components/account/status-pill.tsx",
     "components/admin/app-window.tsx",
@@ -38,6 +38,7 @@
     "lib/data/date-window.ts",
     "lib/data/datetime.ts",
     "lib/data/delivery-zones.ts",
+    "lib/data/desk-figures.ts",
     "lib/data/device-catalogue.ts",
     "lib/data/device-name.ts",
     "lib/data/image-swipe.ts",
@@ -58,7 +59,6 @@
     "lib/hooks/use-scroll-under-lock.ts",
     "lib/hooks/use-world-models.ts",
     "lib/permissions.ts",
-    "lib/print/agent-presence.ts",
     "lib/print/job-status.ts",
     "lib/print/label-fit.ts",
     "lib/print/papers.ts",

@@ -424,3 +424,58 @@ export async function pullTicket(client: SupabaseClient, serverId: string): Prom
   if (raw) store.putServerTicket(raw);
   return raw;
 }
+
+/* ── The money's dates ────────────────────────────────────────────────── */
+
+/**
+ * `repair_ticket_payments` — the ledger the database keeps by itself of when
+ * each part of a ticket's money came in (20261120_repair_payments.sql). The
+ * figures date money by it, so a deferred ticket from yesterday settled today
+ * counts today — the site's `lib/data/desk-figures.ts`, run here by
+ * `src/main/desk/board.ts`.
+ *
+ * Append-only, so followed by its own id. Kept as the `payments` ref, by the
+ * ticket's server id; `null` while the table is not on the server, and the
+ * figures then use the money row's own date, as the site does.
+ *
+ * Never fails a sync: the tickets and their money arrive without it.
+ */
+export async function pullPayments(client: SupabaseClient, full: boolean): Promise<boolean> {
+  type Entry = { at: string; amount: number };
+  const held = store.ref<Record<string, Entry[]> | null>("payments");
+  const cursor = full || !held ? 0 : Number(store.meta("paymentsCursor") ?? 0);
+  const book: Record<string, Entry[]> = full || !held ? {} : { ...held };
+  let last = cursor;
+  let added = 0;
+  try {
+    for (let from = 0; from < 200_000; from += PAGE) {
+      const result = await client
+        .from("repair_ticket_payments")
+        .select("id, ticket_id, amount, paid_at")
+        .gt("id", cursor)
+        .order("id")
+        .range(from, from + PAGE - 1);
+      if (result.error) {
+        const missing = result.error.code === "PGRST205" || result.error.code === "42P01";
+        if (missing && held !== null) {
+          store.setRef("payments", null);
+          return true;
+        }
+        return false;
+      }
+      const rows = (result.data ?? []) as { id: number; ticket_id: string; amount: number | string; paid_at: string }[];
+      for (const row of rows) {
+        (book[row.ticket_id] ??= []).push({ at: row.paid_at, amount: Number(row.amount) || 0 });
+        if (row.id > last) last = row.id;
+        added += 1;
+      }
+      if (rows.length < PAGE) break;
+    }
+  } catch {
+    return false;
+  }
+  if (!added && held && !full) return false;
+  store.setRef("payments", book);
+  store.setMeta("paymentsCursor", String(last));
+  return true;
+}

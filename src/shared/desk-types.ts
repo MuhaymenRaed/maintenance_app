@@ -25,6 +25,7 @@ import type {
   RepairService,
 } from "../site/lib/data/repair-desk.ts";
 import type { QueueWindow } from "../site/lib/data/queue-window.ts";
+import type { StatsStatus } from "../site/lib/data/desk-figures.ts";
 import type { StockModel } from "../site/lib/data/device-catalogue.ts";
 import type { AccessGrant } from "../site/lib/permissions.ts";
 
@@ -78,6 +79,10 @@ export type DeskRow = RepairCard & {
   costPrice: number | null;
   collected: number | null;
   paymentTerms: PaymentTerms;
+  /** When its money row last changed — the money's stand-in date before the ledger. */
+  financeAt?: string | null;
+  /** Set only on a ticket opened before the period whose money came in within it: how much. */
+  paidWithin?: number | null;
   holderId: string | null;
   holderName: string | null;
   holderRank: DeskRank | null;
@@ -99,7 +104,7 @@ export type DeskPerson = {
 
 export type DeskScope = { authority: DeskAuthority; people: DeskPerson[] };
 
-export type DeskView = "all" | "mine" | "pending" | "edited";
+export type DeskView = "all" | "mine" | "pending" | "edited" | "owing";
 
 export type DeskTechRow = DeskTotals & { holderId: string | null; name: string };
 
@@ -115,11 +120,23 @@ export type DeskAvailability = {
   faultsEdit?: boolean;
 };
 
+/** The figures panel — the site's `DeskStats`, from `lib/data/desk-figures.ts`. */
+export type DeskStats = {
+  status: StatsStatus;
+  window: QueueWindow;
+  totals: DeskTotals;
+  byTech: DeskTechRow[];
+  rows: DeskRow[];
+  paidRows: DeskRow[];
+  /** Money is dated by the ledger (`repair_ticket_payments`). */
+  ledger: boolean;
+};
+
 export type DeskBoard = {
   rows: DeskRow[];
   counts: Record<string, number>;
   totals: DeskTotals;
-  byTech: DeskTechRow[];
+  stats: DeskStats | null;
   available: DeskAvailability;
   truncated: boolean;
 };
@@ -145,6 +162,8 @@ export type DeskPageParams = {
   status?: string;
   terms?: string;
   tech?: string;
+  /** The figures' own status filter. */
+  sstatus?: string;
 };
 
 /** Everything the desk page draws, computed in one place, as the server did. */
@@ -164,12 +183,13 @@ export type DeskPageData =
       window: QueueWindow;
       search: string;
       status: string | null;
+      statsStatus: StatsStatus;
       statuses: RepairStatus[];
       flow: RepairStatus[];
       terms: PaymentTerms | null;
       tech: string | null;
       board: DeskBoard;
-      counts: { mine: number; pending: number; olderOpen: number };
+      counts: { mine: number; pending: number; olderOpen: number; edited?: number; owing?: number };
       branches: { id: string; name: string }[];
       brands: { code: string; name: string }[];
       models: Record<string, StockModel[]>;

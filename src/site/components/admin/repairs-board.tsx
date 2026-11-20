@@ -17,6 +17,7 @@ import {
   PencilLine,
   Phone,
   Printer,
+  Receipt,
   ShieldCheck,
   Smartphone,
   Store,
@@ -494,6 +495,33 @@ export function RepairsBoard({
                         {t("warrantyTitle")} <span data-numeric>{formatPrice(row.warrantyPrice!)}</span>
                       </span>
                     )}
+                    {/* What is still missing from the ticket's money, in words
+                        (the shop, 2026-11-20): a purchase price nobody typed —
+                        the figures count it as zero — and, on a deferred
+                        ticket, what was paid. */}
+                    {seesMoney && financeAvailable && row.status !== "cancelled" && price != null && row.costPrice == null && (
+                      <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-chip border border-dashed border-warning/60 px-1.5 py-0.5 text-[0.62rem] font-extrabold text-warning">
+                        <Receipt className="size-3" aria-hidden />
+                        {t("deskNoCostMark")}
+                      </span>
+                    )}
+                    {seesMoney && financeAvailable && row.status !== "cancelled" && row.paymentTerms === "deferred" && row.collected == null && (
+                      <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-chip border border-dashed border-warning/60 px-1.5 py-0.5 text-[0.62rem] font-extrabold text-warning">
+                        <HandCoins className="size-3" aria-hidden />
+                        {t("deskNoCollectedMark")}
+                      </span>
+                    )}
+                    {/* Opened on an earlier day, on today's list because its
+                        money came in today (the shop, 2026-11-20). */}
+                    {seesMoney && row.paidWithin != null && row.paidWithin !== 0 && (
+                      <span
+                        title={t("deskOpenedOn", { when: formatDayTime(locale, row.createdAt) })}
+                        className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-chip bg-success/12 px-1.5 py-0.5 text-[0.62rem] font-extrabold text-success"
+                      >
+                        <Banknote className="size-3" aria-hidden />
+                        {t("deskPaidHereMark")} <span data-numeric>{formatPrice(row.paidWithin)}</span>
+                      </span>
+                    )}
                   </p>
                 </div>
 
@@ -738,8 +766,11 @@ function TermsChip({
       className={cn(
         "inline-flex items-center gap-1 rounded-chip px-2 py-0.5 text-[0.64rem] font-extrabold",
         terms === "deferred" ? "bg-warning/12 text-warning" : "bg-success/10 text-success",
+        // Still owing: the one chip on the row that asks for something.
+        terms === "deferred" && remaining > 0 && "ring-1 ring-warning/60",
       )}
     >
+      {terms === "deferred" && remaining > 0 && <HandCoins className="size-3" aria-hidden />}
       {terms === "deferred" ? deferredLabel : cashLabel}
       {remaining > 0 && (
         <span data-numeric>· {formatPrice(remaining)}</span>

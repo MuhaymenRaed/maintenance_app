@@ -2,9 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { repairBase, repairTotal, type RepairService } from "../../site/lib/data/repair-desk.ts";
-import { cleanFaultName } from "../../site/lib/data/repair-faults.ts";
+import { cleanFaultName, faultsChangedMeaning } from "../../site/lib/data/repair-faults.ts";
 import { store, type OpRecord } from "../db/store";
-import { isContentEdit, markerFor, num, typedFaultCode, type OpPayload, type RawTicket } from "../desk/raw";
+import { faultsOfRaw, isContentEdit, markerFor, num, typedFaultCode, type OpPayload, type RawTicket } from "../desk/raw";
 import { refs } from "../desk/refs";
 import { getSettings } from "../settings";
 import { paths, PHOTO_SCHEME } from "../config";
@@ -384,7 +384,10 @@ async function sendAssign(client: SupabaseClient, userId: string, role: string, 
 async function sendFaults(client: SupabaseClient, userId: string, role: string, op: OpRecord): Promise<string> {
   const id = serverIdOf(op);
   const payload = op.payload as OpPayload["faults"];
-  const service: RepairService = store.tickets.get(op.ticketId)?.raw.service === "software" ? "software" : "hardware";
+  const held = store.tickets.get(op.ticketId)?.raw;
+  // What the server held before — a spelling fix is not an edit.
+  const before = faultsOfRaw(held);
+  const service: RepairService = held?.service === "software" ? "software" : "hardware";
   const codes: string[] = [];
   for (const fault of payload.faults) {
     if (!fault.isNew) {
@@ -408,7 +411,11 @@ async function sendFaults(client: SupabaseClient, userId: string, role: string, 
     }
     throw failure;
   }
-  await markEdited(client, id);
+  const after = [
+    ...payload.faults.map((fault) => ({ code: fault.code as string | null, name: fault.name_ar })),
+    ...(payload.custom ?? held?.custom_faults ?? []).map((text) => ({ code: null, name: text })),
+  ];
+  if (!held || faultsChangedMeaning(before, after)) await markEdited(client, id);
   await activity(client, userId, role, { action: "repairs.faults", entityId: id, detail: { faults: codes.length } });
   return id;
 }

@@ -1,37 +1,60 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, useTransition, type ReactNode } from "react";
 import { useTranslations } from "next-intl";
 import {
   AlertTriangle,
   Banknote,
   BarChart3,
   CalendarClock,
+  ChevronDown,
   CircleCheckBig,
   CircleDollarSign,
   ClipboardList,
   HandCoins,
+  History,
   Hourglass,
+  ListChecks,
+  Loader2,
+  Plus,
   Receipt,
+  Search,
   ShieldCheck,
   Target,
   Ticket,
   TrendingUp,
   Wallet,
   Wrench,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { Link } from "@/i18n/navigation";
 import { FilterChips } from "@/components/admin/filter-chips";
 import { QueueToolbar } from "@/components/admin/queue-toolbar";
 import { RepairsBoard, type DeskHolder } from "@/components/admin/repairs-board";
-import { ProfitReportActions, type ReportContext } from "@/components/admin/profit-report";
+import {
+  ReportButtons,
+  ReportPrintDialog,
+  useProfitReport,
+  type ProfitReport,
+  type ReportContext,
+  type ReportJob,
+} from "@/components/admin/profit-report";
 import { DeskTicketButton } from "@/components/admin/desk-ticket";
 import { PrinterSetupButton } from "@/components/admin/printer-setup";
 import { StatPress, type StatDetail } from "@/components/admin/stat-detail";
-import { LockedPanel } from "@/components/admin/desk-gate";
-import { formatDayNumeric } from "@/lib/data/datetime";
-import { worksTheBench, type DeskAuthority, type DeskTotals, type PaymentTerms, type RepairService } from "@/lib/data/repair-desk";
+import { LockedPanel, useGuardedAction } from "@/components/admin/desk-gate";
+import { searchDeskTickets } from "@/lib/actions/repair-desk";
+import { formatDayNumeric, formatDayTime } from "@/lib/data/datetime";
+import {
+  repairMoney,
+  worksTheBench,
+  type DeskAuthority,
+  type DeskTotals,
+  type PaymentTerms,
+  type RepairService,
+} from "@/lib/data/repair-desk";
+import type { StatsStatus } from "@/lib/data/desk-figures";
 import { formatPrice } from "@/lib/format";
 import { statMoney } from "@/lib/data/stat-money";
 import { cn } from "@/lib/utils";
@@ -40,7 +63,7 @@ import type { QueueWindow } from "@/lib/data/queue-window";
 import type { RecentDevice } from "@/lib/data/recent-devices";
 import type { RecentFault } from "@/lib/data/repair-faults";
 import type { StockModel } from "@/lib/data/device-catalogue";
-import type { DeskBoard, DeskPerson, DeskView } from "@/lib/queries/repair-desk";
+import type { DeskBoard, DeskPerson, DeskRow, DeskStats, DeskView } from "@/lib/queries/repair-desk";
 
 /**
  * One bench's page, drawn — shared by the dashboard (`repair-desk-page.tsx`,
@@ -58,15 +81,22 @@ import type { DeskBoard, DeskPerson, DeskView } from "@/lib/queries/repair-desk"
  * - **التذاكر** — adding a ticket, the filters and the search, the status
  *   chips and the list: everything about finding, opening and working a
  *   ticket. It is what the page opens on.
- * - **الإحصائيات** — the money cards, «واصل بالخزنة» among them, جرد الأرباح
- *   (print, A4 or a PDF to keep), the printer settings and the per-person
- *   table. A manager's only; in the desktop app it asks for the desk's
- *   password each time it is opened (`desk-gate.tsx`).
+ * - **الإحصائيات** — the money cards with their own status filter, جرد الأرباح
+ *   (A4 or A5 on the paper printer, or a PDF), a report of hand-picked
+ *   tickets, the printer settings and the per-person table. A manager's only;
+ *   in the desktop app it asks for the desk's password each time it is
+ *   opened (`desk-gate.tsx`).
  *
- * `?panel=stats` is which one is showing, so each is a link and survives a
- * reload. ⚠️ The way into the figures drops the status and the tab: the cards
- * have always ignored the status, and the report is of the whole bench in the
- * period unless a person or a payment is chosen there.
+ * ⚠️ **Moving between them is a press on this page, never a navigation**
+ * (the shop, 2026-11-20: "the swapping takes a very long time"). Both panels
+ * arrive with the page, from one read (`getRepairDesk`'s `stats`), so the
+ * switch is a state change and `?panel=stats` is written with
+ * `history.replaceState` — the address still says where the reader is, and a
+ * reload or a filter still lands on the same panel.
+ *
+ * Ctrl+P on the page opens the report's print chooser instead of the
+ * browser's (`ReportPrintDialog`) — in the desktop app only after the desk's
+ * password.
  *
  * A technician has one panel and no money: only the tickets in his own name
  * (the server sends him nothing else), no add button, no tabs.
@@ -83,6 +113,8 @@ export type RepairDeskViewData = {
   window: QueueWindow;
   search: string;
   status: string | null;
+  /** The figures' own status filter (2026-11-20). Absent from an older desk app build. */
+  statsStatus?: StatsStatus;
   /** The chips' statuses: the flow, then cancelled. */
   statuses: readonly RepairStatus[];
   /** The steps this deployment can store. */
@@ -90,7 +122,15 @@ export type RepairDeskViewData = {
   terms: PaymentTerms | null;
   tech: string | null;
   board: DeskBoard;
-  counts: { mine: number; pending: number; olderOpen: number; /** Absent from an older desk app build. */ edited?: number };
+  counts: {
+    mine: number;
+    pending: number;
+    olderOpen: number;
+    /** Absent from an older desk app build. */
+    edited?: number;
+    /** Deferred tickets still owing, from any day. */
+    owing?: number;
+  };
   branches: { id: string; name: string }[];
   brands: { code: string; name: string }[];
   models: Record<string, StockModel[]>;
@@ -158,10 +198,49 @@ export function RepairDeskView({
     counts,
     today,
   } = data;
+  const statsStatus: StatsStatus = data.statsStatus ?? "all";
 
   /** The figures are a manager's. Never a technician's, never somebody who reads no money. */
-  const hasStats = authority.seesMoney && !isTech;
-  const panel: DeskPanel = asked === "stats" && hasStats ? "stats" : "tickets";
+  const hasStats = authority.seesMoney && !isTech && Boolean(board.stats);
+
+  /*
+   * Which panel is showing — the address's answer, then the reader's presses.
+   * Adjusted during render when a navigation lands, never in an effect copying
+   * a prop into state.
+   *
+   * ⚠️ "A navigation landed" is any filter changing, not only `panel`. A
+   * press switches the panel without telling the router (the desk app's
+   * router does not hear `replaceState` at all), so the `panel` prop can be
+   * the same before and after a link out of the figures — the debts card to
+   * «الآجل», say — and comparing it alone would leave the reader where they
+   * were. A refresh (a save, a sync pass) keeps every filter, and keeps the
+   * panel the reader chose.
+   */
+  const landing = JSON.stringify([asked, view, window.query, status, search, terms, tech, data.statsStatus ?? "all"]);
+  const [chosen, setChosen] = useState<DeskPanel>(asked);
+  const [seenLanding, setSeenLanding] = useState(landing);
+  if (landing !== seenLanding) {
+    setSeenLanding(landing);
+    setChosen(asked);
+  }
+  const panel: DeskPanel = chosen === "stats" && hasStats ? "stats" : "tickets";
+
+  function showPanel(next: DeskPanel) {
+    setChosen(next);
+    try {
+      // `globalThis`, because `window` here is the period.
+      const url = new URL(globalThis.location.href);
+      if (next === "stats") url.searchParams.set("panel", "stats");
+      else url.searchParams.delete("panel");
+      globalThis.history.replaceState(null, "", url);
+    } catch {
+      /* The address is a convenience; the panel has already changed. */
+    }
+  }
+
+  const report = useProfitReport();
+  const guard = useGuardedAction();
+  const [chooser, setChooser] = useState(false);
 
   // Every filter now in the address, so each control can carry the others.
   const params: Record<string, string> = {
@@ -171,11 +250,12 @@ export function RepairDeskView({
     ...(search ? { q: search } : {}),
     ...(terms ? { terms } : {}),
     ...(tech ? { tech } : {}),
+    ...(statsStatus !== "all" ? { sstatus: statsStatus } : {}),
   };
   const without = (...keys: string[]) =>
     Object.fromEntries(Object.entries(params).filter(([key]) => !keys.includes(key)));
-  /** The figures' own filters: no status, no tab — see the note at the top. */
-  const statsParams = { ...without("status", "view"), panel: "stats" };
+  /** The figures keep every filter: both panels read the same address. */
+  const statsParams = { ...params, panel: "stats" };
   const href = (query: Record<string, string>) => {
     const search = new URLSearchParams(query).toString();
     return search ? `${basePath}?${search}` : basePath;
@@ -185,6 +265,12 @@ export function RepairDeskView({
   const cur = t("currency");
   const money = (n: number) => `${formatPrice(Math.round(n))} ${cur}`;
   const nameOf = (userId: string) => people.find((person) => person.userId === userId)?.name;
+  const statusName = (value: string) =>
+    value === "all"
+      ? t("all")
+      : value === "progress"
+        ? t("statsProgress")
+        : tStatus(`status_${value}` as "status_received");
 
   // Whom this reader may hand a ticket to, themselves first, then the
   // managers, then the technicians — the order the choice is usually made in.
@@ -202,29 +288,23 @@ export function RepairDeskView({
         a.name.localeCompare(b.name),
     );
 
-  // Which period the cards are for, in words, so a figure can be read on its own.
+  // Which period a list or the cards are for, in words, so a figure can be read on its own.
   const day = (value: string) => formatDayNumeric(locale, `${value}T09:00:00Z`);
-  const period =
-    window.when === "open"
+  const periodOf = (span: QueueWindow) =>
+    span.when === "open"
       ? t("whenOpen")
-      : window.when === "all"
+      : span.when === "all"
         ? t("whenAll")
-        : window.from === window.to
-          ? window.from === today
+        : span.from === span.to
+          ? span.from === today
             ? `${t("dayToday")} · ${day(today)}`
-            : day(window.from!)
-          : `${day(window.from!)} — ${day(window.to!)}`;
+            : day(span.from!)
+          : `${day(span.from!)} — ${day(span.to!)}`;
+  const statsPeriod = board.stats ? periodOf(board.stats.window) : periodOf(window);
 
-  const scopeLabel =
-    view === "mine"
-      ? t("deskScopeMine")
-      : view === "pending"
-        ? t("deskScopePending")
-        : view === "edited"
-          ? t("deskScopeEdited")
-          : tech
-          ? t("deskScopeTech", { name: tech === "none" ? t("unassigned") : (nameOf(tech) ?? "") })
-          : t("deskScopeAll");
+  const statsScope = tech
+    ? t("deskScopeTech", { name: tech === "none" ? t("unassigned") : (nameOf(tech) ?? "") })
+    : t("deskScopeAll");
 
   const techOptions = [
     { value: "", label: t("deskAllTechs") },
@@ -249,6 +329,22 @@ export function RepairDeskView({
       { value: "deferred", label: t("termsDeferred") },
     ],
   };
+  // The figures' own status (2026-11-20): every ticket, the three groups the
+  // devices card splits into, then each step.
+  const statsStatusSelect = {
+    name: "sstatus",
+    label: t("filterStatus"),
+    value: statsStatus === "all" ? "" : statsStatus,
+    options: [
+      { value: "", label: t("all") },
+      { value: "progress", label: t("statsProgress") },
+      { value: "completed", label: statusName("completed") },
+      { value: "cancelled", label: statusName("cancelled") },
+      ...flow
+        .filter((step) => step !== "completed")
+        .map((step) => ({ value: step, label: statusName(step) })),
+    ],
+  };
   const toolbarLabels = {
     presets: {
       today: t("whenToday"),
@@ -268,13 +364,54 @@ export function RepairDeskView({
     clear: t("deskClear"),
   };
 
+  const deskName = service === "software" ? t("programmingDesk") : t("repairDesk");
+  const stats = board.stats;
+  const reportContext: ReportContext = {
+    desk: deskName,
+    period: statsPeriod,
+    filters: [
+      ...(statsStatus !== "all" ? [`${t("filterStatus")}: ${statusName(statsStatus)}`] : []),
+      ...(tech ? [`${t("deskTechnician")}: ${tech === "none" ? t("unassigned") : (nameOf(tech) ?? "")}`] : []),
+      ...(terms ? [`${t("financeTerms")}: ${t(terms === "cash" ? "termsCash" : "termsDeferred")}`] : []),
+      ...(search ? [`${t("deskSearch")}: ${search}`] : []),
+    ],
+  };
+  const reportJob: ReportJob = {
+    rows: stats?.rows ?? [],
+    context: reportContext,
+    totals: stats?.totals,
+    includeCancelled: statsStatus === "cancelled",
+  };
+
+  /*
+   * Ctrl+P is the report's (the shop, 2026-11-20): a chooser of A4, A5 or a
+   * PDF instead of the browser's dialog, which on the counter PC would print
+   * this screen on the label printer. Behind the desk's password where there
+   * is one — closing the password leaves nothing open. Read through a ref the
+   * effect keeps current, so the listener is installed once.
+   */
+  const openChooser = useRef<() => void>(() => {});
+  useEffect(() => {
+    openChooser.current = () => guard.run("stats", () => setChooser(true));
+  });
+  useEffect(() => {
+    if (!hasStats) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+      if (event.code !== "KeyP" && event.key.toLowerCase() !== "p") return;
+      event.preventDefault();
+      event.stopPropagation();
+      openChooser.current();
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [hasStats]);
+
   return (
     <div className="space-y-4">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="flex items-center gap-2 text-[1.15rem] font-black text-ink">
-            {service === "software" ? t("programmingDesk") : t("repairDesk")}
-          </h1>
+          <h1 className="flex items-center gap-2 text-[1.15rem] font-black text-ink">{deskName}</h1>
           <p className="text-[0.8rem] font-medium text-muted">
             {isTech ? t("deskTechSub") : service === "software" ? t("programmingDeskSub") : t("repairDeskSub")}
           </p>
@@ -300,17 +437,13 @@ export function RepairDeskView({
 
       {hasStats && (
         <nav aria-label={t("deskPanels")} className="inline-flex rounded-control border border-line bg-surface p-1 shadow-card">
-          <PanelLink
-            href={href(without("panel"))}
-            active={panel === "tickets"}
-            icon={Ticket}
-            label={t("deskPanelTickets")}
-          />
-          <PanelLink href={href(statsParams)} active={panel === "stats"} icon={BarChart3} label={t("deskPanelStats")} />
+          <PanelButton active={panel === "tickets"} icon={Ticket} label={t("deskPanelTickets")} onPress={() => showPanel("tickets")} />
+          <PanelButton active={panel === "stats"} icon={BarChart3} label={t("deskPanelStats")} onPress={() => showPanel("stats")} />
         </nav>
       )}
 
       {notices}
+      {report.ui}
 
       {service === "software" && !board.available.service && (
         <p className="rounded-card border border-dashed border-warning/50 bg-warning/6 px-4 py-3 text-[0.8rem] font-bold text-warning">
@@ -318,27 +451,25 @@ export function RepairDeskView({
         </p>
       )}
 
-      {panel === "stats" ? (
-        <LockedPanel reason="stats" cancelHref={href(without("panel"))}>
+      {panel === "stats" && stats ? (
+        <LockedPanel reason="stats" onCancel={() => showPanel("tickets")}>
           <StatsPanel
             locale={locale}
             data={data}
+            stats={stats}
             params={statsParams}
-            techOptions={techOptions}
-            termsSelect={termsSelect}
+            selects={[
+              statsStatusSelect,
+              termsSelect,
+              { name: "tech", label: t("deskTechnician"), value: tech ?? "", options: techOptions },
+            ]}
             toolbarLabels={toolbarLabels}
-            period={period}
-            scopeLabel={scopeLabel}
+            period={statsPeriod}
+            scopeLabel={statsScope}
             money={money}
-            report={{
-              desk: service === "software" ? t("programmingDesk") : t("repairDesk"),
-              period,
-              filters: [
-                ...(tech ? [`${t("deskTechnician")}: ${tech === "none" ? t("unassigned") : (nameOf(tech) ?? "")}`] : []),
-                ...(terms ? [`${t("financeTerms")}: ${t(terms === "cash" ? "termsCash" : "termsDeferred")}`] : []),
-                ...(search ? [`${t("deskSearch")}: ${search}`] : []),
-              ],
-            }}
+            report={report}
+            reportJob={reportJob}
+            owingHref={href({ view: "owing" })}
             techHref={(holderId) => href({ ...statsParams, tech: holderId ?? "none" })}
           />
         </LockedPanel>
@@ -359,6 +490,9 @@ export function RepairDeskView({
                   { value: "mine", label: t("deskTabMine"), count: counts.mine },
                   { value: "pending", label: t("deskTabPending"), count: counts.pending },
                   { value: "edited", label: t("deskTabEdited"), count: counts.edited },
+                  // The deferred tickets still owing, from any day — the way
+                  // back to them (the shop, 2026-11-20).
+                  ...(hasStats ? [{ value: "owing", label: t("deskTabOwing"), count: counts.owing }] : []),
                 ]}
               />
             )}
@@ -381,7 +515,7 @@ export function RepairDeskView({
               basePath={basePath}
               window={window}
               search={search}
-              params={params}
+              params={without("panel")}
               active={
                 status
                   ? [{ name: "status", label: `${t("filterStatus")}: ${tStatus(`status_${status}` as "status_received")}` }]
@@ -415,6 +549,13 @@ export function RepairDeskView({
               </div>
             </div>
           </section>
+
+          {view === "owing" && (
+            <p className="flex flex-wrap items-center gap-2 rounded-card border border-warning/45 bg-warning/8 px-4 py-2.5 text-[0.8rem] font-bold text-ink">
+              <HandCoins className="size-4 shrink-0 text-warning" aria-hidden />
+              {t("deskOwingBanner")}
+            </p>
+          )}
 
           {authority.manages &&
             view === "all" &&
@@ -479,26 +620,31 @@ export function RepairDeskView({
           />
         </>
       )}
+
+      {hasStats && (
+        <ReportPrintDialog open={chooser} onClose={() => setChooser(false)} report={report} job={reportJob} />
+      )}
+      {guard.prompt}
     </div>
   );
 }
 
-function PanelLink({
-  href,
+function PanelButton({
   active,
   icon: Icon,
   label,
+  onPress,
 }: {
-  href: string;
   active: boolean;
   icon: LucideIcon;
   label: string;
+  onPress: () => void;
 }) {
   return (
-    <Link
-      href={href}
-      scroll={false}
-      aria-current={active ? "page" : undefined}
+    <button
+      type="button"
+      onClick={onPress}
+      aria-pressed={active}
       className={cn(
         "inline-flex items-center gap-2 rounded-[calc(var(--radius-control)-2px)] px-4 py-2 text-[0.82rem] font-extrabold transition-colors",
         active ? "bg-brand text-white shadow-sm" : "text-muted hover:bg-subtle hover:text-ink",
@@ -506,51 +652,56 @@ function PanelLink({
     >
       <Icon className="size-4" aria-hidden />
       {label}
-    </Link>
+    </button>
   );
 }
 
 /* ── The figures ──────────────────────────────────────────────────────────── */
 
+type ToolbarSelect = { name: string; label: string; value: string; options: { value: string; label: string }[] };
+
 function StatsPanel({
   locale,
   data,
+  stats,
   params,
-  techOptions,
-  termsSelect,
+  selects,
   toolbarLabels,
   period,
   scopeLabel,
   money,
   report,
+  reportJob,
+  owingHref,
   techHref,
 }: {
   locale: string;
   data: RepairDeskViewData;
+  stats: DeskStats;
   params: Record<string, string>;
-  techOptions: { value: string; label: string }[];
-  termsSelect: { name: string; label: string; value: string; options: { value: string; label: string }[] };
+  selects: ToolbarSelect[];
   toolbarLabels: Parameters<typeof QueueToolbar>[0]["labels"];
   period: string;
   scopeLabel: string;
   money: (n: number) => string;
-  report: ReportContext;
+  report: ProfitReport;
+  reportJob: ReportJob;
+  owingHref: string;
   techHref: (holderId: string | null) => string;
 }) {
   const t = useTranslations("Admin");
-  const { basePath, window, search, tech, board } = data;
-  const totals = board.totals;
-  const base = Math.max(0, totals.revenue - totals.warranty);
+  const { basePath, search, tech, board } = data;
+  const totals = stats.totals;
 
   return (
     <div className="space-y-4">
       <QueueToolbar
         locale={locale}
         basePath={basePath}
-        window={window}
+        window={stats.window}
         search={search}
         params={params}
-        selects={[termsSelect, { name: "tech", label: t("deskTechnician"), value: tech ?? "", options: techOptions }]}
+        selects={selects}
         labels={toolbarLabels}
       />
 
@@ -560,70 +711,49 @@ function StatsPanel({
         warranty={board.available.warranty}
         closeLabel={t("close")}
         period={period}
-        labels={{
-          tickets: t("deskTickets"),
-          ticketsSub: t("deskTicketsSub", { open: totals.open, completed: totals.completed }),
-          open: t("deskOpen"),
-          revenue: t("financePriceTotal"),
-          cost: t("financeCostTotal"),
-          profit: t("financeProfitTotal"),
-          profitSub:
-            totals.missingCost > 0
-              ? t("deskMissingCost", { count: totals.missingCost })
-              : t("deskProfitSub", { count: totals.settled }),
-          collectedCash: t("financeCollectedCash"),
-          collectedDeferred: t("financeCollectedDeferred"),
-          partialHeld: t("deskPartialHeld", { amount: money(totals.partialHeld) }),
-          till: t("financeTill"),
-          tillSub: totals.tillWarranty > 0 ? t("financeTillSub", { amount: money(totals.tillWarranty) }) : money(totals.till),
-          outstanding: t("financeOutstanding"),
-          deferred: t("deskDeferred", { count: totals.deferred }),
-          warranty: t("warrantyTitle"),
-          warrantySub: t("warrantyOfTotal", { total: money(totals.revenue) }),
-          scope: scopeLabel,
-        }}
-        warrantyDetail={{
-          title: t("warrantyDetailTitle"),
-          body: t("warrantyDetailBody"),
-          rows: [
-            { label: t("warrantyDetailTotal"), value: money(totals.revenue), tone: "brand" },
-            { label: t("warrantyDetailBase"), value: money(base) },
-            { label: t("warrantyDetailWarranty"), value: money(totals.warranty), tone: "info" },
-            { label: t("warrantyDetailTickets"), value: formatPrice(totals.warrantyTickets), tone: "muted" },
-          ],
-        }}
-        tillDetail={{
-          title: t("financeTill"),
-          body: t("financeTillBody"),
-          rows: [
-            { label: t("financeCollectedCash"), value: money(totals.collectedCash), tone: "success" },
-            { label: t("financeCollectedDeferred"), value: money(totals.collectedDeferred), tone: "info" },
-            { label: t("financeTillWarranty"), value: money(totals.tillWarranty), tone: "muted" },
-            { label: t("financeTill"), value: money(totals.till), tone: "brand" },
-          ],
-        }}
+        scope={scopeLabel}
         money={money}
+        owingHref={owingHref}
       />
 
-      {/* جرد الأرباح — the rows the filters above came to, in print, on A4 or
-          as a PDF to keep; and which printer is which on this machine. */}
-      <section className="flex flex-wrap items-center gap-2.5 rounded-panel border border-line bg-surface px-3.5 py-3 shadow-card">
-        <div className="flex min-w-0 items-center gap-2">
-          <ClipboardList className="size-5 shrink-0 text-brand" aria-hidden />
-          <div className="min-w-0">
-          <h2 className="text-[0.88rem] font-black text-ink">{t("deskReportTitle")}</h2>
-          <p className="text-[0.74rem] font-bold text-muted">{t("deskListCount", { count: board.rows.length })}</p>
+      {!stats.ledger && board.available.finance && (
+        <p className="text-[0.72rem] font-semibold text-muted">{t("deskLedgerMissing")}</p>
+      )}
+
+      {stats.paidRows.length > 0 && <PaidEarlier rows={stats.paidRows} money={money} locale={locale} />}
+
+      {/* جرد الأرباح — the tickets the figures count, on A4 or A5 by the paper
+          printer or as a PDF; a report of hand-picked tickets; and which
+          printer is which on this machine. */}
+      <section className="space-y-3 rounded-panel border border-line bg-surface px-3.5 py-3 shadow-card">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex min-w-0 items-center gap-2">
+            <ClipboardList className="size-5 shrink-0 text-brand" aria-hidden />
+            <div className="min-w-0">
+              <h2 className="text-[0.88rem] font-black text-ink">{t("deskReportTitle")}</h2>
+              <p className="text-[0.74rem] font-bold text-muted">
+                {t("deskListCount", { count: stats.rows.length })} · {t("printChooserShortcut")}
+              </p>
+            </div>
+          </div>
+          <div className="ms-auto flex flex-wrap items-center gap-2">
+            <ReportButtons report={report} job={reportJob} />
+            <PrinterSetupButton />
           </div>
         </div>
-        <div className="ms-auto flex flex-wrap items-center gap-2">
-          <ProfitReportActions rows={board.rows} context={report} bare />
-          <PrinterSetupButton />
-        </div>
+        <PickedReport
+          service={data.service}
+          locale={locale}
+          report={report}
+          desk={reportJob.context.desk}
+          pool={[...stats.rows, ...stats.paidRows, ...board.rows]}
+          money={money}
+        />
       </section>
 
-      {board.byTech.length > 0 && (
+      {stats.byTech.length > 0 && (
         <TechTable
-          rows={board.byTech.map((row) => ({
+          rows={stats.byTech.map((row) => ({
             ...row,
             name: row.holderId ? row.name || t("workColleague") : t("unassigned"),
             href: techHref(row.holderId),
@@ -664,110 +794,135 @@ type Tile = {
   sub?: string;
   tone: keyof typeof TONE;
   detail?: StatDetail;
+  href?: string;
 };
 
+/**
+ * The cards, as the shop defined each of them on 2026-11-20 — see
+ * `DeskTotals` in `lib/data/repair-desk.ts` for the arithmetic, and
+ * `lib/data/desk-figures.ts` for which day each is counted on.
+ */
 function Figures({
   totals,
   finance,
   warranty,
   closeLabel,
   period,
-  labels,
-  warrantyDetail,
-  tillDetail,
+  scope,
   money,
+  owingHref,
 }: {
   totals: DeskTotals;
   finance: boolean;
   warranty: boolean;
   closeLabel: string;
   period: string;
-  labels: Record<
-    | "tickets"
-    | "ticketsSub"
-    | "open"
-    | "revenue"
-    | "cost"
-    | "profit"
-    | "profitSub"
-    | "collectedCash"
-    | "collectedDeferred"
-    | "partialHeld"
-    | "till"
-    | "tillSub"
-    | "outstanding"
-    | "deferred"
-    | "warranty"
-    | "warrantySub"
-    | "scope",
-    string
-  >;
-  warrantyDetail: StatDetail;
-  tillDetail: StatDetail;
+  scope: string;
   money: (n: number) => string;
+  owingHref: string;
 }) {
+  const t = useTranslations("Admin");
   const tiles: Tile[] = [
-    { Icon: Wrench, label: labels.tickets, value: formatPrice(totals.tickets), sub: labels.ticketsSub, tone: "info" },
-    { Icon: CircleDollarSign, label: labels.revenue, value: statMoney(totals.revenue), sub: money(totals.revenue), tone: "brand" },
+    {
+      Icon: Wrench,
+      label: t("deskTickets"),
+      value: formatPrice(totals.tickets),
+      sub: t("deskTicketsSub", { completed: totals.completed, cancelled: totals.cancelled, open: totals.open }),
+      tone: "info",
+    },
+    {
+      Icon: CircleDollarSign,
+      label: t("financePriceTotal"),
+      value: statMoney(totals.maintenance),
+      sub: t("deskMaintenanceSub"),
+      tone: "brand",
+    },
   ];
 
   if (warranty) {
     tiles.push({
       Icon: ShieldCheck,
-      label: labels.warranty,
+      label: t("warrantyTitle"),
       value: statMoney(totals.warranty),
-      sub: labels.warrantySub,
+      sub: t("deskWarrantySub", { count: totals.warrantyTickets }),
       tone: "info",
-      detail: warrantyDetail,
     });
   }
   if (finance) {
     tiles.push(
-      { Icon: Receipt, label: labels.cost, value: statMoney(totals.cost), sub: money(totals.cost), tone: "muted" },
-      // Two cards, because they are two kinds of money: one is finished the
-      // moment it is paid, the other may still have more to come.
-      { Icon: Banknote, label: labels.collectedCash, value: statMoney(totals.collectedCash), sub: money(totals.collectedCash), tone: "success" },
+      {
+        Icon: Receipt,
+        label: t("financeCostTotal"),
+        value: statMoney(totals.cost),
+        sub: totals.missingCost > 0 ? t("deskMissingCostSub", { count: totals.missingCost }) : money(totals.cost),
+        tone: totals.missingCost > 0 ? "warning" : "muted",
+      },
+      {
+        Icon: Banknote,
+        label: t("financeCollectedCash"),
+        value: statMoney(totals.collectedCash),
+        sub: t("deskCashSub"),
+        tone: "success",
+      },
       {
         Icon: CalendarClock,
-        label: labels.collectedDeferred,
+        label: t("financeCollectedDeferred"),
         value: statMoney(totals.collectedDeferred),
-        sub: totals.partialHeld > 0 ? labels.partialHeld : money(totals.collectedDeferred),
-        tone: "info",
+        sub:
+          totals.missingCollected > 0
+            ? t("deskMissingCollectedSub", { count: totals.missingCollected })
+            : t("deskDeferredSub"),
+        tone: totals.missingCollected > 0 ? "warning" : "info",
       },
-      // «واصل بالخزنة» — what is actually in the drawer: the two above, each
-      // dinar once, the warranty inside it (see `DeskTotals.till`).
+      // «واصل بالخزنة» — the shop's own sum, and every dinar in the drawer once.
       {
         Icon: Wallet,
-        label: labels.till,
+        label: t("financeTill"),
         value: statMoney(totals.till),
-        sub: labels.tillSub,
+        sub: t("financeTillFormula"),
         tone: "success",
-        detail: tillDetail,
+        detail: {
+          title: t("financeTill"),
+          body: t("financeTillBody"),
+          rows: [
+            { label: t("financeTillWarranty"), value: money(totals.tillWarranty), tone: "info" },
+            { label: t("financeCollectedCash"), value: money(totals.collectedCash), tone: "success" },
+            { label: t("financeCollectedDeferred"), value: money(totals.collectedDeferred), tone: "info" },
+            { label: t("financeTill"), value: money(totals.till), tone: "brand" },
+          ],
+        },
       },
       {
         Icon: HandCoins,
-        label: labels.outstanding,
+        label: t("financeOutstanding"),
         value: statMoney(totals.outstanding),
-        sub: labels.deferred,
+        sub: t("deskOwingSub", { count: totals.owing }),
         tone: totals.outstanding > 0 ? "warning" : "success",
+        href: totals.owing > 0 ? owingHref : undefined,
       },
       {
         Icon: TrendingUp,
-        label: labels.profit,
+        label: t("financeProfitTotal"),
         value: statMoney(totals.profit),
-        sub: labels.profitSub,
+        sub: totals.missingCost > 0 ? t("deskProfitMissing", { count: totals.missingCost }) : t("deskProfitFormula"),
         tone: totals.profit < 0 ? "brand" : "success",
       },
     );
   } else {
-    tiles.push({ Icon: Hourglass, label: labels.open, value: formatPrice(totals.open), tone: "warning" });
+    tiles.push({ Icon: Hourglass, label: t("deskOpen"), value: formatPrice(totals.open), tone: "warning" });
   }
 
   return (
-    <section aria-label={labels.scope} className="space-y-2">
-      <p className="flex flex-wrap items-center gap-x-2 text-[0.74rem] font-extrabold text-muted">
-        <span>{labels.scope}</span>
+    <section aria-label={scope} className="space-y-2">
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.74rem] font-extrabold text-muted">
+        <span>{scope}</span>
         <span className="rounded-chip bg-subtle px-2 py-0.5 text-ink">{period}</span>
+        {totals.paidFromEarlier > 0 && (
+          <span className="inline-flex items-center gap-1 rounded-chip bg-success/10 px-2 py-0.5 text-success">
+            <History className="size-3" aria-hidden />
+            {t("deskPaidEarlierChip", { count: totals.paidFromEarlier })}
+          </span>
+        )}
       </p>
       <ul
         className={cn(
@@ -780,6 +935,7 @@ function Figures({
         {tiles.map((tile) => (
           <li key={tile.label} className="min-w-0">
             <StatPress
+              href={tile.href}
               detail={tile.detail}
               closeLabel={closeLabel}
               className="flex h-full min-w-0 flex-col gap-1 rounded-panel border border-line bg-surface p-3 shadow-card"
@@ -791,12 +947,245 @@ function Figures({
               <span className="text-[1.25rem] font-black leading-tight text-ink" data-numeric>
                 {tile.value}
               </span>
-              {tile.sub && <span className="text-[0.68rem] font-medium text-muted">{tile.sub}</span>}
+              {tile.sub && (
+                <span className={cn("text-[0.68rem] font-medium", tile.tone === "warning" ? "text-warning" : "text-muted")}>
+                  {tile.sub}
+                </span>
+              )}
             </StatPress>
           </li>
         ))}
       </ul>
     </section>
+  );
+}
+
+/**
+ * Tickets opened before the period whose money came in within it — the
+ * deferred ticket from yesterday settled today (the shop, 2026-11-20). Folded
+ * until asked for; the chip above the cards says how many.
+ */
+function PaidEarlier({ rows, money, locale }: { rows: DeskRow[]; money: (n: number) => string; locale: string }) {
+  const t = useTranslations("Admin");
+  const [open, setOpen] = useState(false);
+  return (
+    <section className="rounded-panel border border-success/30 bg-success/5">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 px-3.5 py-2.5 text-start text-[0.8rem] font-extrabold text-ink"
+      >
+        <History className="size-4 shrink-0 text-success" aria-hidden />
+        {t("deskPaidEarlierTitle", { count: rows.length })}
+        <ChevronDown className={cn("ms-auto size-4 text-muted transition-transform", open && "rotate-180")} aria-hidden />
+      </button>
+      {open && (
+        <ul className="divide-y divide-success/15 border-t border-success/20 px-3.5">
+          {rows.map((row) => (
+            <li key={row.id} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 py-2 text-[0.78rem]">
+              <span className="font-extrabold text-info" data-numeric>
+                {row.code}
+              </span>
+              <span className="font-bold text-ink">{row.customerName}</span>
+              <span className="text-muted">{row.deviceModel}</span>
+              <span className="text-[0.7rem] text-muted">{t("deskOpenedOn", { when: formatDayTime(locale, row.createdAt) })}</span>
+              <span className="ms-auto font-black text-success" data-numeric>
+                {money(row.paidWithin ?? 0)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/* ── A report of hand-picked tickets ─────────────────────────────────────── */
+
+const fold = (value: string | null | undefined) => (value ?? "").toLocaleLowerCase();
+
+/** The fields a ticket is found by, typed loosely. */
+function matches(row: DeskRow, needle: string): boolean {
+  return [row.code, row.customerName, row.customerPhone, row.customerPhone2, row.deviceModel, row.notes, ...row.issues, ...row.customFaults]
+    .some((value) => fold(value).includes(needle));
+}
+
+/**
+ * «طباعة تذاكر محددة» — the shop, 2026-11-20: "an option to print an exact
+ * ticket or a group of tickets' statistics, collapsed until it is needed, the
+ * tickets added by a smart search by name, phone, device, code". Folded until
+ * pressed. A search looks at the tickets already on the page first, at once,
+ * then at every ticket on the bench (`searchDeskTickets`).
+ */
+function PickedReport({
+  service,
+  locale,
+  report,
+  desk,
+  pool,
+  money,
+}: {
+  service: RepairService;
+  locale: string;
+  report: ProfitReport;
+  desk: string;
+  pool: DeskRow[];
+  money: (n: number) => string;
+}) {
+  const t = useTranslations("Admin");
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [found, setFound] = useState<{ query: string; rows: DeskRow[] } | null>(null);
+  const [picked, setPicked] = useState<DeskRow[]>([]);
+  const [searching, startSearch] = useTransition();
+
+  const needle = fold(query.trim());
+  const local = needle.length >= 2 ? pool.filter((row) => matches(row, needle)) : [];
+  const remote = found && found.query === needle ? found.rows : [];
+  const seen = new Set<string>();
+  const results = [...local, ...remote].filter((row) => (seen.has(row.id) ? false : (seen.add(row.id), true))).slice(0, 30);
+  const pickedIds = new Set(picked.map((row) => row.id));
+
+  // Every ticket on the bench, a moment after the typing stops.
+  useEffect(() => {
+    if (needle.length < 2) return;
+    const timer = setTimeout(() => {
+      startSearch(async () => {
+        const answer = await searchDeskTickets(service, needle, locale);
+        if (answer.ok) setFound({ query: needle, rows: answer.rows });
+      });
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [needle, service, locale]);
+
+  const job: ReportJob = {
+    rows: picked,
+    context: { desk, period: t("deskPickPeriod", { count: picked.length }), filters: [] },
+    includeCancelled: true,
+  };
+
+  const add = (row: DeskRow) => setPicked((current) => (current.some((item) => item.id === row.id) ? current : [...current, row]));
+
+  return (
+    <div className="rounded-card border border-dashed border-line">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 px-3 py-2.5 text-start text-[0.8rem] font-extrabold text-ink"
+      >
+        <ListChecks className="size-4 shrink-0 text-brand" aria-hidden />
+        {t("deskPickTitle")}
+        {picked.length > 0 && (
+          <span className="rounded-full bg-brand px-2 py-0.5 text-[0.66rem] font-black text-white" data-numeric>
+            {picked.length}
+          </span>
+        )}
+        <ChevronDown className={cn("ms-auto size-4 text-muted transition-transform", open && "rotate-180")} aria-hidden />
+      </button>
+
+      {open && (
+        <div className="space-y-3 border-t border-line px-3 pb-3 pt-2.5">
+          <p className="text-[0.72rem] font-medium text-muted">{t("deskPickHint")}</p>
+          <label className="relative block">
+            <Search className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-muted" aria-hidden />
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={t("deskPickSearch")}
+              aria-label={t("deskPickSearch")}
+              className="h-10 w-full rounded-control border border-line bg-canvas ps-9 pe-9 text-[0.82rem] font-bold text-ink outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+            />
+            {searching && (
+              <Loader2 className="absolute end-3 top-1/2 size-4 -translate-y-1/2 animate-spin text-muted" aria-hidden />
+            )}
+          </label>
+
+          {needle.length >= 2 && (
+            <ul className="max-h-64 space-y-1 overflow-y-auto overscroll-contain">
+              {results.length === 0 && !searching && (
+                <li className="px-1 py-2 text-[0.76rem] font-bold text-muted">{t("deskPickEmpty")}</li>
+              )}
+              {results.map((row) => {
+                const already = pickedIds.has(row.id);
+                const total = repairMoney({
+                  price: row.price,
+                  warranty: row.warrantyPrice,
+                  cost: row.costPrice,
+                  collected: row.collected,
+                  terms: row.paymentTerms,
+                }).price;
+                return (
+                  <li key={row.id}>
+                    <button
+                      type="button"
+                      disabled={already}
+                      onClick={() => add(row)}
+                      className="press flex w-full flex-wrap items-center gap-x-2.5 gap-y-0.5 rounded-control px-2 py-1.5 text-start text-[0.78rem] transition-colors hover:bg-brand/6 disabled:opacity-50"
+                    >
+                      {already ? (
+                        <CircleCheckBig className="size-4 shrink-0 text-success" aria-hidden />
+                      ) : (
+                        <Plus className="size-4 shrink-0 text-brand" aria-hidden />
+                      )}
+                      <span className="font-extrabold text-info" data-numeric>
+                        {row.code}
+                      </span>
+                      <span className="font-bold text-ink">{row.customerName}</span>
+                      <span className="text-muted">{row.deviceModel}</span>
+                      <span className="text-[0.7rem] text-muted">{formatDayTime(locale, row.createdAt)}</span>
+                      {total > 0 && (
+                        <span className="ms-auto font-black text-brand" data-numeric>
+                          {money(total)}
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
+          {picked.length > 0 && (
+            <div className="space-y-2.5">
+              <ul className="flex flex-wrap gap-1.5">
+                {picked.map((row) => (
+                  <li
+                    key={row.id}
+                    className="inline-flex items-center gap-1.5 rounded-chip border border-brand/30 bg-brand/6 py-0.5 ps-2 pe-1 text-[0.72rem] font-bold text-ink"
+                  >
+                    <span className="text-info" data-numeric>
+                      {row.code}
+                    </span>
+                    <span className="max-w-32 truncate">{row.customerName}</span>
+                    <button
+                      type="button"
+                      onClick={() => setPicked((current) => current.filter((item) => item.id !== row.id))}
+                      aria-label={t("deskPickRemove", { code: row.code })}
+                      className="press rounded-full p-0.5 text-muted hover:bg-brand hover:text-white"
+                    >
+                      <X className="size-3" aria-hidden />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <div className="flex flex-wrap items-center gap-2">
+                <ReportButtons report={report} job={job} />
+                <button
+                  type="button"
+                  onClick={() => setPicked([])}
+                  className="rounded-control px-3 py-2 text-[0.76rem] font-bold text-muted hover:bg-subtle hover:text-ink"
+                >
+                  {t("deskPickClear")}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -845,7 +1234,7 @@ function TechTable({
                 </td>
                 <td className="px-3 py-2 text-end font-bold" data-numeric>{formatPrice(row.tickets)}</td>
                 <td className="px-3 py-2 text-end font-bold" data-numeric>{formatPrice(row.completed)}</td>
-                <td className="px-3 py-2 text-end font-bold" data-numeric>{money(row.revenue)}</td>
+                <td className="px-3 py-2 text-end font-bold" data-numeric>{money(row.maintenance)}</td>
                 {warranty && <td className="px-3 py-2 text-end font-bold text-info" data-numeric>{money(row.warranty)}</td>}
                 {finance && <td className="px-3 py-2 text-end font-bold text-success" data-numeric>{money(row.till)}</td>}
                 {finance && <td className={cn("px-3 py-2 text-end font-bold", row.profit < 0 ? "text-brand" : "text-success")} data-numeric>{money(row.profit)}</td>}

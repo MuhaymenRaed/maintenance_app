@@ -87,3 +87,35 @@ test("an edited fault set replaces the ticket's, and old typed faults only when 
   assert.deepEqual(raw.custom_faults, []);
   assert.equal(raw.repair_ticket_issues?.length, 1);
 });
+
+test("a spelling fix on a ticket's fault is not «معدّلة»; an added or removed fault is (2026-11-20)", () => {
+  const fix = ticket();
+  fix.quote_sent_at = null;
+  applyOp(fix, {
+    kind: "faults",
+    payload: {
+      faults: [
+        { code: "screen", name_ar: "الشاشة", name_en: "Screen replacement" },
+        // The typed fault, spelt better — a different code for the same fault.
+        { code: "c-111111111111", name_ar: "يصفر عند الشاحن", name_en: "يصفر عند الشاحن", isNew: true },
+      ],
+      custom: null,
+    },
+  });
+  assert.equal(fix.quote_sent_at, null);
+
+  const added = ticket();
+  added.quote_sent_at = null;
+  applyOp(added, {
+    kind: "faults",
+    payload: {
+      faults: [
+        { code: "screen", name_ar: "الشاشة", name_en: "Screen replacement" },
+        { code: "c-ad5ac9ea78d5", name_ar: "يصفر عند الشحن", name_en: "يصفر عند الشحن" },
+        { code: "battery", name_ar: "البطارية", name_en: "Battery replacement" },
+      ],
+      custom: null,
+    },
+  });
+  assert.ok(added.quote_sent_at);
+});

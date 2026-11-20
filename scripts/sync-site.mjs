@@ -51,6 +51,9 @@ const ENTRIES = [
   "components/ui/glass-control.ts",
   "components/ui/confirm-dialog.tsx",
   "lib/data/repair-desk.ts",
+  // Which tickets each card counts, and on which day its money came in —
+  // `src/main/desk/board.ts` runs it over this computer's copy.
+  "lib/data/desk-figures.ts",
   "lib/data/repair-print-facts.ts",
   "lib/data/orders.ts",
   "lib/data/queue-window.ts",

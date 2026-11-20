@@ -57,10 +57,11 @@
  * for every walk-in is how the field stops being filled. A deferred ticket
  * with nothing typed has paid nothing.
  *
- * ⚠️ **Profit is only ever counted on a ticket that is fully paid** — cash paid
- * outright, or deferred once الباقي reaches zero. Until then what has come in
- * sits in الواصل, apart from the profit, because money still owed on a job is
- * not yet money made on it.
+ * ⚠️ **Profit is the repair less its part, on every ticket not cancelled**,
+ * paid or not, and a part with no price typed counts as zero (the shop,
+ * 2026-11-20 — it was only fully paid tickets until then). The figures panel
+ * says how many tickets have no purchase price, so the reader knows the
+ * profit may be lower than it reads.
  *
  * ---------------------------------------------------------------------------
  * Who may do what
@@ -264,42 +265,62 @@ export function repairMoney({
   };
 }
 
+/**
+ * The figures panel's cards, as the shop defined each of them on 2026-11-20.
+ *
+ * Two clocks: what a ticket *is* belongs to the day it was opened, and money
+ * belongs to the day it came in — see `lib/data/desk-figures.ts`, which
+ * decides both and calls `addToTotals` once per ticket.
+ *
+ * ⚠️ **«واصل بالخزنة» is the warranty that came in plus «واصل نقد» plus
+ * «واصل آجل»**, the shop's own sum — and it is every dinar actually in the
+ * drawer, each counted once, because the two «واصل» cards are the *repair*
+ * part of what came in and the warranty's part is its own line. They used to
+ * carry the warranty inside them as well, so the three cards on screen added
+ * up to more than the till: the "issue" the shop reported. The warranty card
+ * is every warranty sold; a warranty on a deferred ticket that has not been
+ * paid yet is in «الديون», not in the till.
+ */
 export type DeskTotals = {
+  /** Every ticket opened in the period, cancelled ones included. */
   tickets: number;
+  /** قيد العمل — every status that is neither delivered nor cancelled. */
   open: number;
+  /** تم التسليم. */
   completed: number;
+  /** ملغاة. */
   cancelled: number;
-  /** What customers are charged, warranties included. */
+  /** مبلغ الصيانة — the repair alone, the warranty kept out, cancelled tickets left out. */
+  maintenance: number;
+  /** What customers are charged — the repair and its warranty. */
   revenue: number;
-  /** How much of `revenue` is warranty. */
+  /** الضمان — every warranty sold. Its own account, never profit. */
   warranty: number;
   warrantyTickets: number;
+  /** أسعار الشراء — a ticket with none typed counts as zero. */
   cost: number;
-  /** Over fully paid tickets only, and over the repair alone — see `warranty`. */
-  profit: number;
-  settled: number;
-  /** واصل from cash tickets. */
-  collectedCash: number;
-  /** واصل from deferred tickets, finished or not. */
-  collectedDeferred: number;
-  /** The part of `collectedDeferred` on tickets still owing — not yet profit. */
-  partialHeld: number;
-  /**
-   * «واصل بالخزنة» — every dinar actually collected, cash and deferred alike.
-   *
-   * ⚠️ The shop asked for it as «الضمان + واصل نقد + واصل آجل», and the warranty
-   * is already inside both: a ticket's total carries it, and a cash ticket's
-   * واصل is that whole total. Adding it again would count every warranty
-   * twice, so the till is the two واصل figures, and `tillWarranty` says how
-   * much of it is warranty.
-   */
-  till: number;
-  /** The warranty's share of `till`, taken first out of what each ticket paid. */
-  tillWarranty: number;
-  outstanding: number;
-  deferred: number;
-  /** Paid tickets with a price but no cost typed — the profit leaves them out. */
+  /** Tickets with a repair and no purchase price typed. */
   missingCost: number;
+  /** Deferred tickets whose «الواصل» was never typed. */
+  missingCollected: number;
+  /** الربح الصافي — مبلغ الصيانة less أسعار الشراء, every ticket not cancelled. */
+  profit: number;
+  /** واصل نقد — the repair's part of what came in on cash tickets and on deferred ones now paid in full. */
+  collectedCash: number;
+  /** واصل آجل — the repair's part of what came in on deferred tickets still owing. */
+  collectedDeferred: number;
+  /** The warranty's part of what came in. */
+  tillWarranty: number;
+  /** واصل بالخزنة — tillWarranty + collectedCash + collectedDeferred. */
+  till: number;
+  /** الديون — what deferred tickets still owe. */
+  outstanding: number;
+  /** Deferred tickets still owing. */
+  owing: number;
+  /** Deferred tickets, owing or not. */
+  deferred: number;
+  /** Tickets opened before the period whose money came in within it. */
+  paidFromEarlier: number;
 };
 
 export function emptyTotals(): DeskTotals {
@@ -308,24 +329,33 @@ export function emptyTotals(): DeskTotals {
     open: 0,
     completed: 0,
     cancelled: 0,
+    maintenance: 0,
     revenue: 0,
     warranty: 0,
     warrantyTickets: 0,
     cost: 0,
+    missingCost: 0,
+    missingCollected: 0,
     profit: 0,
-    settled: 0,
     collectedCash: 0,
     collectedDeferred: 0,
-    partialHeld: 0,
-    till: 0,
     tillWarranty: 0,
+    till: 0,
     outstanding: 0,
+    owing: 0,
     deferred: 0,
-    missingCost: 0,
+    paidFromEarlier: 0,
   };
 }
 
-/** One ticket into a running total. Cancelled tickets count, and carry no money. */
+/**
+ * One ticket into a running total.
+ *
+ * `counted` — the ticket was opened in the period, so it counts towards what
+ * the tickets *are*. `paid` — how much of its money came in before the
+ * period and within it; by default all of it, within (no period, or a list
+ * the reader picked by hand). Cancelled tickets are counted and carry no money.
+ */
 export function addToTotals(
   totals: DeskTotals,
   row: {
@@ -336,15 +366,16 @@ export function addToTotals(
     collected: number | null;
     paymentTerms: PaymentTerms;
   },
+  { counted = true, paid }: { counted?: boolean; paid?: { before: number; within: number } } = {},
 ): void {
-  totals.tickets += 1;
-  if (row.status === "cancelled" || row.status === "declined") {
-    totals.cancelled += 1;
-    return;
+  const cancelled = row.status === "cancelled" || row.status === "declined";
+  if (counted) {
+    totals.tickets += 1;
+    if (cancelled) totals.cancelled += 1;
+    else if (row.status === "completed") totals.completed += 1;
+    else totals.open += 1;
   }
-  if (row.status === "completed") totals.completed += 1;
-  else totals.open += 1;
-  if (row.paymentTerms === "deferred") totals.deferred += 1;
+  if (cancelled) return;
 
   const money = repairMoney({
     price: row.price,
@@ -353,34 +384,46 @@ export function addToTotals(
     collected: row.collected,
     terms: row.paymentTerms,
   });
-  totals.revenue += money.price;
-  totals.outstanding += money.remaining;
-  // `money.warranty` rather than the raw column, so an unpriced ticket counts
-  // no warranty income — there is no total for it to be part of yet — and a
-  // warranty typed above the price counts only what the customer is charged.
-  if (money.warranty > 0) {
-    totals.warranty += money.warranty;
-    totals.warrantyTickets += 1;
+
+  if (counted) {
+    if (row.paymentTerms === "deferred") {
+      totals.deferred += 1;
+      if (row.collected == null) totals.missingCollected += 1;
+    }
+    totals.maintenance += money.base;
+    totals.revenue += money.price;
+    // `money.warranty` rather than the raw column, so an unpriced ticket counts
+    // no warranty income and a warranty typed above the price counts only
+    // what the customer is charged.
+    if (money.warranty > 0) {
+      totals.warranty += money.warranty;
+      totals.warrantyTickets += 1;
+    }
+    // ⚠️ No purchase price typed counts as zero, and the profit goes on —
+    // the shop's rule of 2026-11-20. `missingCost` says how many, so the
+    // card can say the profit may be lower than it reads.
+    const cost = money.cost ?? 0;
+    totals.cost += cost;
+    if (money.cost == null && money.base > 0) totals.missingCost += 1;
+    totals.profit += money.base - cost;
+    totals.outstanding += money.remaining;
+    if (money.remaining > 0) totals.owing += 1;
   }
 
-  if (row.paymentTerms === "deferred") {
-    totals.collectedDeferred += money.collected;
-    if (money.remaining > 0) totals.partialHeld += money.collected;
-  } else {
-    totals.collectedCash += money.collected;
-  }
-  totals.till += money.collected;
-  totals.tillWarranty += Math.min(money.warranty, money.collected);
-
-  if (money.cost != null) totals.cost += money.cost;
-  if (money.settled) {
-    totals.settled += 1;
-    // `base`, never `price`: the warranty is counted once, in `totals.warranty`.
-    if (money.cost != null) totals.profit += money.base - money.cost;
-    // A ticket that is only a warranty has no repair to have cost anything, so
-    // it is not a missing cost — it is a job with no part in it.
-    else if (money.base > 0) totals.missingCost += 1;
-  }
+  // The money that came in within the period, the warranty's part taken first
+  // out of whatever the ticket had paid by then.
+  const flow = paid ?? { before: 0, within: money.collected };
+  if (flow.within === 0) return;
+  const warrantyBefore = Math.min(money.warranty, Math.max(0, flow.before));
+  const warrantyNow = Math.min(money.warranty, Math.max(0, flow.before + flow.within));
+  const warrantyIn = warrantyNow - warrantyBefore;
+  const repairIn = flow.within - warrantyIn;
+  // A deferred ticket paid in full is cash now (the shop, 2026-11-20).
+  if (row.paymentTerms === "cash" || money.remaining === 0) totals.collectedCash += repairIn;
+  else totals.collectedDeferred += repairIn;
+  totals.tillWarranty += warrantyIn;
+  totals.till += flow.within;
+  if (!counted) totals.paidFromEarlier += 1;
 }
 
 /* ── Who may do what ──────────────────────────────────────────────────────── */

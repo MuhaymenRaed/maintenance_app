@@ -124,6 +124,7 @@ function Desk({
         window: data.window,
         search: data.search,
         status: data.status,
+        statsStatus: data.statsStatus,
         statuses: data.statuses,
         flow: data.flow,
         terms: data.terms,

@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import * as Dialog from "@radix-ui/react-dialog";
 import { useLocale, useTranslations } from "next-intl";
 import {
   CircleAlert,
@@ -24,83 +25,68 @@ import {
   PaperStamps,
   PaperTitle,
 } from "@/components/admin/repair-print";
-import { repairMoney, type PaymentTerms } from "@/lib/data/repair-desk";
+import { addToTotals, emptyTotals, repairMoney, type DeskTotals, type PaymentTerms } from "@/lib/data/repair-desk";
 import { baghdadDay } from "@/lib/data/date-window";
 import { formatPrice } from "@/lib/format";
 import {
   agentEverSeen,
   agentStatus,
   AGENT_START_MS,
+  canHostAgent,
   listPrinters,
   lostContact,
   sendJob,
   waitForAgent,
   wakeAgent,
 } from "@/lib/print/agent-client";
-import type { PrinterInfo } from "@/lib/print/printer-match";
+import { supportsA4, supportsA5, type PrinterInfo } from "@/lib/print/printer-match";
 import type { PdfImagePage } from "@/lib/print/pdf";
 import { paginateWithTail, REPORT_PAPERS, type ReportPaper } from "@/lib/print/report-pages";
 import { connectionProblem, openPrinterSetup, printerState, resolvePrinters } from "@/lib/print/station";
 import type { StationSettings } from "@/lib/print/station-settings";
-import { stationSettings, stationSettingsStore } from "@/lib/print/station-store";
+import { stationSettings } from "@/lib/print/station-store";
+import { useOwnerDocument } from "@/lib/windows/owner-document";
 import { cn } from "@/lib/utils";
 
 /**
- * جرد الأرباح — the bench's profit report, for whatever the filters on the
- * page are showing, printed straight to the counter's printer, through the
- * print dialog on A4, or saved as a PDF.
+ * جرد الأرباح — the bench's profit report, printed on A4 or A5 by the
+ * counter's paper printer, or saved as a PDF.
  *
  * ---------------------------------------------------------------------------
  * What it is built from
  * ---------------------------------------------------------------------------
- * The rows the board already holds. The desk page reads every ticket in the
- * chosen window — the period, the technician, cash or deferred, the status,
- * the search — so "the report for what I filtered" is exactly the list on
- * screen. That is also what makes it the same report in the desktop app,
- * which draws its board from this computer's copy of the bench. The rows are
- * frozen at the press: a live refresh mid-print must not move a row between
- * pages that were already measured.
+ * A job: the tickets, the words for the period and the filters, and — for the
+ * figures panel's own report — the panel's figures, so the summary on paper is
+ * the cards on screen, money dated by the day it came in
+ * (`lib/data/desk-figures.ts`). A hand-picked list of tickets (2026-11-20, "an
+ * exact ticket or a group") carries no figures and has them worked out from
+ * its own rows, every dinar each has taken. The rows are frozen at the press:
+ * a live refresh mid-print must not move a row between pages already measured.
  *
  * ---------------------------------------------------------------------------
- * What it prints
+ * Three ways out (the shop, 2026-11-20)
  * ---------------------------------------------------------------------------
- * The shop's old program's report, column for column — the employee, the
- * amount, the profit without the warranty, the device, the fault, the date —
- * plus the warranty on each row, and the totals with the warranty total the
- * shop asked to be added:
+ * - **A4** and **A5** go through the print agent to the *paper* printer — the
+ *   one the receipts go to — never to the label printer, and never through the
+ *   browser's dialog, where the default printer on the counter PC is the label
+ *   printer. A printer whose driver does not list the paper is refused in
+ *   words before anything is sent: "if there is no A4 paper in the printer
+ *   then return an error".
+ * - **PDF** is the same A4 pages as a file — and the way out on a device that
+ *   is not the counter PC, where there is no agent to print through.
  *
- * - **مبلغ الصيانة** is what the customer is charged, the warranty included,
- *   as on every other screen here (`actual_cost`).
- * - **الربح بدون الضمان** is the repair alone less what its part cost — the
- *   warranty is its own account and never profit (`repairMoney`).
- * - ⚠️ A ticket with no cost typed shows a dash and is left out of the net
- *   profit, said in words beside the totals, rather than counted as if its
- *   part were free. The board's profit card makes the same call.
- * - Cancelled tickets are not on it: they carry no money and were not repaired.
- *
- * ---------------------------------------------------------------------------
- * ⚠️ The totals open the report, on the reader's start
- * ---------------------------------------------------------------------------
- * They were a block at the foot of the last page, pushed to the end side —
- * the LEFT of an Arabic page, the last place an Arabic reader looks, and on a
- * long report two pages from the title. The shop asked on 2026-11-17 for them
- * at the start, on the right. They are now a row of five figures under the
- * letterhead of the first page, read from the right like everything else.
+ * Ctrl+P opens the same three as a chooser (`ReportPrintDialog`).
  *
  * ---------------------------------------------------------------------------
  * ⚠️ It lays out its own pages — see `lib/print/report-pages.ts`
  * ---------------------------------------------------------------------------
- * One long table with 10 mm page margins left the paging to the browser, and
- * Chrome writes its own date, title and address into a page margin: the
- * report opened under a line of browser furniture, which is the "corrupted"
- * look in the shop's screenshot. Each page is now drawn as exactly one sheet
- * and printed with no page margin at all, so there is nowhere for that line
- * to go — and the same pages can be pictured for the print agent or a PDF.
- *
- * Pages are measured, not counted: every row's real height is read off an
- * off-screen copy of the table (a long fault takes two or three lines), and
- * `paginate` fills each page to what it holds. The columns are fixed widths
- * (`table-fixed`), so a row is the same height on its page as when measured.
+ * Each page is drawn as exactly one sheet and pictured for the agent or the
+ * PDF. Pages are measured, not counted: every row's real height is read off an
+ * off-screen copy of the table, and `paginateWithTail` fills each page to what
+ * it holds and keeps the totals whole after the last row. The columns are fixed
+ * widths (`table-fixed`), so a row is the same height on its page as when
+ * measured. A5 landscape is the same width as A4 portrait, so the pages are the
+ * same design with fewer rows each.
  */
 export type ReportContext = {
   /** Which bench — the repair desk or the programming desk. */
@@ -128,55 +114,47 @@ export type ReportSourceRow = {
   paymentTerms: PaymentTerms;
 };
 
+/** One report to print. */
+export type ReportJob = {
+  rows: readonly ReportSourceRow[];
+  context: ReportContext;
+  /**
+   * The figures to close on — the panel's own. Worked out from the rows when
+   * absent, every dinar each ticket has taken.
+   */
+  totals?: DeskTotals;
+  /** List cancelled tickets as well — when the reader asked for exactly those. */
+  includeCancelled?: boolean;
+};
+
 type ReportRow = {
   id: string;
   code: string;
   employee: string;
+  /** The repair alone — the warranty is its own column. */
   amount: number | null;
   warranty: number;
   profit: number | null;
+  /** Priced, with no purchase price typed: its part counted as zero. */
+  noCost: boolean;
+  cancelled: boolean;
   device: string;
   fault: string;
   day: string;
 };
 
-type Totals = {
-  count: number;
-  amount: number;
-  warranty: number;
-  profit: number;
-  missingCost: number;
-  outstanding: number;
-  /** «واصل بالخزنة» — every dinar collected, the warranty inside it once. See `DeskTotals.till`. */
-  till: number;
-  /** «أسعار الشراء من المخزن» — what the parts cost the shop, on the tickets that record it. */
-  cost: number;
-  /** «واصل آجل» — what has come in on deferred tickets so far. */
-  deferred: number;
-};
+type BuiltReport = { rows: ReportRow[]; totals: DeskTotals; includeCancelled: boolean };
 
-type BuiltReport = { rows: ReportRow[]; totals: Totals };
-
-/** The rows, in the order they came in, and the totals over them. */
-export function buildProfitReport(rows: readonly ReportSourceRow[], unassigned: string): BuiltReport {
-  const totals: Totals = {
-    count: 0,
-    amount: 0,
-    warranty: 0,
-    profit: 0,
-    missingCost: 0,
-    outstanding: 0,
-    till: 0,
-    cost: 0,
-    deferred: 0,
-  };
+/** The rows, in the order they came in, and the totals they close on. */
+export function buildProfitReport(job: ReportJob, unassigned: string): BuiltReport {
   const out: ReportRow[] = [];
-  const kept = rows
-    .filter((row) => row.status !== "cancelled" && row.status !== "declined")
+  const kept = job.rows
+    .filter((row) => job.includeCancelled || (row.status !== "cancelled" && row.status !== "declined"))
     .slice()
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
   for (const row of kept) {
+    const cancelled = row.status === "cancelled" || row.status === "declined";
     const money = repairMoney({
       price: row.price,
       warranty: row.warrantyPrice,
@@ -184,40 +162,39 @@ export function buildProfitReport(rows: readonly ReportSourceRow[], unassigned: 
       collected: row.collected,
       terms: row.paymentTerms,
     });
-    const priced = row.price != null;
-    const profit = priced && money.cost != null ? money.base - money.cost : null;
-    totals.count += 1;
-    totals.amount += money.price;
-    totals.warranty += money.warranty;
-    totals.outstanding += money.remaining;
-    totals.till += money.collected;
-    if (money.cost != null) totals.cost += money.cost;
-    if (row.paymentTerms === "deferred") totals.deferred += money.collected;
-    if (profit != null) totals.profit += profit;
-    else if (priced && money.base > 0) totals.missingCost += 1;
-
+    const priced = row.price != null && !cancelled;
     out.push({
       id: row.id,
       code: row.code,
       employee: row.holderName?.trim() || unassigned,
-      amount: priced ? money.price : null,
-      warranty: money.warranty,
-      profit,
+      amount: priced ? money.base : null,
+      warranty: cancelled ? 0 : money.warranty,
+      // ⚠️ A part with no price typed counts as zero (the shop, 2026-11-20),
+      // and the row says so with a mark the summary explains.
+      profit: priced ? money.base - (money.cost ?? 0) : null,
+      noCost: priced && money.cost == null && money.base > 0,
+      cancelled,
       device: row.deviceModel,
       fault: [...row.issues, ...row.customFaults].filter(Boolean).join("، "),
       day: baghdadDay(Date.parse(row.createdAt)),
     });
   }
-  return { rows: out, totals };
+
+  let totals = job.totals;
+  if (!totals) {
+    totals = emptyTotals();
+    for (const row of job.rows) addToTotals(totals, row);
+  }
+  return { rows: out, totals, includeCancelled: Boolean(job.includeCancelled) };
 }
 
 /* ── The three ways out ───────────────────────────────────────────────────── */
 
-type ReportMode = "direct" | "a4" | "pdf";
+export type ReportMode = "a4" | "a5" | "pdf";
 
 const MODES: { mode: ReportMode; Icon: LucideIcon }[] = [
-  { mode: "direct", Icon: Printer },
-  { mode: "a4", Icon: FileText },
+  { mode: "a4", Icon: Printer },
+  { mode: "a5", Icon: FileText },
   { mode: "pdf", Icon: Download },
 ];
 
@@ -226,8 +203,7 @@ type ReportTask = {
   mode: ReportMode;
   paper: ReportPaper;
   printedAt: number;
-  rows: readonly ReportSourceRow[];
-  context: ReportContext;
+  job: ReportJob;
   deliver: (pages: HTMLElement[]) => void;
   fail: (error: Error) => void;
 };
@@ -235,7 +211,7 @@ type ReportTask = {
 type ReportStatus =
   | { tone: "busy"; text: string }
   | { tone: "done"; text: string }
-  | { tone: "error"; title: string; detail: string | null; setup: boolean; others: boolean };
+  | { tone: "error"; title: string; detail: string | null; setup: boolean };
 
 /** A failure that already knows how to say itself. */
 class ReportFailure extends Error {
@@ -251,8 +227,6 @@ class ReportFailure extends Error {
 /** 300 dpi for the printer, as the receipts go; 220 for a PDF that stays a sensible size. */
 const PRINT_PX_PER_MM = 300 / 25.4;
 const PDF_PX_PER_MM = 220 / 25.4;
-/** Long enough for `window.print()` to have returned before the pages go. */
-const SETTLE_MS = 400;
 
 function deferred<T>() {
   let resolve: (value: T) => void = () => {};
@@ -274,7 +248,6 @@ function within<T>(promise: Promise<T>, ms: number, message: string): Promise<T>
   ]).finally(() => window.clearTimeout(timer));
 }
 
-const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 /** The press's moment and a job's mark — outside the component, where reading the clock is no render's business. */
 const pressedAt = () => Date.now();
 const jobMark = () => Math.random().toString(36).slice(2, 8);
@@ -293,31 +266,26 @@ function download(blob: Blob, name: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
-export function ProfitReportActions({
-  rows,
-  context,
-  className,
-  bare = false,
-}: {
-  rows: readonly ReportSourceRow[];
-  context: ReportContext;
-  className?: string;
-  /** Without its own «جرد الأرباح» label — for a place that already says it. */
-  bare?: boolean;
-}) {
+export type ProfitReport = {
+  /** Prints or saves one report. A second press while one is going does nothing. */
+  start: (mode: ReportMode, job: ReportJob) => void;
+  /** Which way out is going now, if any. */
+  busy: ReportMode | null;
+  /** What happened, and the off-screen pages — drawn once, wherever the caller likes. */
+  ui: ReactNode;
+};
+
+/**
+ * The report machinery, held once by the desk page so its buttons, the
+ * hand-picked report and the Ctrl+P chooser share one run and one message.
+ */
+export function useProfitReport(): ProfitReport {
   const t = useTranslations("Admin");
   const brand = useTranslations("Brand");
-  const settings = useSyncExternalStore(
-    stationSettingsStore.subscribe,
-    stationSettingsStore.snapshot,
-    stationSettingsStore.server,
-  );
   const [task, setTask] = useState<ReportTask | null>(null);
   const [status, setStatus] = useState<ReportStatus | null>(null);
   /** A double press lands before the first one re-renders the buttons disabled. */
   const running = useRef(false);
-  const empty = !rows.some((row) => row.status !== "cancelled" && row.status !== "declined");
-  const directPaper: ReportPaper = settings.a5.page === "a5" ? "a5" : "a4";
 
   // A finished message steps aside on its own; a failure stays until it is read.
   useEffect(() => {
@@ -336,14 +304,10 @@ export function ProfitReportActions({
     );
   };
 
-  async function printDialog() {
-    await (document.fonts?.ready ?? Promise.resolve());
-    await nextFrame();
-    window.print();
-    await sleep(SETTLE_MS);
-  }
-
   async function printDirect(pages: HTMLElement[], paper: ReportPaper, current: StationSettings) {
+    // The agent is a Windows program: anywhere else there is nothing to print
+    // through, and asking would only put a browser question on a phone.
+    if (!canHostAgent()) throw new ReportFailure(t("profitReportNeedsPc"), t("profitReportUsePdf"));
     try {
       await agentStatus();
     } catch (error) {
@@ -362,7 +326,8 @@ export function ProfitReportActions({
     } catch (error) {
       throw agentFailure(connectionProblem(error).code);
     }
-    // The receipts' printer: the one this computer saved, or Windows' obvious one.
+    // ⚠️ The PAPER printer — the receipts' — never the label printer, and
+    // never Windows' default, which on the counter PC is the label printer.
     const name = resolvePrinters(list, current).a5;
     if (!name) throw new ReportFailure(t("psReason_no_printer"), null, true);
     const printer = list.find((candidate) => candidate.name.toLowerCase() === name.toLowerCase());
@@ -371,6 +336,17 @@ export function ProfitReportActions({
     const reported = printerState(printer);
     if (current.checkStatus && reported.severity === "FATAL") {
       throw new ReportFailure(t("psReason_printer_status", { status: reported.statusText }));
+    }
+    // "If there is no A4 paper in the printer then return an error" — the
+    // driver's own list of papers is what the agent can see. A driver that
+    // lists none says nothing either way, and the job goes.
+    const fits = paper === "a4" ? supportsA4(printer) : supportsA5(printer);
+    if (fits === false) {
+      throw new ReportFailure(
+        t("profitReportNoPaper", { printer: printer.name, paper: paper.toUpperCase() }),
+        t("profitReportNoPaperHint"),
+        true,
+      );
     }
 
     // Every page is drawn before the first is sent, so a page that cannot be
@@ -465,39 +441,34 @@ export function ProfitReportActions({
     setStatus({ tone: "done", text: t("profitReportSaved", { file: name }) });
   }
 
-  async function start(mode: ReportMode) {
-    if (running.current || empty) return;
-    running.current = true;
+  async function run(mode: ReportMode, job: ReportJob) {
     const current = stationSettings();
-    const paper: ReportPaper = mode === "direct" && current.a5.page === "a5" ? "a5" : "a4";
+    const paper: ReportPaper = mode === "a5" ? "a5" : "a4";
     const printedAt = pressedAt();
     const drawn = deferred<HTMLElement[]>();
-    setStatus(mode === "a4" ? null : { tone: "busy", text: t("profitReportDrawing") });
+    setStatus({ tone: "busy", text: t("profitReportDrawing") });
     setTask({
       id: `${mode}-${printedAt}`,
       mode,
       paper,
       printedAt,
-      rows,
-      context,
+      job,
       deliver: drawn.resolve,
       fail: drawn.reject,
     });
     try {
       const pages = await within(drawn.promise, 30_000, "drawing the report timed out");
-      if (mode === "a4") await printDialog();
-      else if (mode === "pdf") await savePdf(pages, printedAt, context);
+      if (mode === "pdf") await savePdf(pages, printedAt, job.context);
       else await printDirect(pages, paper, current);
     } catch (error) {
       setStatus(
         error instanceof ReportFailure
-          ? { tone: "error", title: error.title, detail: error.detail, setup: error.setup, others: mode === "direct" }
+          ? { tone: "error", title: error.title, detail: error.detail, setup: error.setup }
           : {
               tone: "error",
               title: t("profitReportFailed"),
               detail: error instanceof Error ? error.message : String(error),
               setup: false,
-              others: mode !== "a4",
             },
       );
     } finally {
@@ -506,63 +477,24 @@ export function ProfitReportActions({
     }
   }
 
-  const label: Record<ReportMode, string> = {
-    direct: t("profitReportDirect"),
-    a4: t("profitReportA4"),
-    pdf: t("profitReportPdf"),
-  };
-  const hint: Record<ReportMode, string> = {
-    direct: t("profitReportDirectHint", { paper: directPaper.toUpperCase() }),
-    a4: t("profitReportA4Hint"),
-    pdf: t("profitReportPdfHint"),
-  };
+  function start(mode: ReportMode, job: ReportJob) {
+    if (running.current) return;
+    if (!job.rows.length) {
+      setStatus({ tone: "error", title: t("profitReportEmpty"), detail: null, setup: false });
+      return;
+    }
+    running.current = true;
+    void run(mode, job);
+  }
 
-  return (
+  const ui = (
     <>
-      <div className={cn("flex flex-wrap items-center gap-x-2.5 gap-y-2", className)}>
-        {!bare && (
-          <span className="inline-flex items-center gap-1.5 text-[0.8rem] font-extrabold text-ink">
-            <ClipboardList className="size-4 text-brand" aria-hidden />
-            {t("profitReport")}
-          </span>
-        )}
-        <div role="group" aria-label={t("profitReport")} className="flex flex-wrap items-center gap-1.5">
-          {MODES.map(({ mode, Icon }) => {
-            const mine = task?.mode === mode;
-            return (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => void start(mode)}
-                disabled={task !== null || empty}
-                aria-busy={mine}
-                title={empty ? t("profitReportEmpty") : hint[mode]}
-                className={cn(
-                  "press inline-flex items-center gap-1.5 rounded-control border px-3 py-2 text-[0.78rem] font-extrabold transition-colors disabled:cursor-not-allowed disabled:opacity-50",
-                  mode === "direct"
-                    ? "border-brand bg-brand text-white hover:bg-brand/90"
-                    : "border-brand/40 bg-brand/6 text-brand hover:bg-brand hover:text-white",
-                )}
-              >
-                {mine ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Icon className="size-4" aria-hidden />}
-                {label[mode]}
-                {mode === "direct" && (
-                  <span className="rounded-full bg-white/20 px-1.5 py-px text-[0.66rem] font-extrabold" aria-hidden>
-                    {directPaper.toUpperCase()}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
       {status && (
         <div
           role="status"
           aria-live="polite"
           className={cn(
-            "flex basis-full items-start gap-2 rounded-control px-3 py-2 text-[0.78rem] font-bold",
+            "flex items-start gap-2 rounded-control px-3 py-2 text-[0.78rem] font-bold",
             status.tone === "busy" && "bg-subtle text-muted",
             status.tone === "done" && "bg-success/10 text-success",
             status.tone === "error" && "bg-brand/8 text-brand",
@@ -577,12 +509,7 @@ export function ProfitReportActions({
           )}
           <div className="min-w-0 flex-1">
             <p>{status.tone === "error" ? status.title : status.text}</p>
-            {status.tone === "error" && status.detail && (
-              <p className="mt-0.5 font-semibold text-ink">{status.detail}</p>
-            )}
-            {status.tone === "error" && status.others && (
-              <p className="mt-0.5 font-semibold text-muted">{t("profitReportOtherWays")}</p>
-            )}
+            {status.tone === "error" && status.detail && <p className="mt-0.5 font-semibold text-ink">{status.detail}</p>}
           </div>
           {status.tone === "error" && status.setup && (
             <button
@@ -606,9 +533,141 @@ export function ProfitReportActions({
           )}
         </div>
       )}
-
       {task && <ReportStage key={task.id} task={task} />}
     </>
+  );
+
+  return { start, busy: task?.mode ?? null, ui };
+}
+
+/** What each way out is called, and what it does — for the buttons and the chooser. */
+function useModeWords() {
+  const t = useTranslations("Admin");
+  return {
+    label: { a4: t("profitReportA4"), a5: t("profitReportA5"), pdf: t("profitReportPdf") } satisfies Record<ReportMode, string>,
+    hint: {
+      a4: t("profitReportA4Hint"),
+      a5: t("profitReportA5Hint"),
+      pdf: t("profitReportPdfHint"),
+    } satisfies Record<ReportMode, string>,
+  };
+}
+
+/** The three ways out, as a row of buttons. */
+export function ReportButtons({
+  report,
+  job,
+  className,
+}: {
+  report: ProfitReport;
+  job: ReportJob;
+  className?: string;
+}) {
+  const t = useTranslations("Admin");
+  const words = useModeWords();
+  const empty = job.rows.length === 0;
+  return (
+    <div role="group" aria-label={t("profitReport")} className={cn("flex flex-wrap items-center gap-1.5", className)}>
+      {MODES.map(({ mode, Icon }) => {
+        const mine = report.busy === mode;
+        return (
+          <button
+            key={mode}
+            type="button"
+            onClick={() => report.start(mode, job)}
+            disabled={report.busy !== null || empty}
+            aria-busy={mine}
+            title={empty ? t("profitReportEmpty") : words.hint[mode]}
+            className={cn(
+              "press inline-flex items-center gap-1.5 rounded-control border px-3 py-2 text-[0.78rem] font-extrabold transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+              mode === "a4"
+                ? "border-brand bg-brand text-white hover:bg-brand/90"
+                : "border-brand/40 bg-brand/6 text-brand hover:bg-brand hover:text-white",
+            )}
+          >
+            {mine ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Icon className="size-4" aria-hidden />}
+            {words.label[mode]}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * The chooser Ctrl+P opens on the repair desk (the shop, 2026-11-20): print
+ * the report on A4 or A5, or download it as a PDF. In the desk app the page
+ * asks for the desk's password before this opens at all.
+ */
+export function ReportPrintDialog({
+  open,
+  onClose,
+  report,
+  job,
+}: {
+  open: boolean;
+  onClose: () => void;
+  report: ProfitReport;
+  job: ReportJob;
+}) {
+  const t = useTranslations("Admin");
+  const words = useModeWords();
+  const owner = useOwnerDocument();
+  const empty = job.rows.length === 0;
+  return (
+    <Dialog.Root open={open} onOpenChange={(next) => !next && onClose()}>
+      <Dialog.Portal container={owner?.body}>
+        <Dialog.Overlay className="fixed inset-0 z-85 bg-scrim/55 data-[state=open]:[animation:dialog-overlay-in_120ms_ease-out]" />
+        <Dialog.Content
+          aria-describedby={undefined}
+          className="fixed start-1/2 top-1/2 z-88 w-[min(460px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-panel border border-line bg-surface p-5 shadow-lift focus:outline-none data-[state=open]:[animation:dialog-content-in_160ms_ease-out] rtl:translate-x-1/2"
+          style={{ ["--dialog-content-x" as string]: "-50%" }}
+        >
+          <div className="flex items-start gap-3">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-card bg-brand/10 text-brand" aria-hidden>
+              <ClipboardList className="size-5" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <Dialog.Title className="text-[1rem] font-black text-ink">{t("printChooserTitle")}</Dialog.Title>
+              <p className="mt-0.5 text-[0.78rem] font-medium leading-relaxed text-muted">
+                {empty
+                  ? t("profitReportEmpty")
+                  : t("printChooserBody", { count: job.rows.length, period: job.context.period })}
+              </p>
+            </div>
+            <Dialog.Close
+              aria-label={t("close")}
+              className="press -m-1 rounded-full p-1.5 text-muted hover:bg-subtle hover:text-ink"
+            >
+              <X className="size-4" aria-hidden />
+            </Dialog.Close>
+          </div>
+          <ul className="mt-4 grid gap-2">
+            {MODES.map(({ mode, Icon }) => (
+              <li key={mode}>
+                <button
+                  type="button"
+                  disabled={empty || report.busy !== null}
+                  onClick={() => {
+                    onClose();
+                    report.start(mode, job);
+                  }}
+                  className="press flex w-full items-center gap-3 rounded-card border border-line bg-surface px-3.5 py-3 text-start transition-colors hover:border-brand hover:bg-brand/5 focus-visible:border-brand disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <span className="flex size-9 shrink-0 items-center justify-center rounded-control bg-brand/10 text-brand" aria-hidden>
+                    <Icon className="size-4.5" />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-[0.86rem] font-black text-ink">{words.label[mode]}</span>
+                    <span className="block text-[0.72rem] font-medium text-muted">{words.hint[mode]}</span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 
@@ -620,16 +679,6 @@ export function ProfitReportActions({
  * to measure and nothing for the rasteriser to copy.
  */
 const OFFSCREEN: CSSProperties = { position: "fixed", top: 0, left: "-100000px", pointerEvents: "none" };
-
-/**
- * The dialog's page rule. ⚠️ `margin: 0` is what keeps the browser's own date,
- * title and address off the paper: Chrome prints its header and footer INSIDE
- * the page margin, and with none there is nowhere for them to go. The sheet's
- * own padding is the margin instead.
- */
-const DIALOG_CSS = `@page { size: A4 portrait; margin: 0; }
-article[data-report-page] { break-after: page; }
-article[data-report-page]:last-of-type { break-after: auto; }`;
 
 /** Kept back from what a page measures as holding, against rounding between measure and print. */
 const SAFETY_PX = 3;
@@ -649,7 +698,7 @@ function ReportStage({ task }: { task: ReportTask }) {
   const [layout, setLayout] = useState<number[][] | null>(null);
   const measured = useRef<HTMLDivElement>(null);
   const drawn = useRef<HTMLDivElement>(null);
-  const report = buildProfitReport(task.rows, t("unassigned"));
+  const report = buildProfitReport(task.job, t("unassigned"));
   const paper = REPORT_PAPERS[task.paper];
 
   useEffect(() => {
@@ -686,7 +735,7 @@ function ReportStage({ task }: { task: ReportTask }) {
     else task.fail(new Error("the report's pages were not drawn"));
   }, [layout, task]);
 
-  const common = { paper, report, context: task.context, printedAt: task.printedAt };
+  const common = { paper, report, context: task.job.context, printedAt: task.printedAt };
 
   if (!layout) {
     return createPortal(
@@ -694,37 +743,28 @@ function ReportStage({ task }: { task: ReportTask }) {
         <ReportPage {...common} measure="first" first lines={[]} startIndex={0} pageNo={1} pageCount={1} />
         <ReportPage {...common} measure="next" first={false} lines={report.rows} startIndex={0} pageNo={1} pageCount={1} />
         <div data-measure-tail style={{ width: `${paper.sheetWidthMm - 20}mm` }}>
-          <ReportSummary totals={report.totals} />
+          <ReportSummary report={report} />
         </div>
       </div>,
       document.body,
     );
   }
 
-  const pages = layout.map((indices, index) => (
-    <ReportPage
-      key={index}
-      {...common}
-      first={index === 0}
-      last={index === layout.length - 1}
-      lines={indices.map((row) => report.rows[row])}
-      startIndex={indices[0] ?? 0}
-      pageNo={index + 1}
-      pageCount={layout.length}
-    />
-  ));
-
   return createPortal(
-    task.mode === "a4" ? (
-      <div ref={drawn} className="print-sheet" dir={dir} lang={locale}>
-        <style>{DIALOG_CSS}</style>
-        {pages}
-      </div>
-    ) : (
-      <div ref={drawn} aria-hidden inert dir={dir} lang={locale} style={OFFSCREEN}>
-        {pages}
-      </div>
-    ),
+    <div ref={drawn} aria-hidden inert dir={dir} lang={locale} style={OFFSCREEN}>
+      {layout.map((indices, index) => (
+        <ReportPage
+          key={index}
+          {...common}
+          first={index === 0}
+          last={index === layout.length - 1}
+          lines={indices.map((row) => report.rows[row])}
+          startIndex={indices[0] ?? 0}
+          pageNo={index + 1}
+          pageCount={layout.length}
+        />
+      ))}
+    </div>,
     document.body,
   );
 }
@@ -745,10 +785,10 @@ function clockOf(at: number) {
 /**
  * One sheet of the report.
  *
- * The first carries the letterhead the receipt and the warranty carry, the
- * totals and the filters; every page after it a slim running head, so a page
- * picked up off the printer on its own still says what it is. Every page ends
- * on its number.
+ * The first carries the letterhead the receipt and the warranty carry and the
+ * filters; every page after it a slim running head, so a page picked up off
+ * the printer on its own still says what it is. Every page ends on its number;
+ * the last one closes on the totals.
  */
 function ReportPage({
   paper,
@@ -835,7 +875,7 @@ function ReportPage({
 
       <div data-slot className="mt-[3mm] min-h-0 flex-1 overflow-hidden">
         {(lines.length > 0 || measure) && <ReportTable lines={lines} startIndex={startIndex} />}
-        {last && !measure && <ReportSummary totals={report.totals} />}
+        {last && !measure && <ReportSummary report={report} />}
       </div>
 
       <footer className="mt-[2.4mm] flex shrink-0 items-center justify-between gap-[4mm] border-0 border-t-[0.25mm] border-solid border-[#f2c4ca] pt-[1.8mm] text-[7.4pt] font-semibold leading-[1.3]">
@@ -851,28 +891,34 @@ function ReportPage({
 }
 
 /**
- * The six figures that close the report, after the last row (the shop,
- * 2026-11-18), in the shop's order from the reader's start: what is in the
- * till, what the parts cost, the profit without the warranty — the one figure
- * in red, because it is the reason the report is printed — the warranty, what
- * came in on deferred tickets, and how many devices. Two rows of three, so a
- * seven-digit figure keeps its size. They are measured once and given a page
- * of their own when the last page is full (`paginateWithTail`).
+ * The figures that close the report, after the last row — the panel's cards,
+ * on paper, in the shop's order (2026-11-20): the till and its two parts,
+ * then what the tickets came to, then the profit, the debts and the count.
+ * Three rows of three, so a seven-digit figure keeps its size. The profit is
+ * the one figure in red, because it is the reason the report is printed.
  *
  * ⚠️ The figure sits in a span inside the cell, never on it: `data-numeric`
  * pins `direction: ltr`, so on the cell it would push the number to the LEFT
  * of an Arabic card while its label sits on the right.
  */
-function ReportSummary({ totals }: { totals: Totals }) {
+function ReportSummary({ report }: { report: BuiltReport }) {
   const t = useTranslations("Admin");
-  // The shop's order, 2026-11-18 — read from the reader's start, three a row.
-  const cards = [
-    { key: "till", label: t("profitReportTillFull"), value: money(totals.till) },
-    { key: "cost", label: t("profitReportTotalCost"), value: money(totals.cost) },
-    { key: "profit", label: t("profitReportTotalProfit"), value: money(totals.profit), strong: true },
-    { key: "warranty", label: t("profitReportTotalWarranty"), value: money(totals.warranty) },
-    { key: "deferred", label: t("profitReportDeferred"), value: money(totals.deferred) },
-    { key: "count", label: t("profitReportTotalCount"), value: String(totals.count) },
+  const { totals } = report;
+  const cards: { key: string; label: string; value: string; sub?: string; strong?: boolean }[] = [
+    { key: "till", label: t("financeTill"), value: money(totals.till), sub: t("financeTillFormula") },
+    { key: "cash", label: t("financeCollectedCash"), value: money(totals.collectedCash) },
+    { key: "deferred", label: t("financeCollectedDeferred"), value: money(totals.collectedDeferred) },
+    { key: "maintenance", label: t("financePriceTotal"), value: money(totals.maintenance) },
+    { key: "warranty", label: t("warrantyTitle"), value: money(totals.warranty) },
+    { key: "cost", label: t("financeCostTotal"), value: money(totals.cost) },
+    { key: "profit", label: t("financeProfitTotal"), value: money(totals.profit), strong: true },
+    { key: "debts", label: t("financeOutstanding"), value: money(totals.outstanding) },
+    {
+      key: "count",
+      label: t("profitReportTotalCount"),
+      value: String(totals.tickets),
+      sub: t("deskTicketsSub", { completed: totals.completed, cancelled: totals.cancelled, open: totals.open }),
+    },
   ];
   return (
     <section className="shrink-0 pt-[3.4mm]">
@@ -881,15 +927,20 @@ function ReportSummary({ totals }: { totals: Totals }) {
           <div
             key={card.key}
             className={cn(
-              "flex flex-col justify-between gap-[1.6mm] rounded-[2mm] border-[0.25mm] border-solid px-[2.8mm] py-[2.2mm]",
+              "flex flex-col justify-between gap-[1.2mm] rounded-[2mm] border-[0.25mm] border-solid px-[2.8mm] py-[2mm]",
               card.strong ? "border-[#e11d2e] bg-[#e11d2e]" : "border-[#f2c4ca] bg-[#fdeff1]",
             )}
           >
             <dt className={cn("text-[7.4pt] font-bold leading-[1.3]", card.strong ? "text-white" : "text-[#a90f1d]")}>
               {card.label}
             </dt>
-            <dd className={cn("text-[13.5pt] font-bold leading-[1.1]", card.strong ? "text-white" : "text-[#000]")}>
+            <dd className={cn("text-[13pt] font-bold leading-[1.1]", card.strong ? "text-white" : "text-[#000]")}>
               <span data-numeric>{card.value}</span>
+              {card.sub && (
+                <span className={cn("mt-[0.8mm] block text-[6.6pt] font-semibold leading-[1.25]", card.strong ? "text-white" : "text-[#000]")}>
+                  {card.sub}
+                </span>
+              )}
             </dd>
           </div>
         ))}
@@ -901,10 +952,18 @@ function ReportSummary({ totals }: { totals: Totals }) {
             {t("profitReportMissingCost", { count: totals.missingCost, n: String(totals.missingCost) })}
           </li>
         )}
-        <li className="flex items-center gap-[1.4mm]">
-          <span className="size-[1.4mm] shrink-0 rotate-45 bg-[#e11d2e]" aria-hidden />
-          {t("profitReportCancelledNote")}
-        </li>
+        {totals.paidFromEarlier > 0 && (
+          <li className="flex items-center gap-[1.4mm]">
+            <span className="size-[1.4mm] shrink-0 rotate-45 bg-[#e11d2e]" aria-hidden />
+            {t("profitReportPaidEarlier", { count: totals.paidFromEarlier, n: String(totals.paidFromEarlier) })}
+          </li>
+        )}
+        {!report.includeCancelled && (
+          <li className="flex items-center gap-[1.4mm]">
+            <span className="size-[1.4mm] shrink-0 rotate-45 bg-[#e11d2e]" aria-hidden />
+            {t("profitReportCancelledNote")}
+          </li>
+        )}
       </ul>
     </section>
   );
@@ -969,7 +1028,7 @@ function ReportTable({ lines, startIndex }: { lines: readonly ReportRow[]; start
               </td>
               <td className={cn(CELL, "text-start font-bold")}>{line.employee}</td>
               <td className={cn(CELL, "text-center font-bold")} data-numeric>
-                {line.amount == null ? "—" : money(line.amount)}
+                {line.cancelled ? t("profitReportCancelledShort") : line.amount == null ? "—" : money(line.amount)}
               </td>
               <td className={cn(CELL, "text-center")} data-numeric>
                 {line.warranty > 0 ? money(line.warranty) : "—"}
@@ -978,7 +1037,7 @@ function ReportTable({ lines, startIndex }: { lines: readonly ReportRow[]; start
                 className={cn(CELL, "text-center font-bold", line.profit != null && line.profit < 0 && "text-[#e11d2e]")}
                 data-numeric
               >
-                {line.profit == null ? "—" : money(line.profit)}
+                {line.profit == null ? "—" : `${money(line.profit)}${line.noCost ? " *" : ""}`}
               </td>
               <td className={cn(CELL, "text-center font-bold")} dir="auto">
                 {line.device}

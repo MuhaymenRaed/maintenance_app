@@ -85,6 +85,21 @@ export function supportsA5(printer: PrinterInfo): boolean | null {
   });
 }
 
+/**
+ * Whether the driver offers A4 — by name or by its 210 x 297 mm shape. Null
+ * when the driver listed no sizes, which says nothing either way.
+ */
+export function supportsA4(printer: PrinterInfo): boolean | null {
+  const sizes = printer.sizes ?? [];
+  if (sizes.length === 0) return null;
+  return sizes.some((size) => {
+    if (size.name && /\bA4\b/i.test(size.name)) return true;
+    if (!size.mm) return false;
+    const [short, long] = [size.mm.width, size.mm.height].sort((a, b) => a - b);
+    return Math.abs(short - 210) <= 1.5 && Math.abs(long - 297) <= 1.5;
+  });
+}
+
 export function scorePrinter(role: PrinterRole, printer: PrinterInfo): number {
   const words = text(printer);
   if (VIRTUAL.test(words)) return -Infinity;

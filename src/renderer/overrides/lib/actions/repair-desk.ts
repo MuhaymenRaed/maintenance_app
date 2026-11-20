@@ -7,6 +7,7 @@ import type {
   FaultsResult,
   FinancePatch,
 } from "../../../../shared/contract";
+import type { DeskRow } from "../../../../shared/desk-types";
 
 /**
  * `lib/actions/repair-desk.ts` — handing a ticket over, its money, and opening
@@ -47,4 +48,20 @@ export function editRepairIssue(input: FaultEditInput): Promise<DeskResult> {
 /** A ticket's faults after it was opened — see `updateRepairFaults` in `src/main/desk/actions.ts`. */
 export function updateRepairFaults(ticketId: string, input: FaultsInput): Promise<FaultsResult> {
   return window.desk.updateRepairFaults(ticketId, input);
+}
+
+/**
+ * `searchDeskTickets` — the figures panel's hand-picked report finds tickets
+ * from any day (2026-11-20). Here every ticket is on this computer, so it is
+ * the board itself, read for all time with the words as its search.
+ */
+export async function searchDeskTickets(
+  _service: string,
+  query: string,
+  locale: string,
+): Promise<{ ok: true; rows: DeskRow[] } | { ok: false; error: string }> {
+  void _service;
+  const page = await window.desk.page({ locale: locale === "en" ? "en" : "ar", q: query, when: "all" });
+  if (!page.ready) return { ok: false, error: "forbidden" };
+  return { ok: true, rows: page.board.rows.slice(0, 40) };
 }

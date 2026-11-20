@@ -17,6 +17,7 @@ export type {
   DeskPerson,
   DeskRow,
   DeskScope,
+  DeskStats,
   DeskTechRow,
   DeskView,
   RepairCard,

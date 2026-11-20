@@ -102,22 +102,32 @@ export function useGuardedAction(): {
  * `cancelHref` is the way out the dialog's cancel button gives — "if you don't
  * know the password you can quit and do the normal thing" (the shop) — as a
  * link, because leaving a panel is a change of page rather than closing a box.
+ * `onCancel` is the same way out for a panel the page switches by itself,
+ * with no navigation — the desk's figures (2026-11-20).
  */
 export function LockedPanel({
   reason,
   children,
   cancelHref,
+  onCancel,
 }: {
   reason: GateReason;
   children: ReactNode;
   cancelHref?: string;
+  onCancel?: () => void;
 }) {
   const gate = useDeskGate();
   const [open, setOpen] = useState(false);
   if (!gate.required || open) return <>{children}</>;
   return (
     <section className="mx-auto max-w-md rounded-panel border border-line bg-surface p-6 shadow-card">
-      <PasswordForm reason={reason} verify={gate.verify} onUnlocked={() => setOpen(true)} cancelHref={cancelHref} />
+      <PasswordForm
+        reason={reason}
+        verify={gate.verify}
+        onUnlocked={() => setOpen(true)}
+        onCancel={onCancel}
+        cancelHref={cancelHref}
+      />
     </section>
   );
 }

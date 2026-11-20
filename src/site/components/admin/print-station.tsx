@@ -17,7 +17,6 @@ import {
 import { LabelSheet, ReceiptSheet, RepairPrintRun, WarrantySheet } from "@/components/admin/repair-print";
 import { PrinterSetupDialog } from "@/components/admin/printer-setup";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { useAgentPresence } from "@/lib/print/agent-presence";
 import { detachedStore } from "@/lib/windows/detached";
 import { liveDocument, OwnerDocumentProvider } from "@/lib/windows/owner-document";
 import { summarise } from "@/lib/print/job-status";
@@ -50,13 +49,6 @@ import { cn } from "@/lib/utils";
  * off-screen, and the papers it draws read the dashboard's own fonts.
  */
 export function PrintStationHost() {
-  /*
-   * The dashboard looks for the print agent itself, and starts it if it is
-   * not there — which is what replaced a scheduled task spawning PowerShell
-   * every three minutes on the counter PC. See `lib/print/agent-presence.ts`.
-   */
-  useAgentPresence();
-
   const { run, raster, dialog, setup, origin } = useSyncExternalStore(
     printStation.subscribe,
     printStation.snapshot,
