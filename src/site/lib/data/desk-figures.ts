@@ -249,3 +249,70 @@ export function owesMoney(row: Omit<FigureRow, "id" | "createdAt" | "holderId" |
     }).remaining > 0
   );
 }
+
+/* ── From a card to the tickets behind it ─────────────────────────────── */
+
+/**
+ * The tickets panel's "behind this card" filter (`?mf=`, the shop,
+ * 2026-11-20: "when the admin clicks a card, take him to the tickets with the
+ * filters that show the tickets that led to that figure"). One per card that
+ * is not simply "every ticket in the period":
+ *
+ * - `opened` — every ticket opened in the period, cancelled ones too: التذاكر.
+ * - `active` — opened in the period and not cancelled: مبلغ الصيانة, الربح.
+ * - `warranty` — of those, the ones with a warranty: الضمان.
+ * - `cost` — of those, the ones with a purchase price typed: أسعار الشراء.
+ * - `cash` / `deferred` — money that came in within the period and counted in
+ *   «واصل نقد» or «واصل آجل», whichever day the ticket was opened.
+ * - `till` — any money that came in within the period: «واصل بالخزنة».
+ * - `owing` — opened in the period, deferred, still owing: الديون.
+ */
+export const MONEY_FILTERS = ["opened", "active", "warranty", "cost", "cash", "deferred", "till", "owing"] as const;
+export type MoneyFilter = (typeof MONEY_FILTERS)[number];
+
+export function isMoneyFilter(value: unknown): value is MoneyFilter {
+  return typeof value === "string" && (MONEY_FILTERS as readonly string[]).includes(value);
+}
+
+/**
+ * Whether a ticket is behind one card. `paid` is `moneyAcross`'s answer for
+ * the period; `opened` says the ticket was opened in it (an earlier ticket on
+ * the list only for its money is not).
+ */
+export function matchesMoneyFilter(
+  row: Omit<FigureRow, "id" | "createdAt" | "holderId" | "holderName">,
+  filter: MoneyFilter,
+  paid: { before: number; within: number },
+  opened: boolean,
+): boolean {
+  if (filter === "opened") return opened;
+  if (row.status === "cancelled" || row.status === "declined") return false;
+  const money = repairMoney({
+    price: row.price,
+    warranty: row.warrantyPrice,
+    cost: row.costPrice,
+    collected: row.collected,
+    terms: row.paymentTerms,
+  });
+  // The same split `addToTotals` makes: the warranty paid first.
+  const warrantyBefore = Math.min(money.warranty, Math.max(0, paid.before));
+  const warrantyNow = Math.min(money.warranty, Math.max(0, paid.before + paid.within));
+  const repairIn = paid.within - (warrantyNow - warrantyBefore);
+  const cashLike = row.paymentTerms === "cash" || money.remaining === 0;
+  switch (filter) {
+    case "active":
+      return opened;
+    case "warranty":
+      return opened && money.warranty > 0;
+    case "cost":
+      return opened && money.cost != null;
+    case "owing":
+      return opened && row.paymentTerms === "deferred" && money.remaining > 0;
+    case "till":
+      return paid.within !== 0;
+    case "cash":
+      return repairIn !== 0 && cashLike;
+    case "deferred":
+      return repairIn !== 0 && !cashLike;
+  }
+}

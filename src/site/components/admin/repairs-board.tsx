@@ -85,6 +85,7 @@ import type { RepairStatus } from "@/lib/data/orders";
 import { cn } from "@/lib/utils";
 import { formatDayTime } from "@/lib/data/datetime";
 import { liveDocument, OwnerDocumentProvider } from "@/lib/windows/owner-document";
+import { DateField, formatFieldValue } from "@/components/ui/date-field";
 
 /** Somebody a ticket may be handed to. */
 export type DeskHolder = { id: string; name: string; rank: DeskRank };
@@ -1545,7 +1546,7 @@ function RepairDialog({
                     />
                   </Field>
                   <Field label={t("warrantyFrom")}>
-                    <input
+                    <DateField
                       type="date"
                       value={warrantyStart}
                       onChange={(event) => setWarrantyStart(event.target.value)}
@@ -1553,8 +1554,8 @@ function RepairDialog({
                         warrantyStart !== (repair.warrantyStart ?? "") &&
                         askEdit(
                           t("warrantyFrom"),
-                          repair.warrantyStart || t("editEmpty"),
-                          warrantyStart || t("editEmpty"),
+                          repair.warrantyStart ? formatFieldValue("date", repair.warrantyStart) : t("editEmpty"),
+                          warrantyStart ? formatFieldValue("date", warrantyStart) : t("editEmpty"),
                           () =>
                             onApply({ warrantyStart: warrantyStart || null }, () =>
                               updateRepair(repair.id, { warrantyStart: warrantyStart || null }),
@@ -1563,7 +1564,6 @@ function RepairDialog({
                         )
                       }
                       disabled={!full}
-                      dir="ltr"
                       className={input}
                     />
                   </Field>

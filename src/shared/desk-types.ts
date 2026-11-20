@@ -25,7 +25,7 @@ import type {
   RepairService,
 } from "../site/lib/data/repair-desk.ts";
 import type { QueueWindow } from "../site/lib/data/queue-window.ts";
-import type { StatsStatus } from "../site/lib/data/desk-figures.ts";
+import type { MoneyFilter, StatsStatus } from "../site/lib/data/desk-figures.ts";
 import type { StockModel } from "../site/lib/data/device-catalogue.ts";
 import type { AccessGrant } from "../site/lib/permissions.ts";
 
@@ -164,6 +164,8 @@ export type DeskPageParams = {
   tech?: string;
   /** The figures' own status filter. */
   sstatus?: string;
+  /** "The tickets behind this card", pressed from a figures card. */
+  mf?: string;
 };
 
 /** Everything the desk page draws, computed in one place, as the server did. */
@@ -184,6 +186,7 @@ export type DeskPageData =
       search: string;
       status: string | null;
       statsStatus: StatsStatus;
+      moneyFilter: MoneyFilter | null;
       statuses: RepairStatus[];
       flow: RepairStatus[];
       terms: PaymentTerms | null;

@@ -20,9 +20,13 @@ import { recentFaultsFrom } from "../../site/lib/data/repair-faults.ts";
 import { MAKE_CODES } from "../../site/lib/data/device-name.ts";
 import {
   computeFigures,
+  isMoneyFilter,
+  matchesMoneyFilter,
+  matchesStatsStatus,
   moneyAcross,
   owesMoney,
   STATS_GROUPS,
+  type MoneyFilter,
   type PaymentBook,
   type PaymentEntry,
   type StatsStatus,
@@ -227,12 +231,15 @@ export function deskPage(params: DeskPageParams, service: RepairService): DeskPa
   const search = cleanSearch(params.q);
   const flow = liveFlow(REPAIR_FLOW, refs.steps()) as RepairStatus[];
   const statuses: RepairStatus[] = [...flow, "cancelled"];
-  const status = statuses.includes(params.status as RepairStatus) ? params.status! : null;
+  // A step, or «قيد العمل» as a group — what a figures card carries over.
+  const status =
+    statuses.includes(params.status as RepairStatus) || params.status === "progress" ? params.status! : null;
   const statsStatus: StatsStatus =
     params.sstatus &&
     ((STATS_GROUPS as readonly string[]).includes(params.sstatus) || statuses.includes(params.sstatus as RepairStatus))
       ? params.sstatus
       : "all";
+  const moneyFilter: MoneyFilter | null = hasStats && isMoneyFilter(params.mf) ? params.mf : null;
   const terms: PaymentTerms | null =
     authority.seesMoney && (params.terms === "cash" || params.terms === "deferred") ? params.terms : null;
   const asPerson = params.tech;
@@ -252,6 +259,7 @@ export function deskPage(params: DeskPageParams, service: RepairService): DeskPa
     window,
     statsWindow,
     statsStatus,
+    moneyFilter,
     search,
     status,
     terms,
@@ -276,6 +284,7 @@ export function deskPage(params: DeskPageParams, service: RepairService): DeskPa
     search,
     status,
     statsStatus,
+    moneyFilter,
     statuses,
     flow,
     terms,
@@ -341,6 +350,7 @@ function buildBoard(
     window: ReturnType<typeof resolveQueueWindow>;
     statsWindow: ReturnType<typeof resolveQueueWindow> | null;
     statsStatus: StatsStatus;
+    moneyFilter: MoneyFilter | null;
     search: string;
     status: string | null;
     terms: PaymentTerms | null;
@@ -348,7 +358,7 @@ function buildBoard(
     view: DeskView;
   },
 ): DeskBoard {
-  const { locale, scope, viewerId, window, statsWindow, statsStatus, search, status, terms, holderId, view } = options;
+  const { locale, scope, viewerId, window, statsWindow, statsStatus, moneyFilter, search, status, terms, holderId, view } = options;
   const needle = search.toLocaleLowerCase();
   const isTech = scope.authority.rank === "technician";
   const figures = scope.authority.seesMoney && !isTech ? statsWindow : null;
@@ -420,10 +430,18 @@ function buildBoard(
     for (const row of earlier) listed.push({ ...row, paidWithin: moneyAcross(row, book, figures, true).within });
   }
 
-  const counts: Record<string, number> = {};
-  for (const row of listed) counts[row.status] = (counts[row.status] ?? 0) + 1;
+  // Pressed from a card: only the tickets behind its figure — the site's rule.
+  const behind =
+    moneyFilter && figures
+      ? listed.filter((row) =>
+          matchesMoneyFilter(row, moneyFilter, moneyAcross(row, book, figures, true), row.paidWithin == null),
+        )
+      : listed;
 
-  const inScope = listed.filter(
+  const counts: Record<string, number> = {};
+  for (const row of behind) counts[row.status] = (counts[row.status] ?? 0) + 1;
+
+  const inScope = behind.filter(
     (row) =>
       (!terms || row.paymentTerms === terms) &&
       (!holderId || (holderId === "none" ? !row.holderId : row.holderId === holderId)),
@@ -456,7 +474,7 @@ function buildBoard(
   }
 
   return {
-    rows: status ? inScope.filter((row) => row.status === status) : inScope,
+    rows: status ? inScope.filter((row) => matchesStatsStatus(row.status, status)) : inScope,
     counts,
     totals,
     stats,

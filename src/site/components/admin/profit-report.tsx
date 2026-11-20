@@ -892,8 +892,7 @@ function ReportPage({
 
 /**
  * The figures that close the report, after the last row — the panel's cards,
- * on paper, in the shop's order (2026-11-20): the till and its two parts,
- * then what the tickets came to, then the profit, the debts and the count.
+ * on paper, in the panel's own order (the shop, 2026-11-20).
  * Three rows of three, so a seven-digit figure keeps its size. The profit is
  * the one figure in red, because it is the reason the report is printed.
  *
@@ -904,21 +903,22 @@ function ReportPage({
 function ReportSummary({ report }: { report: BuiltReport }) {
   const t = useTranslations("Admin");
   const { totals } = report;
+  // The panel's order (the shop, 2026-11-20), three a row.
   const cards: { key: string; label: string; value: string; sub?: string; strong?: boolean }[] = [
-    { key: "till", label: t("financeTill"), value: money(totals.till), sub: t("financeTillFormula") },
-    { key: "cash", label: t("financeCollectedCash"), value: money(totals.collectedCash) },
-    { key: "deferred", label: t("financeCollectedDeferred"), value: money(totals.collectedDeferred) },
-    { key: "maintenance", label: t("financePriceTotal"), value: money(totals.maintenance) },
-    { key: "warranty", label: t("warrantyTitle"), value: money(totals.warranty) },
-    { key: "cost", label: t("financeCostTotal"), value: money(totals.cost) },
-    { key: "profit", label: t("financeProfitTotal"), value: money(totals.profit), strong: true },
-    { key: "debts", label: t("financeOutstanding"), value: money(totals.outstanding) },
     {
       key: "count",
       label: t("profitReportTotalCount"),
       value: String(totals.tickets),
       sub: t("deskTicketsSub", { completed: totals.completed, cancelled: totals.cancelled, open: totals.open }),
     },
+    { key: "maintenance", label: t("financePriceTotal"), value: money(totals.maintenance) },
+    { key: "cost", label: t("financeCostTotal"), value: money(totals.cost) },
+    { key: "profit", label: t("financeProfitTotal"), value: money(totals.profit), strong: true },
+    { key: "warranty", label: t("warrantyTitle"), value: money(totals.warranty) },
+    { key: "cash", label: t("financeCollectedCash"), value: money(totals.collectedCash) },
+    { key: "deferred", label: t("financeCollectedDeferred"), value: money(totals.collectedDeferred) },
+    { key: "till", label: t("financeTill"), value: money(totals.till), sub: t("financeTillFormula") },
+    { key: "debts", label: t("financeOutstanding"), value: money(totals.outstanding) },
   ];
   return (
     <section className="shrink-0 pt-[3.4mm]">

@@ -125,6 +125,7 @@ function Desk({
         search: data.search,
         status: data.status,
         statsStatus: data.statsStatus,
+        moneyFilter: data.moneyFilter,
         statuses: data.statuses,
         flow: data.flow,
         terms: data.terms,

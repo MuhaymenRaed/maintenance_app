@@ -16,6 +16,7 @@ import { useRouter } from "@/i18n/navigation";
 import { Select } from "@/components/ui/select";
 import { QUEUE_PRESETS, type QueueWindow } from "@/lib/data/queue-window";
 import { cn } from "@/lib/utils";
+import { DateField, formatFieldValue } from "@/components/ui/date-field";
 
 /**
  * The bar above every work queue: when, and what — and what is in force now.
@@ -240,7 +241,7 @@ export function QueueToolbar({
   /* ── what is in force ─────────────────────────────────────────────────── */
 
   const periodLabel = custom
-    ? `${span.from} — ${span.to}`
+    ? `${formatFieldValue("date", span.from ?? "")} — ${formatFieldValue("date", span.to ?? "")}`
     : lastDays
       ? `${labels.lastDays?.before ?? ""} ${span.days} ${labels.lastDays?.after ?? ""}`.trim()
       : span.when === "open"
@@ -376,7 +377,7 @@ export function QueueToolbar({
           </span>
           <label className="inline-flex items-center gap-1 text-[0.7rem] font-bold text-muted">
             {labels.from}
-            <input
+            <DateField
               type="date"
               value={range.from}
               max={range.to || undefined}
@@ -387,13 +388,12 @@ export function QueueToolbar({
                 // presets beside it do.
                 if (sane(from) && sane(range.to)) applyRange(from, range.to);
               }}
-              dir="ltr"
               className={cn(field, "h-8 w-[9.25rem]")}
             />
           </label>
           <label className="inline-flex items-center gap-1 text-[0.7rem] font-bold text-muted">
             {labels.to}
-            <input
+            <DateField
               type="date"
               value={range.to}
               min={range.from || undefined}
@@ -402,7 +402,6 @@ export function QueueToolbar({
                 setRange((current) => ({ ...current, to }));
                 if (sane(range.from) && sane(to)) applyRange(range.from, to);
               }}
-              dir="ltr"
               className={cn(field, "h-8 w-[9.25rem]")}
             />
           </label>

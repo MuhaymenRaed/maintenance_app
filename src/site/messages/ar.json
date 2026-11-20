@@ -3552,7 +3552,18 @@
     "profitReportNoPaper": "الطابعة «{printer}» لا تحمل ورق {paper}",
     "profitReportNoPaperHint": "لم يُرسل شيء. ضع الورق المطلوب في طابعة الورق، أو اختر طابعة أخرى من إعدادات الطابعات، أو نزّل الجرد PDF.",
     "profitReportPaidEarlier": "{count, plural, one {يشمل الواصل تذكرة من يوم سابق سُددت في هذه الفترة.} two {يشمل الواصل تذكرتين من أيام سابقة سُددتا في هذه الفترة.} few {يشمل الواصل {n} تذاكر من أيام سابقة سُددت في هذه الفترة.} other {يشمل الواصل {n} تذكرة من أيام سابقة سُددت في هذه الفترة.}}",
-    "profitReportCancelledShort": "ملغاة"
+    "profitReportCancelledShort": "ملغاة",
+    "deskBehind": "من بطاقة",
+    "deskBehindBanner": "{count, plural, =0 {لا توجد تذاكر وراء رقم «{card}» في هذه الفترة.} one {تذكرة واحدة وراء رقم «{card}» في هذه الفترة.} two {تذكرتان وراء رقم «{card}» في هذه الفترة.} few {# تذاكر وراء رقم «{card}» في هذه الفترة.} other {# تذكرة وراء رقم «{card}» في هذه الفترة.}}",
+    "deskBehindBack": "العودة إلى الإحصائيات",
+    "mf_opened": "التذاكر",
+    "mf_active": "مبلغ الصيانة",
+    "mf_warranty": "الضمان",
+    "mf_cost": "أسعار الشراء",
+    "mf_cash": "واصل نقد",
+    "mf_deferred": "واصل آجل",
+    "mf_till": "واصل بالخزنة",
+    "mf_owing": "الديون"
   },
   "Promises": {
     "warrantyTitle": "ضمان صيانة سنة كاملة",

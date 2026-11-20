@@ -114,6 +114,19 @@ export function formatDayLong(
   });
 }
 
+/** `Friday, 20 November 2026` / `الجمعة، 20 نوفمبر 2026` — a page's dateline. */
+export function formatDayWithWeekday(
+  locale: Loc,
+  value: string | number | Date | null | undefined,
+): string {
+  return render(locale, value, {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+}
+
 /** `06/09/2026`, day first in both locales. For dense columns and tables. */
 export function formatDayNumeric(
   locale: Loc,

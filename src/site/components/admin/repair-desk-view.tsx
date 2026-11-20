@@ -54,7 +54,7 @@ import {
   type PaymentTerms,
   type RepairService,
 } from "@/lib/data/repair-desk";
-import type { StatsStatus } from "@/lib/data/desk-figures";
+import type { MoneyFilter, StatsStatus } from "@/lib/data/desk-figures";
 import { formatPrice } from "@/lib/format";
 import { statMoney } from "@/lib/data/stat-money";
 import { cn } from "@/lib/utils";
@@ -115,6 +115,8 @@ export type RepairDeskViewData = {
   status: string | null;
   /** The figures' own status filter (2026-11-20). Absent from an older desk app build. */
   statsStatus?: StatsStatus;
+  /** "The tickets behind this card" — `?mf=`, pressed from a figures card. */
+  moneyFilter?: MoneyFilter | null;
   /** The chips' statuses: the flow, then cancelled. */
   statuses: readonly RepairStatus[];
   /** The steps this deployment can store. */
@@ -199,6 +201,7 @@ export function RepairDeskView({
     today,
   } = data;
   const statsStatus: StatsStatus = data.statsStatus ?? "all";
+  const moneyFilter = data.moneyFilter ?? null;
 
   /** The figures are a manager's. Never a technician's, never somebody who reads no money. */
   const hasStats = authority.seesMoney && !isTech && Boolean(board.stats);
@@ -216,7 +219,7 @@ export function RepairDeskView({
    * were. A refresh (a save, a sync pass) keeps every filter, and keeps the
    * panel the reader chose.
    */
-  const landing = JSON.stringify([asked, view, window.query, status, search, terms, tech, data.statsStatus ?? "all"]);
+  const landing = JSON.stringify([asked, view, window.query, status, search, terms, tech, statsStatus, moneyFilter]);
   const [chosen, setChosen] = useState<DeskPanel>(asked);
   const [seenLanding, setSeenLanding] = useState(landing);
   if (landing !== seenLanding) {
@@ -251,15 +254,30 @@ export function RepairDeskView({
     ...(terms ? { terms } : {}),
     ...(tech ? { tech } : {}),
     ...(statsStatus !== "all" ? { sstatus: statsStatus } : {}),
+    ...(moneyFilter ? { mf: moneyFilter } : {}),
   };
   const without = (...keys: string[]) =>
     Object.fromEntries(Object.entries(params).filter(([key]) => !keys.includes(key)));
-  /** The figures keep every filter: both panels read the same address. */
-  const statsParams = { ...params, panel: "stats" };
+  /** The figures keep every filter but a card's own, which only narrows the tickets. */
+  const statsParams = { ...without("mf"), panel: "stats" };
   const href = (query: Record<string, string>) => {
     const search = new URLSearchParams(query).toString();
     return search ? `${basePath}?${search}` : basePath;
   };
+  /**
+   * From a figures card to the tickets behind its figure (the shop,
+   * 2026-11-20): the figures' period, person, cash or deferred, words and
+   * status carried over, and the card's own filter (`MONEY_FILTERS`).
+   */
+  const cardHref = (filter: MoneyFilter) =>
+    href({
+      ...(board.stats?.window.query ?? window.query),
+      ...(search ? { q: search } : {}),
+      ...(terms ? { terms } : {}),
+      ...(tech ? { tech } : {}),
+      ...(statsStatus !== "all" ? { status: statsStatus, sstatus: statsStatus } : {}),
+      mf: filter,
+    });
 
   const totalAll = Object.values(board.counts).reduce((sum, n) => sum + n, 0);
   const cur = t("currency");
@@ -469,7 +487,7 @@ export function RepairDeskView({
             money={money}
             report={report}
             reportJob={reportJob}
-            owingHref={href({ view: "owing" })}
+            cardHref={cardHref}
             techHref={(holderId) => href({ ...statsParams, tech: holderId ?? "none" })}
           />
         </LockedPanel>
@@ -516,11 +534,10 @@ export function RepairDeskView({
               window={window}
               search={search}
               params={without("panel")}
-              active={
-                status
-                  ? [{ name: "status", label: `${t("filterStatus")}: ${tStatus(`status_${status}` as "status_received")}` }]
-                  : []
-              }
+              active={[
+                ...(status ? [{ name: "status", label: `${t("filterStatus")}: ${statusName(status)}` }] : []),
+                ...(moneyFilter ? [{ name: "mf", label: `${t("deskBehind")}: ${t(`mf_${moneyFilter}`)}` }] : []),
+              ]}
               selects={[
                 ...(authority.seesMoney ? [termsSelect] : []),
                 ...(view === "mine" || isTech
@@ -549,6 +566,21 @@ export function RepairDeskView({
               </div>
             </div>
           </section>
+
+          {/* Arrived from a figures card: say which, and the way back. */}
+          {moneyFilter && hasStats && (
+            <p className="flex flex-wrap items-center gap-2 rounded-card border border-info/40 bg-info/6 px-4 py-2.5 text-[0.8rem] font-bold text-ink">
+              <BarChart3 className="size-4 shrink-0 text-info" aria-hidden />
+              {t("deskBehindBanner", { card: t(`mf_${moneyFilter}`), count: board.rows.length })}
+              <button
+                type="button"
+                onClick={() => showPanel("stats")}
+                className="ms-auto font-extrabold text-brand hover:underline"
+              >
+                {t("deskBehindBack")}
+              </button>
+            </p>
+          )}
 
           {view === "owing" && (
             <p className="flex flex-wrap items-center gap-2 rounded-card border border-warning/45 bg-warning/8 px-4 py-2.5 text-[0.8rem] font-bold text-ink">
@@ -672,7 +704,7 @@ function StatsPanel({
   money,
   report,
   reportJob,
-  owingHref,
+  cardHref,
   techHref,
 }: {
   locale: string;
@@ -686,7 +718,7 @@ function StatsPanel({
   money: (n: number) => string;
   report: ProfitReport;
   reportJob: ReportJob;
-  owingHref: string;
+  cardHref: (filter: MoneyFilter) => string;
   techHref: (holderId: string | null) => string;
 }) {
   const t = useTranslations("Admin");
@@ -713,7 +745,7 @@ function StatsPanel({
         period={period}
         scope={scopeLabel}
         money={money}
-        owingHref={owingHref}
+        cardHref={cardHref}
       />
 
       {!stats.ledger && board.available.finance && (
@@ -810,7 +842,7 @@ function Figures({
   period,
   scope,
   money,
-  owingHref,
+  cardHref,
 }: {
   totals: DeskTotals;
   finance: boolean;
@@ -819,9 +851,15 @@ function Figures({
   period: string;
   scope: string;
   money: (n: number) => string;
-  owingHref: string;
+  cardHref: (filter: MoneyFilter) => string;
 }) {
   const t = useTranslations("Admin");
+  /*
+   * The shop's order, 2026-11-20 (numbered on a screenshot): the tickets, what
+   * they came to, what the parts cost, the profit — then the warranty and the
+   * money that came in: cash, deferred, the till — and what is still owed.
+   * Every card is a press to the tickets behind its figure (`cardHref`).
+   */
   const tiles: Tile[] = [
     {
       Icon: Wrench,
@@ -829,6 +867,7 @@ function Figures({
       value: formatPrice(totals.tickets),
       sub: t("deskTicketsSub", { completed: totals.completed, cancelled: totals.cancelled, open: totals.open }),
       tone: "info",
+      href: cardHref("opened"),
     },
     {
       Icon: CircleDollarSign,
@@ -836,18 +875,9 @@ function Figures({
       value: statMoney(totals.maintenance),
       sub: t("deskMaintenanceSub"),
       tone: "brand",
+      href: cardHref("active"),
     },
   ];
-
-  if (warranty) {
-    tiles.push({
-      Icon: ShieldCheck,
-      label: t("warrantyTitle"),
-      value: statMoney(totals.warranty),
-      sub: t("deskWarrantySub", { count: totals.warrantyTickets }),
-      tone: "info",
-    });
-  }
   if (finance) {
     tiles.push(
       {
@@ -856,13 +886,37 @@ function Figures({
         value: statMoney(totals.cost),
         sub: totals.missingCost > 0 ? t("deskMissingCostSub", { count: totals.missingCost }) : money(totals.cost),
         tone: totals.missingCost > 0 ? "warning" : "muted",
+        href: cardHref("cost"),
       },
+      {
+        Icon: TrendingUp,
+        label: t("financeProfitTotal"),
+        value: statMoney(totals.profit),
+        sub: totals.missingCost > 0 ? t("deskProfitMissing", { count: totals.missingCost }) : t("deskProfitFormula"),
+        tone: totals.profit < 0 ? "brand" : "success",
+        href: cardHref("active"),
+      },
+    );
+  }
+  if (warranty) {
+    tiles.push({
+      Icon: ShieldCheck,
+      label: t("warrantyTitle"),
+      value: statMoney(totals.warranty),
+      sub: t("deskWarrantySub", { count: totals.warrantyTickets }),
+      tone: "info",
+      href: cardHref("warranty"),
+    });
+  }
+  if (finance) {
+    tiles.push(
       {
         Icon: Banknote,
         label: t("financeCollectedCash"),
         value: statMoney(totals.collectedCash),
         sub: t("deskCashSub"),
         tone: "success",
+        href: cardHref("cash"),
       },
       {
         Icon: CalendarClock,
@@ -873,24 +927,16 @@ function Figures({
             ? t("deskMissingCollectedSub", { count: totals.missingCollected })
             : t("deskDeferredSub"),
         tone: totals.missingCollected > 0 ? "warning" : "info",
+        href: cardHref("deferred"),
       },
       // «واصل بالخزنة» — the shop's own sum, and every dinar in the drawer once.
       {
         Icon: Wallet,
         label: t("financeTill"),
         value: statMoney(totals.till),
-        sub: t("financeTillFormula"),
+        sub: `${t("financeTillFormula")}: ${formatPrice(totals.tillWarranty)} + ${formatPrice(totals.collectedCash)} + ${formatPrice(totals.collectedDeferred)}`,
         tone: "success",
-        detail: {
-          title: t("financeTill"),
-          body: t("financeTillBody"),
-          rows: [
-            { label: t("financeTillWarranty"), value: money(totals.tillWarranty), tone: "info" },
-            { label: t("financeCollectedCash"), value: money(totals.collectedCash), tone: "success" },
-            { label: t("financeCollectedDeferred"), value: money(totals.collectedDeferred), tone: "info" },
-            { label: t("financeTill"), value: money(totals.till), tone: "brand" },
-          ],
-        },
+        href: cardHref("till"),
       },
       {
         Icon: HandCoins,
@@ -898,14 +944,7 @@ function Figures({
         value: statMoney(totals.outstanding),
         sub: t("deskOwingSub", { count: totals.owing }),
         tone: totals.outstanding > 0 ? "warning" : "success",
-        href: totals.owing > 0 ? owingHref : undefined,
-      },
-      {
-        Icon: TrendingUp,
-        label: t("financeProfitTotal"),
-        value: statMoney(totals.profit),
-        sub: totals.missingCost > 0 ? t("deskProfitMissing", { count: totals.missingCost }) : t("deskProfitFormula"),
-        tone: totals.profit < 0 ? "brand" : "success",
+        href: cardHref("owing"),
       },
     );
   } else {

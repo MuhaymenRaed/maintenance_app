@@ -19,6 +19,7 @@ import { stationSettingsStore } from "@/lib/print/station-store";
 import { startPrint } from "@/lib/print/station";
 import { cn } from "@/lib/utils";
 import { fitLabelText } from "@/lib/print/label-fit";
+import { DateField } from "@/components/ui/date-field";
 
 /**
  * The three papers a manager prints from a ticket.
@@ -457,17 +458,16 @@ export function RepairWarrantyDialog({
             <NumberInput value={days} onChange={setDays} min={1} max={3650} disabled={!canEdit} />
           </Field>
           <Field label={t("warrantyFrom")}>
-            <input
+            <DateField
               type="date"
               value={start}
               onChange={(event) => event.target.value && setStart(event.target.value)}
               disabled={!canEdit}
-              dir="ltr"
               className={input}
             />
           </Field>
           <Field label={t("warrantyTo")}>
-            <input
+            <DateField
               type="date"
               value={end}
               min={start}
@@ -475,7 +475,6 @@ export function RepairWarrantyDialog({
                 if (event.target.value) setDays(Math.max(1, daysBetween(start, event.target.value)));
               }}
               disabled={!canEdit}
-              dir="ltr"
               className={input}
             />
           </Field>
