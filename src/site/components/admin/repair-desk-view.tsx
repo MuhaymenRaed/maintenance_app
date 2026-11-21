@@ -55,7 +55,7 @@ import {
   type PaymentTerms,
   type RepairService,
 } from "@/lib/data/repair-desk";
-import { describeReturn, type MoneyFilter, type ReturnSummary, type StatsStatus } from "@/lib/data/desk-figures";
+import { describeReturn, returnDirection, type MoneyFilter, type ReturnSummary, type StatsStatus } from "@/lib/data/desk-figures";
 import { formatPrice } from "@/lib/format";
 import { statMoney } from "@/lib/data/stat-money";
 import { cn } from "@/lib/utils";
@@ -873,6 +873,39 @@ function signTone(n: number): string {
   return n < 0 ? "text-brand" : n > 0 ? "text-success" : "";
 }
 
+/**
+ * One half of the «راجع» card: the tickets brought down (red), brought up
+ * (green), or what the till moved. Spans, not divs: the card is one link.
+ */
+function ReturnTotal({
+  tone,
+  label,
+  amount,
+  sub,
+}: {
+  tone: "down" | "up" | "till";
+  label: string;
+  amount: number;
+  sub: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "flex min-w-[10rem] flex-1 flex-col gap-0.5 rounded-card border px-3 py-2",
+        tone === "down" ? "border-brand/35 bg-brand/6" : tone === "up" ? "border-success/35 bg-success/6" : "border-line bg-surface",
+      )}
+    >
+      <span className={cn("text-[0.72rem] font-extrabold", tone === "down" ? "text-brand" : tone === "up" ? "text-success" : "text-ink")}>
+        {label}
+      </span>
+      <span className={cn("text-[1.15rem] font-black leading-tight", signTone(amount) || "text-ink")} data-numeric>
+        {signedMoney(amount)}
+      </span>
+      <span className="text-[0.66rem] font-semibold text-muted">{sub}</span>
+    </span>
+  );
+}
+
 /** A change, with its sign: "+10,000", "-30,000". */
 function signedMoney(n: number): string {
   const value = formatPrice(Math.abs(Math.round(n)));
@@ -928,7 +961,6 @@ function Figures({
       sub: t("deskMaintenanceSub"),
       tone: "brand",
       href: cardHref("active"),
-      returned: totals.returnPrice - totals.returnWarranty,
     },
   ];
   if (finance) {
@@ -940,7 +972,6 @@ function Figures({
         sub: totals.missingCost > 0 ? t("deskMissingCostSub", { count: totals.missingCost }) : money(totals.cost),
         tone: totals.missingCost > 0 ? "warning" : "muted",
         href: cardHref("cost"),
-        returned: totals.returnCost,
       },
       {
         Icon: TrendingUp,
@@ -949,7 +980,6 @@ function Figures({
         sub: totals.missingCost > 0 ? t("deskProfitMissing", { count: totals.missingCost }) : t("deskProfitFormula"),
         tone: totals.profit < 0 ? "brand" : "success",
         href: cardHref("active"),
-        returned: totals.returnProfit,
       },
     );
   }
@@ -961,7 +991,6 @@ function Figures({
       sub: t("deskWarrantySub", { count: totals.warrantyTickets }),
       tone: "info",
       href: cardHref("warranty"),
-      returned: totals.returnWarranty,
     });
   }
   if (finance) {
@@ -992,7 +1021,16 @@ function Figures({
         value: statMoney(totals.till),
         // Each figure isolated left-to-right: a refund makes one negative, and
         // the Arabic line would otherwise move its minus to the far side.
-        sub: `${t("financeTillFormula")}: ${[totals.tillWarranty, totals.collectedCash, totals.collectedDeferred].map((n) => `\u2066${formatPrice(n)}\u2069`).join(" + ")}`,
+        sub: `${t(totals.returnTill ? "financeTillFormulaReturns" : "financeTillFormula")}: ${[
+          totals.tillWarranty,
+          totals.collectedCash,
+          totals.collectedDeferred,
+          ...(totals.returnTill ? [totals.returnTill] : []),
+        ]
+          .map((n) => `\u2066${formatPrice(n)}\u2069`)
+          .join(" + ")}`,
+        // The one card a «راجع» reaches (the shop, 2026-11-21).
+        returned: totals.returnTill,
         tone: "success",
         href: cardHref("till"),
       },
@@ -1050,9 +1088,9 @@ function Figures({
                 </span>
               )}
               {tile.returned ? (
-                <span className="inline-flex items-center gap-1 text-[0.66rem] font-bold text-gold-ink">
+                <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded-chip bg-gold/15 px-2 py-0.5 text-[0.68rem] font-extrabold text-gold-ink">
                   <RotateCcw className="size-3 shrink-0" aria-hidden />
-                  {t("deskIncludesReturns")}{" "}
+                  {t("deskTillReturns")}{" "}
                   <span data-numeric className={signTone(tile.returned)}>
                     {signedMoney(tile.returned)}
                   </span>
@@ -1064,55 +1102,62 @@ function Figures({
       </ul>
 
       {/* «راجع» — the shop, 2026-11-21: "a special statistics card called
-          راجع will show the value of money changed or decreased". Drawn only
-          on a period that has one; every figure above already counts it. */}
+          راجع will show the value of money changed or decreased", drawn only
+          on a period that has one. None of the cards above counts it but the
+          till; this card says what changed, down (سلبي) apart from up
+          (إيجابي). */}
       {totals.returnTickets > 0 && (
         <StatPress
           href={returnsHref}
           closeLabel={closeLabel}
-          className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2.5 rounded-panel border border-gold-ink/45 bg-gold/8 p-3 shadow-card"
+          className="flex min-w-0 flex-col gap-2.5 rounded-panel border border-gold-ink/45 bg-gold/8 p-3 shadow-card"
         >
-          <span className="flex min-w-0 items-center gap-2.5">
+          <span className="flex min-w-0 flex-wrap items-center gap-2.5">
             <span className="grid size-10 shrink-0 place-items-center rounded-full bg-gold/20">
               <RotateCcw className="size-5 text-gold-ink" aria-hidden />
             </span>
             <span className="min-w-0">
-              <span className="block text-[0.7rem] font-bold text-muted">{t("deskReturnsCard")}</span>
-              <span className={cn("text-[1.25rem] font-black leading-tight", signTone(totals.returnPrice) || "text-ink")} data-numeric>
-                {signedMoney(totals.returnPrice)}
+              <span className="block text-[0.86rem] font-black text-ink">
+                {t("deskReturnsCard")} · {t("deskReturnsTickets", { count: totals.returnTickets })}
               </span>
+              <span className="block text-[0.7rem] font-semibold text-muted">{t("deskReturnsApart")}</span>
             </span>
+            <span className="ms-auto shrink-0 text-[0.72rem] font-extrabold text-brand">{t("deskReturnsShow")}</span>
           </span>
-          <ul className="flex min-w-0 flex-wrap gap-x-4 gap-y-1 text-[0.72rem] font-bold text-ink">
-            <li>{t("deskReturnsTickets", { count: totals.returnTickets })}</li>
-            {totals.returnUp > 0 && (
-              <li className="text-success">
-                {t("deskReturnsUp")} <span data-numeric>{signedMoney(totals.returnUp)}</span>
-              </li>
+          <span className="flex min-w-0 flex-wrap gap-2">
+            {totals.returnDownTickets > 0 && (
+              <ReturnTotal
+                tone="down"
+                label={t("deskReturnsNegative")}
+                amount={totals.returnDown}
+                sub={t("deskReturnsTickets", { count: totals.returnDownTickets })}
+              />
             )}
-            {totals.returnDown < 0 && (
-              <li className="text-brand">
-                {t("deskReturnsDown")} <span data-numeric>{signedMoney(totals.returnDown)}</span>
-              </li>
-            )}
-            {warranty && totals.returnWarranty !== 0 && (
-              <li>
-                {t("deskReturnsWarranty")} <span data-numeric>{signedMoney(totals.returnWarranty)}</span>
-              </li>
-            )}
-            {finance && totals.returnCost !== 0 && (
-              <li>
-                {t("deskReturnsCost")} <span data-numeric>{signedMoney(totals.returnCost)}</span>
-              </li>
+            {totals.returnUpTickets > 0 && (
+              <ReturnTotal
+                tone="up"
+                label={t("deskReturnsPositive")}
+                amount={totals.returnUp}
+                sub={t("deskReturnsTickets", { count: totals.returnUpTickets })}
+              />
             )}
             {finance && (
-              <li className={totals.returnProfit < 0 ? "text-brand" : "text-success"}>
-                {t("deskReturnsProfit")} <span data-numeric>{signedMoney(totals.returnProfit)}</span>
-              </li>
+              <ReturnTotal tone="till" label={t("deskReturnsTill")} amount={totals.returnTill} sub={t("deskReturnsTillSub")} />
             )}
-            {totals.returnCancelled > 0 && <li>{t("deskReturnsCancelled", { count: totals.returnCancelled })}</li>}
-          </ul>
-          <span className="ms-auto shrink-0 text-[0.72rem] font-extrabold text-brand">{t("deskReturnsShow")}</span>
+          </span>
+          {(totals.returnCancelled > 0 || (warranty && totals.returnWarranty !== 0)) && (
+            <span className="flex flex-wrap gap-x-4 gap-y-1 text-[0.7rem] font-bold text-muted">
+              {totals.returnCancelled > 0 && <span>{t("deskReturnsCancelled", { count: totals.returnCancelled })}</span>}
+              {warranty && totals.returnWarranty !== 0 && (
+                <span>
+                  {t("deskReturnsWarranty")}{" "}
+                  <span data-numeric className={signTone(totals.returnWarranty)}>
+                    {signedMoney(totals.returnWarranty)}
+                  </span>
+                </span>
+              )}
+            </span>
+          )}
         </StatPress>
       )}
     </section>
@@ -1168,6 +1213,15 @@ function PaidEarlier({ rows, money, locale }: { rows: DeskRow[]; money: (n: numb
 function ReturnsList({ rows, money, locale }: { rows: DeskRow[]; money: (n: number) => string; locale: string }) {
   const t = useTranslations("Admin");
   const [open, setOpen] = useState(false);
+  const priced = rows.filter((row): row is DeskRow & { returned: ReturnSummary } => Boolean(row.returned));
+  // Down (سلبي) apart from up (إيجابي), each under its own heading and total
+  // (the shop, 2026-11-21: "distinguished between the راجع سلبي … and ايجابي").
+  const groups = (["down", "up"] as const)
+    .map((direction) => ({
+      direction,
+      rows: priced.filter((row) => returnDirection(row.returned) === direction),
+    }))
+    .filter((group) => group.rows.length > 0);
   return (
     <section className="rounded-panel border border-gold-ink/35 bg-gold/6">
       <button
@@ -1177,34 +1231,48 @@ function ReturnsList({ rows, money, locale }: { rows: DeskRow[]; money: (n: numb
         className="flex w-full items-center gap-2 px-3.5 py-2.5 text-start text-[0.8rem] font-extrabold text-ink"
       >
         <RotateCcw className="size-4 shrink-0 text-gold-ink" aria-hidden />
-        {t("deskReturnsListTitle", { count: rows.length })}
+        {t("deskReturnsListTitle", { count: priced.length })}
         <ChevronDown className={cn("ms-auto size-4 text-muted transition-transform", open && "rotate-180")} aria-hidden />
       </button>
-      {open && (
-        <ul className="divide-y divide-gold-ink/15 border-t border-gold-ink/20 px-3.5">
-          {rows.map((row) =>
-            row.returned ? (
-              <li key={row.id} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 py-2 text-[0.78rem]">
-                <span className="font-extrabold text-info" data-numeric>
-                  {row.code}
+      {open &&
+        groups.map((group) => {
+          const down = group.direction === "down";
+          const total = group.rows.reduce((sum, row) => sum + row.returned.price, 0);
+          return (
+            <div key={group.direction} className="border-t border-gold-ink/20">
+              <p
+                className={cn(
+                  "flex flex-wrap items-center gap-x-2 px-3.5 py-2 text-[0.76rem] font-black",
+                  down ? "bg-brand/6 text-brand" : "bg-success/6 text-success",
+                )}
+              >
+                {t(down ? "deskReturnsNegative" : "deskReturnsPositive")}
+                <span className="font-bold text-muted">· {t("deskReturnsTickets", { count: group.rows.length })}</span>
+                <span className="ms-auto" data-numeric>
+                  {signedMoney(total)}
                 </span>
-                <span className="font-bold text-ink">{row.customerName}</span>
-                <span className="text-muted">{row.deviceModel}</span>
-                <span className="text-[0.7rem] text-muted">{t("deskOpenedOn", { when: formatDayTime(locale, row.createdAt) })}</span>
-                <span className="text-[0.72rem] font-bold text-gold-ink">
-                  <ReturnWords summary={row.returned} money={money} />
-                </span>
-                <span
-                  className={cn("ms-auto font-black", row.returned.price < 0 ? "text-brand" : "text-success")}
-                  data-numeric
-                >
-                  {signedMoney(row.returned.price)}
-                </span>
-              </li>
-            ) : null,
-          )}
-        </ul>
-      )}
+              </p>
+              <ul className="divide-y divide-gold-ink/15 px-3.5">
+                {group.rows.map((row) => (
+                  <li key={row.id} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 py-2 text-[0.78rem]">
+                    <span className="font-extrabold text-info" data-numeric>
+                      {row.code}
+                    </span>
+                    <span className="font-bold text-ink">{row.customerName}</span>
+                    <span className="text-muted">{row.deviceModel}</span>
+                    <span className="text-[0.7rem] text-muted">{t("deskOpenedOn", { when: formatDayTime(locale, row.createdAt) })}</span>
+                    <span className="text-[0.72rem] font-bold text-gold-ink">
+                      <ReturnWords summary={row.returned} money={money} />
+                    </span>
+                    <span className={cn("ms-auto font-black", down ? "text-brand" : "text-success")} data-numeric>
+                      {signedMoney(row.returned.price)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
     </section>
   );
 }

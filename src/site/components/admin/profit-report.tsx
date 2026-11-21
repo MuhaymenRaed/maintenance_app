@@ -9,6 +9,7 @@ import {
   CircleCheck,
   ClipboardList,
   Download,
+  Eye,
   FileText,
   Loader2,
   Printer,
@@ -26,7 +27,7 @@ import {
   PaperTitle,
 } from "@/components/admin/repair-print";
 import { addToTotals, emptyTotals, repairMoney, type DeskTotals, type PaymentTerms } from "@/lib/data/repair-desk";
-import { describeReturn, type ReturnDescription, type ReturnSummary } from "@/lib/data/desk-figures";
+import { describeReturn, returnDirection, type ReturnDescription, type ReturnSummary } from "@/lib/data/desk-figures";
 import { baghdadDay } from "@/lib/data/date-window";
 import { formatPrice } from "@/lib/format";
 import {
@@ -141,8 +142,14 @@ export type ReportJob = {
 };
 
 type ReportRow = {
-  /** A ticket of the period, the «راجع» section's heading, or one of its tickets. */
-  kind: "ticket" | "returnHead" | "return";
+  /**
+   * A ticket of the period; the «راجع» section's heading; the heading of its
+   * down (سلبي) or up (إيجابي) half, which carries its count and total; or one
+   * of its tickets.
+   */
+  kind: "ticket" | "returnHead" | "returnGroup" | "return";
+  /** On a «راجع» group heading or row: brought down, or brought up. */
+  direction?: "down" | "up";
   /** Its number within its section. */
   no: number;
   id: string;
@@ -222,25 +229,49 @@ export function buildProfitReport(job: ReportJob, unassigned: string): BuiltRepo
       fault: "",
       day: "",
     });
-    returns.forEach((row, index) => {
+    for (const direction of ["down", "up"] as const) {
+      const half = returns.filter((row) => returnDirection(row.returned) === direction);
+      if (!half.length) continue;
       out.push({
-        kind: "return",
-        no: index + 1,
-        id: `return-${row.id}`,
-        code: row.code,
-        employee: row.holderName?.trim() || unassigned,
-        amount: row.returned.base,
-        warranty: row.returned.warranty,
-        profit: row.returned.profit,
+        kind: "returnGroup",
+        direction,
+        // The heading carries the half's count and total in these two.
+        no: half.length,
+        amount: half.reduce((sum, row) => sum + row.returned.price, 0),
+        id: `returns-${direction}`,
+        code: "",
+        employee: "",
+        warranty: 0,
+        profit: null,
         noCost: false,
         cancelled: false,
-        device: row.deviceModel,
+        device: "",
         fault: "",
-        day: baghdadDay(Date.parse(row.returned.at)),
-        change: describeReturn(row.returned),
-        openedDay: baghdadDay(Date.parse(row.createdAt)),
+        day: "",
       });
-    });
+      half.forEach((row, index) => {
+        out.push({
+          kind: "return",
+          direction,
+          no: index + 1,
+          id: `return-${row.id}`,
+          code: row.code,
+          employee: row.holderName?.trim() || unassigned,
+          // The repair alone, as in the table above — the warranty is its own
+          // column, and the two add up to the half's total.
+          amount: row.returned.base,
+          warranty: row.returned.warranty,
+          profit: row.returned.profit,
+          noCost: false,
+          cancelled: false,
+          device: row.deviceModel,
+          fault: "",
+          day: baghdadDay(Date.parse(row.returned.at)),
+          change: describeReturn(row.returned),
+          openedDay: baghdadDay(Date.parse(row.createdAt)),
+        });
+      });
+    }
   }
 
   let totals = job.totals;
@@ -251,15 +282,31 @@ export function buildProfitReport(job: ReportJob, unassigned: string): BuiltRepo
   return { rows: out, totals, includeCancelled: Boolean(job.includeCancelled) };
 }
 
-/* ── The three ways out ───────────────────────────────────────────────────── */
+/* ── The ways out, and a look first ──────────────────────────────────────── */
 
-export type ReportMode = "a4" | "a5" | "pdf";
+/**
+ * `preview` draws the same A4 pages a PDF would carry and shows them on the
+ * screen, with download and print right there (the shop, 2026-11-21:
+ * "sometimes I just need to check a small thing and yet I had to download the
+ * full report"). Downloading from the preview reuses its pictures — the pages
+ * are not drawn twice.
+ */
+export type ReportMode = "preview" | "a4" | "a5" | "pdf";
 
 const MODES: { mode: ReportMode; Icon: LucideIcon }[] = [
+  { mode: "preview", Icon: Eye },
   { mode: "a4", Icon: Printer },
   { mode: "a5", Icon: FileText },
   { mode: "pdf", Icon: Download },
 ];
+
+/** What the preview holds: the pages as pictures, and what to name and redo them by. */
+type ReportPreview = {
+  pages: PdfImagePage[];
+  urls: string[];
+  printedAt: number;
+  job: ReportJob;
+};
 
 type ReportTask = {
   id: string;
@@ -347,8 +394,16 @@ export function useProfitReport(): ProfitReport {
   const brand = useTranslations("Brand");
   const [task, setTask] = useState<ReportTask | null>(null);
   const [status, setStatus] = useState<ReportStatus | null>(null);
+  const [preview, setPreview] = useState<ReportPreview | null>(null);
   /** A double press lands before the first one re-renders the buttons disabled. */
   const running = useRef(false);
+
+  function closePreview() {
+    setPreview((current) => {
+      for (const url of current?.urls ?? []) URL.revokeObjectURL(url);
+      return null;
+    });
+  }
 
   // A finished message steps aside on its own; a failure stays until it is read.
   useEffect(() => {
@@ -471,10 +526,10 @@ export function useProfitReport(): ProfitReport {
     });
   }
 
-  async function savePdf(pages: HTMLElement[], printedAt: number, frozen: ReportContext) {
+  /** The A4 pages as pictures — what a PDF carries, and what the preview shows. */
+  async function pdfPages(pages: HTMLElement[]): Promise<PdfImagePage[]> {
     const spec = REPORT_PAPERS.a4;
     const { rasterizeElement, CSS_PX_PER_MM } = await import("@/lib/print/rasterize");
-    const { jpegPagesToPdf, safeFilename } = await import("@/lib/print/pdf");
     const out: PdfImagePage[] = [];
     for (const [index, page] of pages.entries()) {
       busy(t("profitReportPreparing", { page: String(index + 1), pages: String(pages.length) }));
@@ -498,14 +553,33 @@ export function useProfitReport(): ProfitReport {
         heightMm: spec.heightMm,
       });
     }
+    return out;
+  }
+
+  /** The pictures as one PDF file, downloaded. */
+  async function downloadPdf(out: PdfImagePage[], printedAt: number, frozen: ReportContext) {
+    const { jpegPagesToPdf, safeFilename } = await import("@/lib/print/pdf");
     const name = `${safeFilename(`${t("profitReport")} - ${frozen.desk} - ${baghdadDay(printedAt)}`)}.pdf`;
     const bytes = jpegPagesToPdf(out, { title: `${t("profitReport")} — ${frozen.desk}`, creator: brand("name") });
     download(new Blob([bytes], { type: "application/pdf" }), name);
     setStatus({ tone: "done", text: t("profitReportSaved", { file: name }) });
   }
 
+  async function savePdf(pages: HTMLElement[], printedAt: number, frozen: ReportContext) {
+    await downloadPdf(await pdfPages(pages), printedAt, frozen);
+  }
+
+  async function showPreview(pages: HTMLElement[], printedAt: number, job: ReportJob) {
+    const out = await pdfPages(pages);
+    const urls = out.map((page) => URL.createObjectURL(new Blob([page.jpeg as BlobPart], { type: "image/jpeg" })));
+    closePreview();
+    setPreview({ pages: out, urls, printedAt, job });
+    setStatus(null);
+  }
+
   async function run(mode: ReportMode, job: ReportJob) {
     const current = stationSettings();
+    // The preview is the PDF's own pages: A4.
     const paper: ReportPaper = mode === "a5" ? "a5" : "a4";
     const printedAt = pressedAt();
     const drawn = deferred<HTMLElement[]>();
@@ -521,7 +595,8 @@ export function useProfitReport(): ProfitReport {
     });
     try {
       const pages = await within(drawn.promise, 30_000, "drawing the report timed out");
-      if (mode === "pdf") await savePdf(pages, printedAt, job.context);
+      if (mode === "preview") await showPreview(pages, printedAt, job);
+      else if (mode === "pdf") await savePdf(pages, printedAt, job.context);
       else await printDirect(pages, paper, current);
     } catch (error) {
       setStatus(
@@ -597,6 +672,19 @@ export function useProfitReport(): ProfitReport {
         </div>
       )}
       {task && <ReportStage key={task.id} task={task} />}
+      {preview && (
+        <ReportPreviewDialog
+          preview={preview}
+          busy={task !== null}
+          onClose={closePreview}
+          onDownload={() => void downloadPdf(preview.pages, preview.printedAt, preview.job.context)}
+          onPrint={(mode) => {
+            const job = preview.job;
+            closePreview();
+            start(mode, job);
+          }}
+        />
+      )}
     </>
   );
 
@@ -607,8 +695,14 @@ export function useProfitReport(): ProfitReport {
 function useModeWords() {
   const t = useTranslations("Admin");
   return {
-    label: { a4: t("profitReportA4"), a5: t("profitReportA5"), pdf: t("profitReportPdf") } satisfies Record<ReportMode, string>,
+    label: {
+      preview: t("profitReportPreview"),
+      a4: t("profitReportA4"),
+      a5: t("profitReportA5"),
+      pdf: t("profitReportPdf"),
+    } satisfies Record<ReportMode, string>,
     hint: {
+      preview: t("profitReportPreviewHint"),
       a4: t("profitReportA4Hint"),
       a5: t("profitReportA5Hint"),
       pdf: t("profitReportPdfHint"),
@@ -730,6 +824,98 @@ export function ReportPrintDialog({
               </li>
             ))}
           </ul>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+/**
+ * The report on the screen, page by page, as it will print — and the three
+ * ways out from it, so checking one figure costs no download.
+ */
+function ReportPreviewDialog({
+  preview,
+  busy,
+  onClose,
+  onDownload,
+  onPrint,
+}: {
+  preview: ReportPreview;
+  busy: boolean;
+  onClose: () => void;
+  onDownload: () => void;
+  onPrint: (mode: "a4" | "a5") => void;
+}) {
+  const t = useTranslations("Admin");
+  const owner = useOwnerDocument();
+  const count = preview.urls.length;
+  return (
+    <Dialog.Root open onOpenChange={(next) => !next && onClose()}>
+      <Dialog.Portal container={owner?.body}>
+        <Dialog.Overlay className="fixed inset-0 z-85 bg-scrim/60 data-[state=open]:[animation:dialog-overlay-in_120ms_ease-out]" />
+        <Dialog.Content
+          aria-describedby={undefined}
+          className="fixed inset-x-0 bottom-0 top-0 z-88 mx-auto flex w-full max-w-[min(56rem,100vw)] flex-col bg-canvas shadow-lift focus:outline-none sm:inset-y-4 sm:rounded-panel sm:border sm:border-line"
+        >
+          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line bg-surface px-4 py-3 sm:rounded-t-panel">
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-card bg-brand/10 text-brand" aria-hidden>
+              <Eye className="size-4.5" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <Dialog.Title className="text-[0.95rem] font-black text-ink">{t("profitReportPreviewTitle")}</Dialog.Title>
+              <p className="text-[0.72rem] font-semibold text-muted">
+                {preview.job.context.period} · {t("profitReportPreviewPages", { count, n: String(count) })}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={onDownload}
+                disabled={busy}
+                className="press inline-flex items-center gap-1.5 rounded-control border border-brand bg-brand px-3 py-2 text-[0.78rem] font-extrabold text-white hover:bg-brand/90 disabled:opacity-50"
+              >
+                <Download className="size-4" aria-hidden />
+                {t("profitReportPdf")}
+              </button>
+              {(["a4", "a5"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => onPrint(mode)}
+                  disabled={busy}
+                  className="press inline-flex items-center gap-1.5 rounded-control border border-brand/40 bg-brand/6 px-3 py-2 text-[0.78rem] font-extrabold text-brand hover:bg-brand hover:text-white disabled:opacity-50"
+                >
+                  {mode === "a4" ? <Printer className="size-4" aria-hidden /> : <FileText className="size-4" aria-hidden />}
+                  {t(mode === "a4" ? "profitReportA4" : "profitReportA5")}
+                </button>
+              ))}
+              <Dialog.Close
+                aria-label={t("close")}
+                className="press rounded-full p-1.5 text-muted hover:bg-subtle hover:text-ink"
+              >
+                <X className="size-5" aria-hidden />
+              </Dialog.Close>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4">
+            <ol className="mx-auto flex max-w-[48rem] flex-col items-center gap-4">
+              {preview.urls.map((url, index) => (
+                <li key={url} className="w-full">
+                  {/* A picture of the page drawn on this device; nothing for the image optimiser to fetch. */}
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={url}
+                    alt={t("profitReportPage", { page: String(index + 1), pages: String(count) })}
+                    className="block w-full rounded-card border border-line bg-white shadow-card"
+                  />
+                  <p className="mt-1 text-center text-[0.7rem] font-bold text-muted">
+                    {t("profitReportPage", { page: String(index + 1), pages: String(count) })}
+                  </p>
+                </li>
+              ))}
+            </ol>
+          </div>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
@@ -1008,7 +1194,14 @@ function ReportSummary({ report }: { report: BuiltReport }) {
     { key: "warranty", label: t("warrantyTitle"), value: money(totals.warranty) },
     { key: "cash", label: t("financeCollectedCash"), value: money(totals.collectedCash) },
     { key: "deferred", label: t("financeCollectedDeferred"), value: money(totals.collectedDeferred) },
-    { key: "till", label: t("financeTill"), value: money(totals.till), sub: t("financeTillFormula") },
+    {
+      key: "till",
+      label: t("financeTill"),
+      value: money(totals.till),
+      sub: totals.returnTill
+        ? `${t("financeTillFormulaReturns")} — ${t("deskTillReturns")} ${signed(totals.returnTill)}`
+        : t("financeTillFormula"),
+    },
     { key: "debts", label: t("financeOutstanding"), value: money(totals.outstanding) },
   ];
   return (
@@ -1036,35 +1229,40 @@ function ReportSummary({ report }: { report: BuiltReport }) {
           </div>
         ))}
         {totals.returnTickets > 0 && (
-          <div className="col-span-3 flex flex-wrap items-center gap-x-[6mm] gap-y-[1mm] rounded-[2mm] border-[0.25mm] border-solid border-[#333333] bg-white px-[2.8mm] py-[2mm]">
-            <dt className="text-[8pt] font-bold leading-[1.3] text-[#333333]">{t("deskReturnsCard")}</dt>
-            <dd className={cn("text-[13pt] font-bold leading-[1.1]", totals.returnPrice < 0 ? "text-[#e11d2e]" : "text-[#000]")}>
-              <span data-numeric>{signed(totals.returnPrice)}</span>
-            </dd>
-            <dd className="flex flex-wrap gap-x-[4mm] gap-y-[0.6mm] text-[7.4pt] font-semibold leading-[1.3]">
-              <span>{t("deskReturnsTickets", { count: totals.returnTickets })}</span>
-              {totals.returnUp > 0 && (
-                <span>
-                  {t("deskReturnsUp")} <span data-numeric>{signed(totals.returnUp)}</span>
+          <div className="col-span-3 flex flex-col gap-[1.4mm] rounded-[2mm] border-[0.25mm] border-solid border-[#333333] bg-white px-[2.8mm] py-[2mm]">
+            <dt className="text-[8.4pt] font-bold leading-[1.3] text-[#333333]">
+              {t("deskReturnsCard")} · {t("deskReturnsTickets", { count: totals.returnTickets })}
+              <span className="ms-[2mm] text-[7pt] font-semibold text-[#000]">{t("deskReturnsApart")}</span>
+            </dt>
+            <dd className="grid grid-cols-3 gap-[2mm]">
+              {totals.returnDownTickets > 0 ? (
+                <span className="flex flex-col gap-[0.6mm] rounded-[1.6mm] border-[0.25mm] border-solid border-[#e11d2e] bg-[#fdeff1] px-[2.4mm] py-[1.4mm]">
+                  <span className="text-[7.4pt] font-bold text-[#a90f1d]">{t("deskReturnsNegative")}</span>
+                  <span className="text-[12pt] font-bold text-[#e11d2e]" data-numeric>
+                    {signed(totals.returnDown)}
+                  </span>
+                  <span className="text-[6.8pt] font-semibold">{t("deskReturnsTickets", { count: totals.returnDownTickets })}</span>
                 </span>
+              ) : (
+                <span />
               )}
-              {totals.returnDown < 0 && (
-                <span>
-                  {t("deskReturnsDown")} <span data-numeric>{signed(totals.returnDown)}</span>
+              {totals.returnUpTickets > 0 ? (
+                <span className="flex flex-col gap-[0.6mm] rounded-[1.6mm] border-[0.25mm] border-solid border-[#1f8a4c] bg-[#eaf6ef] px-[2.4mm] py-[1.4mm]">
+                  <span className="text-[7.4pt] font-bold text-[#17683a]">{t("deskReturnsPositive")}</span>
+                  <span className="text-[12pt] font-bold text-[#17683a]" data-numeric>
+                    {signed(totals.returnUp)}
+                  </span>
+                  <span className="text-[6.8pt] font-semibold">{t("deskReturnsTickets", { count: totals.returnUpTickets })}</span>
                 </span>
+              ) : (
+                <span />
               )}
-              {totals.returnWarranty !== 0 && (
-                <span>
-                  {t("deskReturnsWarranty")} <span data-numeric>{signed(totals.returnWarranty)}</span>
+              <span className="flex flex-col gap-[0.6mm] rounded-[1.6mm] border-[0.25mm] border-solid border-[#333333] px-[2.4mm] py-[1.4mm]">
+                <span className="text-[7.4pt] font-bold text-[#333333]">{t("deskReturnsTill")}</span>
+                <span className={cn("text-[12pt] font-bold", totals.returnTill < 0 ? "text-[#e11d2e]" : "text-[#000]")} data-numeric>
+                  {signed(totals.returnTill)}
                 </span>
-              )}
-              {totals.returnCost !== 0 && (
-                <span>
-                  {t("deskReturnsCost")} <span data-numeric>{signed(totals.returnCost)}</span>
-                </span>
-              )}
-              <span>
-                {t("deskReturnsProfit")} <span data-numeric>{signed(totals.returnProfit)}</span>
+                <span className="text-[6.8pt] font-semibold">{t("deskReturnsTillSub")}</span>
               </span>
             </dd>
           </div>
@@ -1162,6 +1360,30 @@ function ReportTable({ lines, startIndex }: { lines: readonly ReportRow[]; start
               </tr>
             );
           }
+          if (line.kind === "returnGroup") {
+            const down = line.direction === "down";
+            return (
+              <tr key={line.id}>
+                <td
+                  colSpan={heads.length}
+                  className={cn(
+                    "border-0 border-b-[0.25mm] border-solid px-[2.4mm] py-[1.5mm] text-start align-middle leading-[1.3]",
+                    down ? "border-[#e11d2e] bg-[#fdeff1] text-[#a90f1d]" : "border-[#1f8a4c] bg-[#eaf6ef] text-[#17683a]",
+                  )}
+                >
+                  <span className="text-[8.6pt] font-bold">
+                    {t(down ? "profitReportReturnsDown" : "profitReportReturnsUp")}
+                  </span>
+                  <span className="ms-[2mm] text-[7.4pt] font-semibold">
+                    {t("deskReturnsTickets", { count: line.no })} ·{" "}
+                    <span className="font-bold" data-numeric>
+                      {signed(line.amount ?? 0)}
+                    </span>
+                  </span>
+                </td>
+              </tr>
+            );
+          }
           if (line.kind === "return") {
             return (
               <tr key={line.id} className={line.no % 2 ? "bg-white" : "bg-[#f6f6f6]"}>
@@ -1169,7 +1391,10 @@ function ReportTable({ lines, startIndex }: { lines: readonly ReportRow[]; start
                   {line.no}
                 </td>
                 <td className={cn(CELL, "text-start font-bold")}>{line.employee}</td>
-                <td className={cn(CELL, "text-center font-bold", (line.amount ?? 0) < 0 && "text-[#e11d2e]")} data-numeric>
+                <td
+                  className={cn(CELL, "text-center font-bold", line.direction === "down" ? "text-[#e11d2e]" : "text-[#17683a]")}
+                  data-numeric
+                >
                   {signed(line.amount ?? 0)}
                 </td>
                 <td className={cn(CELL, "text-center")} data-numeric>

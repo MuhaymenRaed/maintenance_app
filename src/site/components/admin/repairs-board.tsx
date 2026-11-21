@@ -525,7 +525,7 @@ export function RepairsBoard({
                         className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-chip bg-gold/15 px-1.5 py-0.5 text-[0.62rem] font-extrabold text-gold-ink"
                       >
                         <RotateCcw className="size-3" aria-hidden />
-                        {t("deskReturnedMark")}{" "}
+                        {t(row.returned.price < 0 || (row.returned.price === 0 && row.returned.base < 0) ? "deskReturnedMarkDown" : "deskReturnedMarkUp")}{" "}
                         <span
                           data-numeric
                           className={row.returned.price < 0 ? "text-brand" : row.returned.price > 0 ? "text-success" : undefined}

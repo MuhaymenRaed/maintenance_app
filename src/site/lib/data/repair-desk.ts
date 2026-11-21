@@ -322,10 +322,10 @@ export type DeskTotals = {
   /** Tickets opened before the period whose money came in within it. */
   paidFromEarlier: number;
   /*
-   * «راجع» (the shop, 2026-11-21) — tickets whose money changed within the
-   * period on a later day than they were opened: a price raised or lowered,
-   * a warranty, a part, a cancellation. Each change is already inside the
-   * cards above, on the day it was made; these say how much of them it is.
+   * «راجع» (the shop, 2026-11-21) — tickets whose price changed within the
+   * period on a later day than they were opened: raised, lowered, a warranty
+   * added or taken off, a cancellation. None of it is in the cards above but
+   * the till (`returnTill`); these are the «راجع» card's own figures.
    */
   /** Tickets with a «راجع» within the period. */
   returnTickets: number;
@@ -343,6 +343,14 @@ export type DeskTotals = {
   returnProfit: number;
   /** Of those, called off. */
   returnCancelled: number;
+  /** Tickets brought down (سلبي), and brought up (إيجابي). */
+  returnDownTickets: number;
+  returnUpTickets: number;
+  /**
+   * The money the «راجع» moved in the till — handed back, or taken. Inside
+   * `till`, and the only figure on this day a «راجع» reaches.
+   */
+  returnTill: number;
 };
 
 export function emptyTotals(): DeskTotals {
@@ -375,6 +383,9 @@ export function emptyTotals(): DeskTotals {
     returnCost: 0,
     returnProfit: 0,
     returnCancelled: 0,
+    returnDownTickets: 0,
+    returnUpTickets: 0,
+    returnTill: 0,
   };
 }
 

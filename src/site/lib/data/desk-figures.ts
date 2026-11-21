@@ -23,13 +23,19 @@ import { addToTotals, emptyTotals, isOpenTicket, repairMoney, type DeskTotals, t
  * ---------------------------------------------------------------------------
  * «راجع» — a past day stays as it was (the shop, 2026-11-21)
  * ---------------------------------------------------------------------------
- * A ticket from an earlier day that is edited, or cancelled, later "must
- * affect the revenue of the day it got edited in" and be shown on that day
- * under «راجع». So the day a ticket was opened counts it as it was at the end
- * of that day — `bookedState` — and every later change to its money is
- * counted on the day it was made, inside the cards and on a «راجع» card of
- * its own. A day plus every later day's «راجع» is what the ticket comes to
- * now, and a report printed yesterday reads the same today.
+ * A ticket from an earlier day whose price is brought down or up, or which
+ * is cancelled, is shown on the day of the change under «راجع». The day a
+ * ticket was opened counts it as it was at the end of that day —
+ * `bookedState` — so a report printed yesterday reads the same today.
+ *
+ * ⚠️ On the day of the change a «راجع» moves ONE figure: «واصل بالخزنة», by
+ * the money actually handed back or taken (the shop, the same afternoon: "the
+ * other statistics must show fully like there is no راجع at all"). مبلغ
+ * الصيانة, the parts, the profit, the warranty, «واصل نقد» and «واصل آجل»
+ * read as if nothing had changed; the «راجع» card says what did, and the till
+ * carries a note. Which payment is a «راجع»'s is told by the moment: the
+ * payments ledger and the «راجع» are written by triggers in one transaction,
+ * so they share one `now()` (`returnMoneyWithin`).
  *
  * The changes come from `repair_ticket_returns`, which the database keeps by
  * itself (20261121_repair_returns.sql). Until that file runs there is no
@@ -109,11 +115,13 @@ export function warrantySpan(row: FigureRow, returns: ReturnBook, bounds: Bounds
 
 /** `bookedState` in the shape `addToTotals` and the filters take. */
 export function bookedFields(
-  id: string,
+  row: FigureRow,
   returns: ReturnBook,
 ): { status: string; price: number | null; warrantyPrice: number | null; costPrice: number | null } | null {
-  const state = bookedState(id, returns);
-  return state ? { status: state.status, price: state.price, warrantyPrice: state.warranty, costPrice: state.cost } : null;
+  const state = bookedState(row.id, returns);
+  // The purchase price is never a «راجع»: typed the day after the part
+  // arrives, it still belongs to the ticket's own profit.
+  return state ? { status: state.status, price: state.price, warrantyPrice: state.warranty, costPrice: row.costPrice } : null;
 }
 
 /** A ticket's «راجع» within the period, added up. */
@@ -235,21 +243,56 @@ export function returnedWithinIds(returns: ReturnBook, bounds: Bounds): Set<stri
   return ids;
 }
 
-/** One ticket's «راجع» into a running total — the cards already count it on this day. */
-export function addReturnToTotals(totals: DeskTotals, summary: ReturnSummary): void {
+/**
+ * Down (سلبي) or up (إيجابي): by what the customer is charged, and where that
+ * did not move — a warranty carved out of the same total — by the repair alone.
+ */
+export function returnDirection(summary: ReturnSummary): "down" | "up" {
+  const by = summary.price !== 0 ? summary.price : summary.base;
+  return by < 0 ? "down" : "up";
+}
+
+/**
+ * One ticket's «راجع» into the «راجع» card's own figures — and nothing else.
+ * `money` is what it moved in the till (`returnMoneyWithin`), the one card
+ * on this day a «راجع» reaches.
+ */
+export function addReturnToTotals(totals: DeskTotals, summary: ReturnSummary, money = 0): void {
   totals.returnTickets += 1;
   totals.returnPrice += summary.price;
-  if (summary.price > 0) totals.returnUp += summary.price;
-  else totals.returnDown += summary.price;
+  if (returnDirection(summary) === "down") {
+    totals.returnDown += summary.price;
+    totals.returnDownTickets += 1;
+  } else {
+    totals.returnUp += summary.price;
+    totals.returnUpTickets += 1;
+  }
   totals.returnWarranty += summary.warranty;
   totals.returnCost += summary.cost;
   totals.returnProfit += summary.profit;
   if (summary.cancelled) totals.returnCancelled += 1;
-  totals.maintenance += summary.base;
-  totals.revenue += summary.price;
-  totals.warranty += summary.warranty;
-  totals.cost += summary.cost;
-  totals.profit += summary.profit;
+  totals.returnTill += money;
+  totals.till += money;
+}
+
+/**
+ * The money a ticket's «راجع» moved within the period: the payments written in
+ * the same moment as a «راجع» — the 10,000 handed back when 50,000 became
+ * 40,000 on a cash ticket, the refund of a cancellation. Both ledgers are
+ * written by triggers in one transaction, so they share one timestamp; a
+ * change made on this computer not yet sent carries one time for both.
+ */
+export function returnMoneyWithin(id: string, book: PaymentBook, returns: ReturnBook, bounds: Bounds): number {
+  if (!book || !returns) return 0;
+  const moments = (returns[id] ?? []).filter((entry) => withinBounds(entry.at, bounds)).map((entry) => Date.parse(entry.at));
+  if (!moments.length) return 0;
+  let money = 0;
+  for (const entry of book[id] ?? []) {
+    if (!withinBounds(entry.at, bounds)) continue;
+    const at = Date.parse(entry.at);
+    if (moments.some((moment) => Math.abs(moment - at) <= 2000)) money += entry.amount;
+  }
+  return money;
 }
 
 /**
@@ -442,7 +485,12 @@ export function computeFigures<R extends FigureRow>({
 }): { totals: DeskTotals; byTech: FigureHolderRow[]; rows: R[]; paidRows: R[]; returnRows: R[] } {
   // The same file that keeps the «راجع» makes a cancellation post its refund.
   const refunds = returns !== null;
-  const across = (row: R) => moneyAcross(row, book, bounds, { complete, refunds });
+  /** What came in within the period, split: the ordinary money, and what a «راجع» moved. */
+  const across = (row: R) => {
+    const all = moneyAcross(row, book, bounds, { complete, refunds });
+    const returned = returnMoneyWithin(row.id, book, returns, bounds);
+    return { paid: { before: all.before, within: all.within - returned }, returned };
+  };
   const totals = emptyTotals();
   const perHolder = new Map<string, FigureHolderRow>();
   const holderOf = (row: R) => {
@@ -458,39 +506,39 @@ export function computeFigures<R extends FigureRow>({
   const rows: R[] = [];
   const returnRows: R[] = [];
   for (const row of opened) {
-    const booked = bookedFields(row.id, returns);
+    const booked = bookedFields(row, returns);
     // The figures' status filter reads the status the ticket's day counted.
     const own = booked ? { ...row, status: booked.status } : row;
     if (!byFilters(own, filters, false)) continue;
-    const paid = across(row);
+    const { paid, returned: money } = across(row);
     const returned = returnSummary(row.id, returns, bounds);
     const warranty = returns ? warrantySpan(row, returns, bounds) : null;
     addToTotals(holderOf(row), row, { paid, booked, refunds, warranty });
-    if (returned) addReturnToTotals(holderOf(row), returned);
+    if (returned) addReturnToTotals(holderOf(row), returned, money);
     if (!byFilters(own, filters, true)) continue;
     rows.push(row);
     addToTotals(totals, row, { paid, booked, refunds, warranty });
     if (returned) {
       returnRows.push(row);
-      addReturnToTotals(totals, returned);
+      addReturnToTotals(totals, returned, money);
     }
   }
 
   const paidRows: R[] = [];
   for (const row of earlier) {
     if (!byFilters(row, filters, false)) continue;
-    const paid = across(row);
+    const { paid, returned: money } = across(row);
     const returned = returnSummary(row.id, returns, bounds);
     if (paid.within === 0 && !returned) continue;
     const warranty = returns ? warrantySpan(row, returns, bounds) : null;
     addToTotals(holderOf(row), row, { counted: false, paid, refunds, warranty });
-    if (returned) addReturnToTotals(holderOf(row), returned);
+    if (returned) addReturnToTotals(holderOf(row), returned, money);
     if (!byFilters(row, filters, true)) continue;
     // A refund is a «راجع», not a payment from an earlier day.
     if (paid.within > 0) paidRows.push(row);
     if (returned) returnRows.push(row);
     addToTotals(totals, row, { counted: false, paid, refunds, warranty });
-    if (returned) addReturnToTotals(totals, returned);
+    if (returned) addReturnToTotals(totals, returned, money);
   }
 
   const byTech = [...perHolder.values()].sort(
@@ -552,9 +600,9 @@ export function isMoneyFilter(value: unknown): value is MoneyFilter {
  * the period; `opened` says the ticket was opened in it (an earlier ticket on
  * the list only for its money is not).
  *
- * `booked` is what the ticket's own day counted (`bookedFields`) and
- * `returned` its «راجع» within the period: a card counts both, so the tickets
- * behind it are the ones it counted either way.
+ * `booked` is what the ticket's own day counted (`bookedFields`).
+ * `returnMoney` is what a «راجع» moved in the till (`returnMoneyWithin`): it
+ * is behind «واصل بالخزنة» and no other card, as it is counted.
  */
 export function matchesMoneyFilter(
   row: Omit<FigureRow, "id" | "createdAt" | "holderId" | "holderName">,
@@ -563,13 +611,13 @@ export function matchesMoneyFilter(
   opened: boolean,
   {
     booked = null,
-    returned = null,
     warranty = null,
+    returnMoney = 0,
   }: {
     booked?: { status: string; price: number | null; warrantyPrice: number | null; costPrice: number | null } | null;
-    returned?: ReturnSummary | null;
     /** `warrantySpan` — what the period's money is split by. The ticket's warranty now when absent. */
     warranty?: { start: number; end: number } | null;
+    returnMoney?: number;
   } = {},
 ): boolean {
   if (filter === "opened") return opened;
@@ -589,18 +637,20 @@ export function matchesMoneyFilter(
     collected: row.collected,
     terms: row.paymentTerms,
   });
-  // The same split `addToTotals` makes: the warranty paid first.
+  // The same split `addToTotals` makes: the warranty paid first — over the
+  // ordinary money only, a «راجع»'s being the till's alone.
+  const ordinary = paid.within - returnMoney;
   const warrantyBefore = Math.min(warranty?.start ?? money.warranty, Math.max(0, paid.before));
-  const warrantyNow = Math.min(warranty?.end ?? money.warranty, Math.max(0, paid.before + paid.within));
-  const repairIn = paid.within - (warrantyNow - warrantyBefore);
+  const warrantyNow = Math.min(warranty?.end ?? money.warranty, Math.max(0, paid.before + ordinary));
+  const repairIn = ordinary - (warrantyNow - warrantyBefore);
   const cashLike = row.paymentTerms === "cash" || money.remaining === 0;
   switch (filter) {
     case "active":
-      return counted || (returned != null && (returned.base !== 0 || returned.profit !== 0));
+      return counted;
     case "warranty":
-      return (counted && day.warranty > 0) || (returned != null && returned.warranty !== 0);
+      return counted && day.warranty > 0;
     case "cost":
-      return (counted && day.cost != null) || (returned != null && returned.cost !== 0);
+      return counted && day.cost != null;
     case "owing":
       return opened && !isOff(row.status) && row.paymentTerms === "deferred" && money.remaining > 0;
     case "till":

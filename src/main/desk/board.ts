@@ -28,6 +28,7 @@ import {
   moneyAcross,
   owesMoney,
   returnedWithinIds,
+  returnMoneyWithin,
   returnSummary,
   sameValue,
   warrantySpan,
@@ -528,7 +529,8 @@ function buildBoard(
   const fromEarlier = (row: DeskRow): DeskRow => ({
     ...row,
     earlier: true,
-    paidWithin: figures ? across(row).within : null,
+    // Ordinary money only: what a «راجع» moved is its own mark, and the till's.
+    paidWithin: figures ? across(row).within - returnMoneyWithin(row.id, book, returns, figures) : null,
     returned: returnedIn(row),
   });
   if (view === "all" && figures && window.since === figures.since && window.until === figures.until) {
@@ -545,8 +547,8 @@ function buildBoard(
     moneyFilter && figures
       ? listed.filter((row) =>
           matchesMoneyFilter(row, moneyFilter, across(row), !row.earlier, {
-            booked: row.earlier ? null : bookedFields(row.id, returns),
-            returned: returnSummary(row.id, returns, figures),
+            booked: row.earlier ? null : bookedFields(row, returns),
+            returnMoney: returnMoneyWithin(row.id, book, returns, figures),
             warranty: returns ? warrantySpan(row, returns, figures) : null,
           }),
         )
@@ -584,10 +586,13 @@ function buildBoard(
       byTech: result.byTech,
       // Each row as its own day counted it — what جرد الأرباح prints.
       rows: result.rows.map((row) => {
-        const booked = bookedFields(row.id, returns);
+        const booked = bookedFields(row, returns);
         return booked ? { ...row, booked } : row;
       }),
-      paidRows: result.paidRows.map((row) => ({ ...row, paidWithin: across(row).within })),
+      paidRows: result.paidRows.map((row) => ({
+        ...row,
+        paidWithin: across(row).within - returnMoneyWithin(row.id, book, returns, figures),
+      })),
       returnRows: result.returnRows.map((row) => ({ ...row, returned: returnSummary(row.id, returns, figures) })),
       ledger: book !== null,
       returns: returns !== null,
