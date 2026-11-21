@@ -526,7 +526,10 @@ export function RepairsBoard({
                       >
                         <RotateCcw className="size-3" aria-hidden />
                         {t("deskReturnedMark")}{" "}
-                        <span data-numeric>
+                        <span
+                          data-numeric
+                          className={row.returned.price < 0 ? "text-brand" : row.returned.price > 0 ? "text-success" : undefined}
+                        >
                           {row.returned.price > 0 ? "+" : row.returned.price < 0 ? "-" : ""}
                           {formatPrice(Math.abs(row.returned.price))}
                         </span>

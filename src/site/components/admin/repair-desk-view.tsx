@@ -527,7 +527,9 @@ export function RepairDeskView({
                   ...(hasStats ? [{ value: "owing", label: t("deskTabOwing"), count: counts.owing }] : []),
                   // «راجع» — tickets from an earlier day whose money changed
                   // in the period (the shop, 2026-11-21).
-                  ...(hasStats && returnsOn
+                  // Drawn only when the period has one (the shop, 2026-11-21:
+                  // "only when there is راجع"), or while the reader is on it.
+                  ...(hasStats && returnsOn && ((board.returnedCount ?? 0) > 0 || view === "returned")
                     ? [{ value: "returned", label: t("deskTabReturned"), count: board.returnedCount ?? 0 }]
                     : []),
                 ]}
@@ -862,6 +864,15 @@ type Tile = {
   returned?: number;
 };
 
+/**
+ * The colour of a change: red when it takes money off — the commonest «راجع»,
+ * a price brought down (the shop, 2026-11-21) — green when it adds. Never the
+ * only sign of it: the figure carries its own "+" or "-".
+ */
+function signTone(n: number): string {
+  return n < 0 ? "text-brand" : n > 0 ? "text-success" : "";
+}
+
 /** A change, with its sign: "+10,000", "-30,000". */
 function signedMoney(n: number): string {
   const value = formatPrice(Math.abs(Math.round(n)));
@@ -1041,7 +1052,10 @@ function Figures({
               {tile.returned ? (
                 <span className="inline-flex items-center gap-1 text-[0.66rem] font-bold text-gold-ink">
                   <RotateCcw className="size-3 shrink-0" aria-hidden />
-                  {t("deskIncludesReturns")} <span data-numeric>{signedMoney(tile.returned)}</span>
+                  {t("deskIncludesReturns")}{" "}
+                  <span data-numeric className={signTone(tile.returned)}>
+                    {signedMoney(tile.returned)}
+                  </span>
                 </span>
               ) : null}
             </StatPress>
@@ -1064,7 +1078,7 @@ function Figures({
             </span>
             <span className="min-w-0">
               <span className="block text-[0.7rem] font-bold text-muted">{t("deskReturnsCard")}</span>
-              <span className="text-[1.25rem] font-black leading-tight text-ink" data-numeric>
+              <span className={cn("text-[1.25rem] font-black leading-tight", signTone(totals.returnPrice) || "text-ink")} data-numeric>
                 {signedMoney(totals.returnPrice)}
               </span>
             </span>

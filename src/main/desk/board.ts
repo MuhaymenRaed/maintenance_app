@@ -582,7 +582,11 @@ function buildBoard(
       window: figures,
       totals: result.totals,
       byTech: result.byTech,
-      rows: result.rows,
+      // Each row as its own day counted it — what جرد الأرباح prints.
+      rows: result.rows.map((row) => {
+        const booked = bookedFields(row.id, returns);
+        return booked ? { ...row, booked } : row;
+      }),
       paidRows: result.paidRows.map((row) => ({ ...row, paidWithin: across(row).within })),
       returnRows: result.returnRows.map((row) => ({ ...row, returned: returnSummary(row.id, returns, figures) })),
       ledger: book !== null,

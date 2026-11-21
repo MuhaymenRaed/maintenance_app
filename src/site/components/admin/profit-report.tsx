@@ -113,6 +113,12 @@ export type ReportSourceRow = {
   costPrice: number | null;
   collected: number | null;
   paymentTerms: PaymentTerms;
+  /**
+   * What the ticket's own day counted, when a later «راجع» changed it
+   * (2026-11-21). The row prints this, so yesterday's report still adds up to
+   * yesterday's totals after today's change.
+   */
+  booked?: { status: string; price: number | null; warrantyPrice: number | null; costPrice: number | null } | null;
 };
 
 /** One report to print. */
@@ -163,6 +169,7 @@ type BuiltReport = { rows: ReportRow[]; totals: DeskTotals; includeCancelled: bo
 export function buildProfitReport(job: ReportJob, unassigned: string): BuiltReport {
   const out: ReportRow[] = [];
   const kept = job.rows
+    .map((row) => (row.booked ? { ...row, ...row.booked } : row))
     .filter((row) => job.includeCancelled || (row.status !== "cancelled" && row.status !== "declined"))
     .slice()
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -1031,7 +1038,7 @@ function ReportSummary({ report }: { report: BuiltReport }) {
         {totals.returnTickets > 0 && (
           <div className="col-span-3 flex flex-wrap items-center gap-x-[6mm] gap-y-[1mm] rounded-[2mm] border-[0.25mm] border-solid border-[#333333] bg-white px-[2.8mm] py-[2mm]">
             <dt className="text-[8pt] font-bold leading-[1.3] text-[#333333]">{t("deskReturnsCard")}</dt>
-            <dd className="text-[13pt] font-bold leading-[1.1] text-[#000]">
+            <dd className={cn("text-[13pt] font-bold leading-[1.1]", totals.returnPrice < 0 ? "text-[#e11d2e]" : "text-[#000]")}>
               <span data-numeric>{signed(totals.returnPrice)}</span>
             </dd>
             <dd className="flex flex-wrap gap-x-[4mm] gap-y-[0.6mm] text-[7.4pt] font-semibold leading-[1.3]">
