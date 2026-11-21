@@ -7,6 +7,7 @@ import {
   isOpenTicket,
   repairBase,
   SERVICE_CAPABILITY,
+  repairMoney,
   ticketControl,
   type DeskAuthority,
   type PaymentTerms,
@@ -19,17 +20,25 @@ import { recentDevicesFrom } from "../../site/lib/data/recent-devices.ts";
 import { recentFaultsFrom } from "../../site/lib/data/repair-faults.ts";
 import { MAKE_CODES } from "../../site/lib/data/device-name.ts";
 import {
+  bookedFields,
   computeFigures,
   isMoneyFilter,
   matchesMoneyFilter,
   matchesStatsStatus,
   moneyAcross,
   owesMoney,
+  returnedWithinIds,
+  returnSummary,
+  sameValue,
+  warrantySpan,
   STATS_GROUPS,
   type MoneyFilter,
   type PaymentBook,
   type PaymentEntry,
+  type ReturnBook,
+  type ReturnEntry,
   type StatsStatus,
+  type TicketState,
 } from "../../site/lib/data/desk-figures.ts";
 import type {
   DeskBoard,
@@ -215,13 +224,13 @@ export function deskPage(params: DeskPageParams, service: RepairService): DeskPa
   const view: DeskView = isTech
     ? "mine"
     : asked === "all" || asked === "mine" || asked === "pending" || asked === "edited" ||
-        (asked === "owing" && authority.seesMoney)
+        ((asked === "owing" || asked === "returned") && authority.seesMoney)
       ? asked
       : defaultView;
 
   const period = { when: params.when, from: params.from, to: params.to, days: params.days };
   const window = resolveQueueWindow(period, now, {
-    fallback: view === "all" || view === "edited" || view === "owing" ? "all" : "open",
+    fallback: view === "all" || view === "edited" || view === "owing" || view === "returned" ? "all" : "open",
     open: true,
   });
   // The figures' own reading of the same address — every day unless a period
@@ -326,15 +335,91 @@ export function deskPage(params: DeskPageParams, service: RepairService): DeskPa
  * computer's ticket id — `pullPayments`. Null while the table is not on the
  * server; the figures then use the money row's own date, as the site does.
  */
-function paymentBook(): PaymentBook {
+function paymentBook(pending: Waiting, refunds: boolean): PaymentBook {
   const held = store.ref<Record<string, PaymentEntry[]> | null>("payments");
   if (!held) return null;
   const book: Record<string, PaymentEntry[]> = {};
   for (const [serverId, entries] of Object.entries(held)) {
     const id = store.idForServer(serverId) ?? serverId;
-    book[id] = entries;
+    book[id] = [...entries];
+  }
+  // With the «راجع» ledger a cancellation gives its money back, and a change
+  // not yet sent is dated by when it was made — not by the money row, which a
+  // cancellation never touches.
+  if (refunds) {
+    for (const [id, change] of pending) {
+      const delta = paidNow(change.local) - paidNow(change.server);
+      if (delta) (book[id] ??= []).push({ at: change.at, amount: delta });
+    }
   }
   return book;
+}
+
+/**
+ * `repair_ticket_returns` — every change to a ticket's money made on a later
+ * day than it was opened, by this computer's ticket id, oldest first
+ * (`pullReturns`). A change on this computer not yet sent is in it too, as the
+ * server will record it: one later-day change from the server's copy to this
+ * one. Null while the table is not on the server.
+ */
+function returnBook(pending: Waiting): ReturnBook {
+  const held = store.ref<Record<string, ReturnEntry[]> | null>("returns");
+  if (!held) return null;
+  const book: Record<string, ReturnEntry[]> = {};
+  for (const [serverId, entries] of Object.entries(held)) {
+    const id = store.idForServer(serverId) ?? serverId;
+    book[id] = [...entries];
+  }
+  for (const [id, change] of pending) {
+    if (baghdadDay(Date.parse(change.at)) <= baghdadDay(Date.parse(change.server.created_at))) continue;
+    const before = stateOf(change.server);
+    const after = stateOf(change.local);
+    if (sameValue(before, after)) continue;
+    (book[id] ??= []).push({ at: change.at, before, after });
+  }
+  return book;
+}
+
+/** The tickets with a change on this computer not yet sent: when the last was made, the server's copy, and this one. */
+type Waiting = Map<string, { at: string; server: RawTicket; local: RawTicket }>;
+
+function waiting(): Waiting {
+  const out: Waiting = new Map();
+  for (const op of store.ops) {
+    const record = store.tickets.get(op.ticketId);
+    if (!record?.serverId) continue;
+    const seen = out.get(op.ticketId);
+    if (seen) {
+      if (op.createdAt > seen.at) seen.at = op.createdAt;
+      continue;
+    }
+    const local = store.view(op.ticketId);
+    if (local) out.set(op.ticketId, { at: op.createdAt, server: record.raw, local });
+  }
+  return out;
+}
+
+/** What the figures read of a ticket — the site's `TicketState`. */
+function stateOf(raw: RawTicket): TicketState {
+  return {
+    status: raw.status,
+    price: num(raw.actual_cost) ?? num(raw.quote_amount),
+    warranty: num(raw.warranty_price),
+    cost: num(financeOf(raw)?.cost_price),
+  };
+}
+
+/** What a ticket has paid now — the payments ledger's own rule, a cancelled one nothing. */
+function paidNow(raw: RawTicket): number {
+  if (raw.status === "cancelled" || raw.status === "declined") return 0;
+  const ledger = financeOf(raw);
+  return repairMoney({
+    price: num(raw.actual_cost) ?? num(raw.quote_amount),
+    warranty: num(raw.warranty_price),
+    cost: null,
+    collected: num(ledger?.collected),
+    terms: ledger?.payment_terms === "deferred" ? "deferred" : "cash",
+  }).collected;
 }
 
 /**
@@ -400,13 +485,18 @@ function buildBoard(
     opened.push(shapeRow(id, raw, locale, scope, viewerId));
   }
 
-  // Tickets opened before the figures' period whose money came in within it.
-  const book = figures ? paymentBook() : null;
+  // Tickets opened before the figures' period whose money came in, or
+  // changed («راجع»), within it.
+  const pending = figures ? waiting() : (new Map() as Waiting);
+  const returns = figures ? returnBook(pending) : null;
+  const refunds = returns !== null;
+  const book = figures ? paymentBook(pending, refunds) : null;
+  const across = (row: DeskRow) => moneyAcross(row, book, figures ?? window, { complete: true, refunds });
   const earlier: DeskRow[] = [];
   if (figures?.since) {
     for (const { id, raw } of before) {
       const row = shapeRow(id, raw, locale, scope, viewerId);
-      if (moneyAcross(row, book, figures, true).within !== 0) earlier.push(row);
+      if (across(row).within !== 0 || returnSummary(row.id, returns, figures)) earlier.push(row);
     }
   }
 
@@ -415,6 +505,13 @@ function buildBoard(
     (!window.since || row.createdAt >= window.since) &&
     (!window.until || row.createdAt < window.until) &&
     (window.when !== "open" || isOpenTicket(row.status));
+  // «راجع» within the panel's own period — the site's `getRepairDesk`.
+  const returnedIn = (row: DeskRow) =>
+    scope.authority.seesMoney && returns ? returnSummary(row.id, returns, window) : null;
+  const marked = opened.map((row) => {
+    const returned = returnedIn(row);
+    return returned ? { ...row, returned } : row;
+  });
   const byView = (row: DeskRow) =>
     view === "mine"
       ? row.holderId === viewerId
@@ -424,17 +521,34 @@ function buildBoard(
           ? isOpenTicket(row.status) && row.holderRank !== "technician"
           : view === "owing"
             ? owesMoney(row)
-            : true;
-  const listed = opened.filter((row) => inPanelWindow(row) && byView(row));
+            : view === "returned"
+              ? Boolean(row.returned)
+              : true;
+  const listed = marked.filter((row) => (view === "returned" || inPanelWindow(row)) && byView(row));
+  const fromEarlier = (row: DeskRow): DeskRow => ({
+    ...row,
+    earlier: true,
+    paidWithin: figures ? across(row).within : null,
+    returned: returnedIn(row),
+  });
   if (view === "all" && figures && window.since === figures.since && window.until === figures.until) {
-    for (const row of earlier) listed.push({ ...row, paidWithin: moneyAcross(row, book, figures, true).within });
+    for (const row of earlier) listed.push(fromEarlier(row));
+  } else if (view === "returned") {
+    for (const row of earlier) {
+      const shaped = fromEarlier(row);
+      if (shaped.returned) listed.push(shaped);
+    }
   }
 
   // Pressed from a card: only the tickets behind its figure — the site's rule.
   const behind =
     moneyFilter && figures
       ? listed.filter((row) =>
-          matchesMoneyFilter(row, moneyFilter, moneyAcross(row, book, figures, true), row.paidWithin == null),
+          matchesMoneyFilter(row, moneyFilter, across(row), !row.earlier, {
+            booked: row.earlier ? null : bookedFields(row.id, returns),
+            returned: returnSummary(row.id, returns, figures),
+            warranty: returns ? warrantySpan(row, returns, figures) : null,
+          }),
         )
       : listed;
 
@@ -448,7 +562,7 @@ function buildBoard(
   );
 
   const totals = emptyTotals();
-  for (const row of inScope) if (!row.paidWithin) addToTotals(totals, row);
+  for (const row of inScope) if (!row.earlier) addToTotals(totals, row);
 
   /* ── The figures panel ── */
   let stats: DeskStats | null = null;
@@ -457,6 +571,7 @@ function buildBoard(
       opened,
       earlier,
       book,
+      returns,
       bounds: figures,
       filters: { status: statsStatus, terms, holderId },
       // This computer holds the whole ledger, and changes not yet sent.
@@ -468,9 +583,18 @@ function buildBoard(
       totals: result.totals,
       byTech: result.byTech,
       rows: result.rows,
-      paidRows: result.paidRows.map((row) => ({ ...row, paidWithin: moneyAcross(row, book, figures, true).within })),
+      paidRows: result.paidRows.map((row) => ({ ...row, paidWithin: across(row).within })),
+      returnRows: result.returnRows.map((row) => ({ ...row, returned: returnSummary(row.id, returns, figures) })),
       ledger: book !== null,
+      returns: returns !== null,
     };
+  }
+
+  // The «راجع» tab's count — the panel's period, whichever day each ticket was opened.
+  let returnedCount: number | undefined;
+  if (scope.authority.seesMoney && returns) {
+    const known = new Set([...opened, ...earlier].map((row) => row.id));
+    returnedCount = [...returnedWithinIds(returns, window)].filter((id) => known.has(id)).length;
   }
 
   return {
@@ -478,6 +602,7 @@ function buildBoard(
     counts,
     totals,
     stats,
+    returnedCount,
     available: refs.available(),
     truncated: false,
   };

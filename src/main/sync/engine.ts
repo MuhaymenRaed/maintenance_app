@@ -7,7 +7,7 @@ import { raise } from "../notify";
 import { words } from "../i18n";
 import { logger } from "../log";
 import { asFailure, ensureSession, sessionEmail, supabase, SyncFailure } from "./client";
-import { learnOrigins, pullAllTickets, pullChanges, pullPayments, pullRefs, type PullOutcome } from "./pull";
+import { learnOrigins, pullAllTickets, pullChanges, pullPayments, pullRefs, pullReturns, type PullOutcome } from "./pull";
 import { pushAll } from "./push";
 
 const log = logger("sync");
@@ -205,7 +205,9 @@ class SyncEngine extends EventEmitter {
     const learned = await learnOrigins(client);
     // When each part of a ticket's money came in — the figures' dates.
     const dated = await pullPayments(client, fullDue);
-    if (outcome.changed || refsDue || learned || dated) store.bump();
+    // Every later change to a ticket's money — the figures' «راجع».
+    const adjusted = await pullReturns(client, fullDue);
+    if (outcome.changed || refsDue || learned || dated || adjusted) store.bump();
     this.announce(outcome);
   }
 

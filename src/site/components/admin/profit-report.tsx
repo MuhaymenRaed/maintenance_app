@@ -26,6 +26,7 @@ import {
   PaperTitle,
 } from "@/components/admin/repair-print";
 import { addToTotals, emptyTotals, repairMoney, type DeskTotals, type PaymentTerms } from "@/lib/data/repair-desk";
+import { describeReturn, type ReturnDescription, type ReturnSummary } from "@/lib/data/desk-figures";
 import { baghdadDay } from "@/lib/data/date-window";
 import { formatPrice } from "@/lib/format";
 import {
@@ -125,9 +126,19 @@ export type ReportJob = {
   totals?: DeskTotals;
   /** List cancelled tickets as well — when the reader asked for exactly those. */
   includeCancelled?: boolean;
+  /**
+   * «راجع» (the shop, 2026-11-21) — tickets whose money changed in the period
+   * on a later day than they were opened. A section of their own after the
+   * period's tickets, "but not always, only if such a راجع happened".
+   */
+  returns?: readonly (ReportSourceRow & { returned: ReturnSummary })[];
 };
 
 type ReportRow = {
+  /** A ticket of the period, the «راجع» section's heading, or one of its tickets. */
+  kind: "ticket" | "returnHead" | "return";
+  /** Its number within its section. */
+  no: number;
   id: string;
   code: string;
   employee: string;
@@ -141,6 +152,9 @@ type ReportRow = {
   device: string;
   fault: string;
   day: string;
+  /** A «راجع»: what changed, and the day the ticket was opened. */
+  change?: ReturnDescription;
+  openedDay?: string;
 };
 
 type BuiltReport = { rows: ReportRow[]; totals: DeskTotals; includeCancelled: boolean };
@@ -164,6 +178,8 @@ export function buildProfitReport(job: ReportJob, unassigned: string): BuiltRepo
     });
     const priced = row.price != null && !cancelled;
     out.push({
+      kind: "ticket",
+      no: out.length + 1,
       id: row.id,
       code: row.code,
       employee: row.holderName?.trim() || unassigned,
@@ -177,6 +193,46 @@ export function buildProfitReport(job: ReportJob, unassigned: string): BuiltRepo
       device: row.deviceModel,
       fault: [...row.issues, ...row.customFaults].filter(Boolean).join("، "),
       day: baghdadDay(Date.parse(row.createdAt)),
+    });
+  }
+
+  // «راجع» after the period's own tickets, with a heading row of its own —
+  // one more row to the pages, so a long list breaks across them like any other.
+  const returns = (job.returns ?? []).slice().sort((a, b) => a.returned.at.localeCompare(b.returned.at));
+  if (returns.length) {
+    out.push({
+      kind: "returnHead",
+      no: 0,
+      id: "returns-head",
+      code: "",
+      employee: "",
+      amount: null,
+      warranty: 0,
+      profit: null,
+      noCost: false,
+      cancelled: false,
+      device: "",
+      fault: "",
+      day: "",
+    });
+    returns.forEach((row, index) => {
+      out.push({
+        kind: "return",
+        no: index + 1,
+        id: `return-${row.id}`,
+        code: row.code,
+        employee: row.holderName?.trim() || unassigned,
+        amount: row.returned.base,
+        warranty: row.returned.warranty,
+        profit: row.returned.profit,
+        noCost: false,
+        cancelled: false,
+        device: row.deviceModel,
+        fault: "",
+        day: baghdadDay(Date.parse(row.returned.at)),
+        change: describeReturn(row.returned),
+        openedDay: baghdadDay(Date.parse(row.createdAt)),
+      });
     });
   }
 
@@ -479,7 +535,7 @@ export function useProfitReport(): ProfitReport {
 
   function start(mode: ReportMode, job: ReportJob) {
     if (running.current) return;
-    if (!job.rows.length) {
+    if (!job.rows.length && !job.returns?.length) {
       setStatus({ tone: "error", title: t("profitReportEmpty"), detail: null, setup: false });
       return;
     }
@@ -565,7 +621,8 @@ export function ReportButtons({
 }) {
   const t = useTranslations("Admin");
   const words = useModeWords();
-  const empty = job.rows.length === 0;
+  // A period with only «راجع» in it is still a report.
+  const empty = job.rows.length === 0 && !job.returns?.length;
   return (
     <div role="group" aria-label={t("profitReport")} className={cn("flex flex-wrap items-center gap-1.5", className)}>
       {MODES.map(({ mode, Icon }) => {
@@ -613,7 +670,8 @@ export function ReportPrintDialog({
   const t = useTranslations("Admin");
   const words = useModeWords();
   const owner = useOwnerDocument();
-  const empty = job.rows.length === 0;
+  // A period with only «راجع» in it is still a report.
+  const empty = job.rows.length === 0 && !job.returns?.length;
   return (
     <Dialog.Root open={open} onOpenChange={(next) => !next && onClose()}>
       <Dialog.Portal container={owner?.body}>
@@ -770,6 +828,32 @@ function ReportStage({ task }: { task: ReportTask }) {
 }
 
 const money = (value: number) => formatPrice(Math.round(value));
+
+/**
+ * A change, with its sign: "+10,000", "-30,000" — held left-to-right by
+ * isolates in the text itself. The picture the paper is drawn from kept the
+ * sign of a figure inside a line of Arabic on the wrong side even under
+ * `data-numeric`; characters cannot be lost the way a style can.
+ */
+const signed = (value: number) =>
+  `\u2066${value > 0 ? "+" : value < 0 ? "-" : ""}${money(Math.abs(value))}\u2069`;
+
+/** What one «راجع» was, in words, for the report's «راجع» rows. */
+function ChangeWords({ change }: { change: ReturnDescription }) {
+  const t = useTranslations("Admin");
+  if (change.kind !== "edit") return <span className="font-bold">{t(`deskReturnKind_${change.kind}`)}</span>;
+  return (
+    <span className="font-bold">
+      {change.changes.map((item, index) => (
+        <span key={item.field}>
+          {index > 0 && " · "}
+          {t(`deskReturnField_${item.field}`)} <span data-numeric>{money(item.from)}</span> {t("deskReturnArrow")}{" "}
+          <span data-numeric>{money(item.to)}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
 
 function clockOf(at: number) {
   return new Intl.DateTimeFormat("en-GB", {
@@ -944,8 +1028,48 @@ function ReportSummary({ report }: { report: BuiltReport }) {
             </dd>
           </div>
         ))}
+        {totals.returnTickets > 0 && (
+          <div className="col-span-3 flex flex-wrap items-center gap-x-[6mm] gap-y-[1mm] rounded-[2mm] border-[0.25mm] border-solid border-[#333333] bg-white px-[2.8mm] py-[2mm]">
+            <dt className="text-[8pt] font-bold leading-[1.3] text-[#333333]">{t("deskReturnsCard")}</dt>
+            <dd className="text-[13pt] font-bold leading-[1.1] text-[#000]">
+              <span data-numeric>{signed(totals.returnPrice)}</span>
+            </dd>
+            <dd className="flex flex-wrap gap-x-[4mm] gap-y-[0.6mm] text-[7.4pt] font-semibold leading-[1.3]">
+              <span>{t("deskReturnsTickets", { count: totals.returnTickets })}</span>
+              {totals.returnUp > 0 && (
+                <span>
+                  {t("deskReturnsUp")} <span data-numeric>{signed(totals.returnUp)}</span>
+                </span>
+              )}
+              {totals.returnDown < 0 && (
+                <span>
+                  {t("deskReturnsDown")} <span data-numeric>{signed(totals.returnDown)}</span>
+                </span>
+              )}
+              {totals.returnWarranty !== 0 && (
+                <span>
+                  {t("deskReturnsWarranty")} <span data-numeric>{signed(totals.returnWarranty)}</span>
+                </span>
+              )}
+              {totals.returnCost !== 0 && (
+                <span>
+                  {t("deskReturnsCost")} <span data-numeric>{signed(totals.returnCost)}</span>
+                </span>
+              )}
+              <span>
+                {t("deskReturnsProfit")} <span data-numeric>{signed(totals.returnProfit)}</span>
+              </span>
+            </dd>
+          </div>
+        )}
       </dl>
       <ul className="mt-[1.8mm] flex flex-wrap gap-x-[5mm] gap-y-[0.8mm] text-[7.6pt] font-semibold leading-[1.3]">
+        {totals.returnTickets > 0 && (
+          <li className="flex items-center gap-[1.4mm]">
+            <span className="size-[1.4mm] shrink-0 rotate-45 bg-[#333333]" aria-hidden />
+            {t("profitReportReturnsIncluded")}
+          </li>
+        )}
         {totals.missingCost > 0 && (
           <li className="flex items-center gap-[1.4mm]">
             <span className="size-[1.4mm] shrink-0 rotate-45 bg-[#e11d2e]" aria-hidden />
@@ -1021,10 +1145,51 @@ function ReportTable({ lines, startIndex }: { lines: readonly ReportRow[]; start
       <tbody>
         {lines.map((line, offset) => {
           const n = startIndex + offset;
+          if (line.kind === "returnHead") {
+            return (
+              <tr key={line.id}>
+                <td colSpan={heads.length} className="border-0 bg-[#333333] px-[2.4mm] py-[1.8mm] text-start align-middle leading-[1.3] text-white">
+                  <span className="text-[9pt] font-bold">{t("profitReportReturnsTitle")}</span>
+                  <span className="ms-[2mm] text-[7.2pt] font-semibold">{t("profitReportReturnsNote")}</span>
+                </td>
+              </tr>
+            );
+          }
+          if (line.kind === "return") {
+            return (
+              <tr key={line.id} className={line.no % 2 ? "bg-white" : "bg-[#f6f6f6]"}>
+                <td className={cn(CELL, "text-center font-bold text-[#333333]")} data-numeric>
+                  {line.no}
+                </td>
+                <td className={cn(CELL, "text-start font-bold")}>{line.employee}</td>
+                <td className={cn(CELL, "text-center font-bold", (line.amount ?? 0) < 0 && "text-[#e11d2e]")} data-numeric>
+                  {signed(line.amount ?? 0)}
+                </td>
+                <td className={cn(CELL, "text-center")} data-numeric>
+                  {line.warranty !== 0 ? signed(line.warranty) : "—"}
+                </td>
+                <td className={cn(CELL, "text-center font-bold", (line.profit ?? 0) < 0 && "text-[#e11d2e]")} data-numeric>
+                  {signed(line.profit ?? 0)}
+                </td>
+                <td className={cn(CELL, "text-center font-bold")} dir="auto">
+                  {line.device}
+                </td>
+                <td className={cn(CELL, "text-start")}>
+                  {line.change && <ChangeWords change={line.change} />}
+                  <span className="block text-[7pt] font-semibold">
+                    <span data-numeric>{line.code}</span> · {t("profitReportReturnOpened", { day: `\u2066${line.openedDay ?? ""}\u2069` })}
+                  </span>
+                </td>
+                <td className={cn(CELL, "whitespace-nowrap text-center")} data-numeric>
+                  {line.day}
+                </td>
+              </tr>
+            );
+          }
           return (
             <tr key={line.id} className={n % 2 ? "bg-[#fdeff1]" : "bg-white"}>
               <td className={cn(CELL, "text-center font-bold text-[#a90f1d]")} data-numeric>
-                {n + 1}
+                {line.no}
               </td>
               <td className={cn(CELL, "text-start font-bold")}>{line.employee}</td>
               <td className={cn(CELL, "text-center font-bold")} data-numeric>

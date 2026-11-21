@@ -25,7 +25,7 @@ import type {
   RepairService,
 } from "../site/lib/data/repair-desk.ts";
 import type { QueueWindow } from "../site/lib/data/queue-window.ts";
-import type { MoneyFilter, StatsStatus } from "../site/lib/data/desk-figures.ts";
+import type { MoneyFilter, ReturnSummary, StatsStatus } from "../site/lib/data/desk-figures.ts";
 import type { StockModel } from "../site/lib/data/device-catalogue.ts";
 import type { AccessGrant } from "../site/lib/permissions.ts";
 
@@ -83,6 +83,10 @@ export type DeskRow = RepairCard & {
   financeAt?: string | null;
   /** Set only on a ticket opened before the period whose money came in within it: how much. */
   paidWithin?: number | null;
+  /** On the list from before the period — for its money or its «راجع». */
+  earlier?: boolean;
+  /** «راجع» — its money changed within the period on a later day than it was opened. */
+  returned?: ReturnSummary | null;
   holderId: string | null;
   holderName: string | null;
   holderRank: DeskRank | null;
@@ -104,7 +108,7 @@ export type DeskPerson = {
 
 export type DeskScope = { authority: DeskAuthority; people: DeskPerson[] };
 
-export type DeskView = "all" | "mine" | "pending" | "edited" | "owing";
+export type DeskView = "all" | "mine" | "pending" | "edited" | "owing" | "returned";
 
 export type DeskTechRow = DeskTotals & { holderId: string | null; name: string };
 
@@ -128,8 +132,12 @@ export type DeskStats = {
   byTech: DeskTechRow[];
   rows: DeskRow[];
   paidRows: DeskRow[];
+  /** «راجع» — every ticket whose money changed in the period on a later day, with its summary. */
+  returnRows?: DeskRow[];
   /** Money is dated by the ledger (`repair_ticket_payments`). */
   ledger: boolean;
+  /** The «راجع» ledger is on the server (`repair_ticket_returns`). */
+  returns?: boolean;
 };
 
 export type DeskBoard = {
@@ -137,6 +145,8 @@ export type DeskBoard = {
   counts: Record<string, number>;
   totals: DeskTotals;
   stats: DeskStats | null;
+  /** «راجع» within the tickets panel's period — the tab's count. */
+  returnedCount?: number;
   available: DeskAvailability;
   truncated: boolean;
 };

@@ -15,6 +15,7 @@ import {
   MapPin,
   Pencil,
   PencilLine,
+  RotateCcw,
   Phone,
   Printer,
   Receipt,
@@ -512,15 +513,42 @@ export function RepairsBoard({
                         {t("deskNoCollectedMark")}
                       </span>
                     )}
+                    {/* «راجع» — its money changed in the period on a later day
+                        than it was opened (the shop, 2026-11-21): counted on
+                        the day of the change, its own day left as it was. */}
+                    {seesMoney && row.returned && (
+                      <span
+                        title={t("deskReturnedHint", {
+                          opened: formatDayTime(locale, row.createdAt),
+                          when: formatDayTime(locale, row.returned.at),
+                        })}
+                        className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-chip bg-gold/15 px-1.5 py-0.5 text-[0.62rem] font-extrabold text-gold-ink"
+                      >
+                        <RotateCcw className="size-3" aria-hidden />
+                        {t("deskReturnedMark")}{" "}
+                        <span data-numeric>
+                          {row.returned.price > 0 ? "+" : row.returned.price < 0 ? "-" : ""}
+                          {formatPrice(Math.abs(row.returned.price))}
+                        </span>
+                      </span>
+                    )}
                     {/* Opened on an earlier day, on today's list because its
                         money came in today (the shop, 2026-11-20). */}
                     {seesMoney && row.paidWithin != null && row.paidWithin !== 0 && (
                       <span
                         title={t("deskOpenedOn", { when: formatDayTime(locale, row.createdAt) })}
-                        className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-chip bg-success/12 px-1.5 py-0.5 text-[0.62rem] font-extrabold text-success"
+                        className={cn(
+                          "inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-chip px-1.5 py-0.5 text-[0.62rem] font-extrabold",
+                          row.paidWithin > 0 ? "bg-success/12 text-success" : "bg-brand/10 text-brand",
+                        )}
                       >
                         <Banknote className="size-3" aria-hidden />
-                        {t("deskPaidHereMark")} <span data-numeric>{formatPrice(row.paidWithin)}</span>
+                        {/* A refund — a cancellation of an earlier day's ticket (2026-11-21). */}
+                        {row.paidWithin > 0 ? t("deskPaidHereMark") : t("deskRefundedHereMark")}{" "}
+                        <span data-numeric>
+                          {row.paidWithin < 0 && "-"}
+                          {formatPrice(Math.abs(row.paidWithin))}
+                        </span>
                       </span>
                     )}
                   </p>

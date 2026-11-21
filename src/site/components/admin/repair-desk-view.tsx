@@ -18,6 +18,7 @@ import {
   Loader2,
   Plus,
   Receipt,
+  RotateCcw,
   Search,
   ShieldCheck,
   Target,
@@ -54,7 +55,7 @@ import {
   type PaymentTerms,
   type RepairService,
 } from "@/lib/data/repair-desk";
-import type { MoneyFilter, StatsStatus } from "@/lib/data/desk-figures";
+import { describeReturn, type MoneyFilter, type ReturnSummary, type StatsStatus } from "@/lib/data/desk-figures";
 import { formatPrice } from "@/lib/format";
 import { statMoney } from "@/lib/data/stat-money";
 import { cn } from "@/lib/utils";
@@ -278,6 +279,16 @@ export function RepairDeskView({
       ...(statsStatus !== "all" ? { status: statsStatus, sstatus: statsStatus } : {}),
       mf: filter,
     });
+  /** From the «راجع» card to the «راجع» list, over the figures' period. */
+  const returnsHref = href({
+    ...(board.stats?.window.query ?? window.query),
+    ...(search ? { q: search } : {}),
+    ...(terms ? { terms } : {}),
+    ...(tech ? { tech } : {}),
+    view: "returned",
+  });
+  // The «راجع» ledger is on this deployment (20261121_repair_returns.sql).
+  const returnsOn = Boolean(board.stats?.returns);
 
   const totalAll = Object.values(board.counts).reduce((sum, n) => sum + n, 0);
   const cur = t("currency");
@@ -396,6 +407,8 @@ export function RepairDeskView({
   };
   const reportJob: ReportJob = {
     rows: stats?.rows ?? [],
+    // «راجع» gets a section of its own, drawn only when there is one.
+    returns: (stats?.returnRows ?? []).flatMap((row) => (row.returned ? [{ ...row, returned: row.returned }] : [])),
     context: reportContext,
     totals: stats?.totals,
     includeCancelled: statsStatus === "cancelled",
@@ -488,6 +501,7 @@ export function RepairDeskView({
             report={report}
             reportJob={reportJob}
             cardHref={cardHref}
+            returnsHref={returnsHref}
             techHref={(holderId) => href({ ...statsParams, tech: holderId ?? "none" })}
           />
         </LockedPanel>
@@ -511,6 +525,11 @@ export function RepairDeskView({
                   // The deferred tickets still owing, from any day — the way
                   // back to them (the shop, 2026-11-20).
                   ...(hasStats ? [{ value: "owing", label: t("deskTabOwing"), count: counts.owing }] : []),
+                  // «راجع» — tickets from an earlier day whose money changed
+                  // in the period (the shop, 2026-11-21).
+                  ...(hasStats && returnsOn
+                    ? [{ value: "returned", label: t("deskTabReturned"), count: board.returnedCount ?? 0 }]
+                    : []),
                 ]}
               />
             )}
@@ -586,6 +605,13 @@ export function RepairDeskView({
             <p className="flex flex-wrap items-center gap-2 rounded-card border border-warning/45 bg-warning/8 px-4 py-2.5 text-[0.8rem] font-bold text-ink">
               <HandCoins className="size-4 shrink-0 text-warning" aria-hidden />
               {t("deskOwingBanner")}
+            </p>
+          )}
+
+          {view === "returned" && (
+            <p className="flex flex-wrap items-center gap-2 rounded-card border border-gold-ink/40 bg-gold/10 px-4 py-2.5 text-[0.8rem] font-bold text-ink">
+              <RotateCcw className="size-4 shrink-0 text-gold-ink" aria-hidden />
+              {t("deskReturnedBanner")}
             </p>
           )}
 
@@ -705,6 +731,7 @@ function StatsPanel({
   report,
   reportJob,
   cardHref,
+  returnsHref,
   techHref,
 }: {
   locale: string;
@@ -719,6 +746,7 @@ function StatsPanel({
   report: ProfitReport;
   reportJob: ReportJob;
   cardHref: (filter: MoneyFilter) => string;
+  returnsHref: string;
   techHref: (holderId: string | null) => string;
 }) {
   const t = useTranslations("Admin");
@@ -746,6 +774,7 @@ function StatsPanel({
         scope={scopeLabel}
         money={money}
         cardHref={cardHref}
+        returnsHref={returnsHref}
       />
 
       {!stats.ledger && board.available.finance && (
@@ -753,6 +782,8 @@ function StatsPanel({
       )}
 
       {stats.paidRows.length > 0 && <PaidEarlier rows={stats.paidRows} money={money} locale={locale} />}
+
+      {(stats.returnRows?.length ?? 0) > 0 && <ReturnsList rows={stats.returnRows ?? []} money={money} locale={locale} />}
 
       {/* جرد الأرباح — the tickets the figures count, on A4 or A5 by the paper
           printer or as a PDF; a report of hand-picked tickets; and which
@@ -827,7 +858,15 @@ type Tile = {
   tone: keyof typeof TONE;
   detail?: StatDetail;
   href?: string;
+  /** How much of the figure is «راجع» — a change made on a later day (2026-11-21). */
+  returned?: number;
 };
+
+/** A change, with its sign: "+10,000", "-30,000". */
+function signedMoney(n: number): string {
+  const value = formatPrice(Math.abs(Math.round(n)));
+  return n > 0 ? `+${value}` : n < 0 ? `-${value}` : value;
+}
 
 /**
  * The cards, as the shop defined each of them on 2026-11-20 — see
@@ -843,6 +882,7 @@ function Figures({
   scope,
   money,
   cardHref,
+  returnsHref,
 }: {
   totals: DeskTotals;
   finance: boolean;
@@ -852,6 +892,7 @@ function Figures({
   scope: string;
   money: (n: number) => string;
   cardHref: (filter: MoneyFilter) => string;
+  returnsHref: string;
 }) {
   const t = useTranslations("Admin");
   /*
@@ -876,6 +917,7 @@ function Figures({
       sub: t("deskMaintenanceSub"),
       tone: "brand",
       href: cardHref("active"),
+      returned: totals.returnPrice - totals.returnWarranty,
     },
   ];
   if (finance) {
@@ -887,6 +929,7 @@ function Figures({
         sub: totals.missingCost > 0 ? t("deskMissingCostSub", { count: totals.missingCost }) : money(totals.cost),
         tone: totals.missingCost > 0 ? "warning" : "muted",
         href: cardHref("cost"),
+        returned: totals.returnCost,
       },
       {
         Icon: TrendingUp,
@@ -895,6 +938,7 @@ function Figures({
         sub: totals.missingCost > 0 ? t("deskProfitMissing", { count: totals.missingCost }) : t("deskProfitFormula"),
         tone: totals.profit < 0 ? "brand" : "success",
         href: cardHref("active"),
+        returned: totals.returnProfit,
       },
     );
   }
@@ -906,6 +950,7 @@ function Figures({
       sub: t("deskWarrantySub", { count: totals.warrantyTickets }),
       tone: "info",
       href: cardHref("warranty"),
+      returned: totals.returnWarranty,
     });
   }
   if (finance) {
@@ -934,7 +979,9 @@ function Figures({
         Icon: Wallet,
         label: t("financeTill"),
         value: statMoney(totals.till),
-        sub: `${t("financeTillFormula")}: ${formatPrice(totals.tillWarranty)} + ${formatPrice(totals.collectedCash)} + ${formatPrice(totals.collectedDeferred)}`,
+        // Each figure isolated left-to-right: a refund makes one negative, and
+        // the Arabic line would otherwise move its minus to the far side.
+        sub: `${t("financeTillFormula")}: ${[totals.tillWarranty, totals.collectedCash, totals.collectedDeferred].map((n) => `\u2066${formatPrice(n)}\u2069`).join(" + ")}`,
         tone: "success",
         href: cardHref("till"),
       },
@@ -991,10 +1038,69 @@ function Figures({
                   {tile.sub}
                 </span>
               )}
+              {tile.returned ? (
+                <span className="inline-flex items-center gap-1 text-[0.66rem] font-bold text-gold-ink">
+                  <RotateCcw className="size-3 shrink-0" aria-hidden />
+                  {t("deskIncludesReturns")} <span data-numeric>{signedMoney(tile.returned)}</span>
+                </span>
+              ) : null}
             </StatPress>
           </li>
         ))}
       </ul>
+
+      {/* «راجع» — the shop, 2026-11-21: "a special statistics card called
+          راجع will show the value of money changed or decreased". Drawn only
+          on a period that has one; every figure above already counts it. */}
+      {totals.returnTickets > 0 && (
+        <StatPress
+          href={returnsHref}
+          closeLabel={closeLabel}
+          className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2.5 rounded-panel border border-gold-ink/45 bg-gold/8 p-3 shadow-card"
+        >
+          <span className="flex min-w-0 items-center gap-2.5">
+            <span className="grid size-10 shrink-0 place-items-center rounded-full bg-gold/20">
+              <RotateCcw className="size-5 text-gold-ink" aria-hidden />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-[0.7rem] font-bold text-muted">{t("deskReturnsCard")}</span>
+              <span className="text-[1.25rem] font-black leading-tight text-ink" data-numeric>
+                {signedMoney(totals.returnPrice)}
+              </span>
+            </span>
+          </span>
+          <ul className="flex min-w-0 flex-wrap gap-x-4 gap-y-1 text-[0.72rem] font-bold text-ink">
+            <li>{t("deskReturnsTickets", { count: totals.returnTickets })}</li>
+            {totals.returnUp > 0 && (
+              <li className="text-success">
+                {t("deskReturnsUp")} <span data-numeric>{signedMoney(totals.returnUp)}</span>
+              </li>
+            )}
+            {totals.returnDown < 0 && (
+              <li className="text-brand">
+                {t("deskReturnsDown")} <span data-numeric>{signedMoney(totals.returnDown)}</span>
+              </li>
+            )}
+            {warranty && totals.returnWarranty !== 0 && (
+              <li>
+                {t("deskReturnsWarranty")} <span data-numeric>{signedMoney(totals.returnWarranty)}</span>
+              </li>
+            )}
+            {finance && totals.returnCost !== 0 && (
+              <li>
+                {t("deskReturnsCost")} <span data-numeric>{signedMoney(totals.returnCost)}</span>
+              </li>
+            )}
+            {finance && (
+              <li className={totals.returnProfit < 0 ? "text-brand" : "text-success"}>
+                {t("deskReturnsProfit")} <span data-numeric>{signedMoney(totals.returnProfit)}</span>
+              </li>
+            )}
+            {totals.returnCancelled > 0 && <li>{t("deskReturnsCancelled", { count: totals.returnCancelled })}</li>}
+          </ul>
+          <span className="ms-auto shrink-0 text-[0.72rem] font-extrabold text-brand">{t("deskReturnsShow")}</span>
+        </StatPress>
+      )}
     </section>
   );
 }
@@ -1037,6 +1143,73 @@ function PaidEarlier({ rows, money, locale }: { rows: DeskRow[]; money: (n: numb
         </ul>
       )}
     </section>
+  );
+}
+
+/**
+ * «راجع» — the tickets whose money changed in the period on a later day than
+ * they were opened, each with what changed (the shop, 2026-11-21). Folded
+ * until asked for; the «راجع» card above says how much.
+ */
+function ReturnsList({ rows, money, locale }: { rows: DeskRow[]; money: (n: number) => string; locale: string }) {
+  const t = useTranslations("Admin");
+  const [open, setOpen] = useState(false);
+  return (
+    <section className="rounded-panel border border-gold-ink/35 bg-gold/6">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 px-3.5 py-2.5 text-start text-[0.8rem] font-extrabold text-ink"
+      >
+        <RotateCcw className="size-4 shrink-0 text-gold-ink" aria-hidden />
+        {t("deskReturnsListTitle", { count: rows.length })}
+        <ChevronDown className={cn("ms-auto size-4 text-muted transition-transform", open && "rotate-180")} aria-hidden />
+      </button>
+      {open && (
+        <ul className="divide-y divide-gold-ink/15 border-t border-gold-ink/20 px-3.5">
+          {rows.map((row) =>
+            row.returned ? (
+              <li key={row.id} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 py-2 text-[0.78rem]">
+                <span className="font-extrabold text-info" data-numeric>
+                  {row.code}
+                </span>
+                <span className="font-bold text-ink">{row.customerName}</span>
+                <span className="text-muted">{row.deviceModel}</span>
+                <span className="text-[0.7rem] text-muted">{t("deskOpenedOn", { when: formatDayTime(locale, row.createdAt) })}</span>
+                <span className="text-[0.72rem] font-bold text-gold-ink">
+                  <ReturnWords summary={row.returned} money={money} />
+                </span>
+                <span
+                  className={cn("ms-auto font-black", row.returned.price < 0 ? "text-brand" : "text-success")}
+                  data-numeric
+                >
+                  {signedMoney(row.returned.price)}
+                </span>
+              </li>
+            ) : null,
+          )}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/** What one «راجع» was, in words: "Price 50,000 → 60,000", "Cancelled after delivery". */
+export function ReturnWords({ summary, money }: { summary: ReturnSummary; money: (n: number) => string }) {
+  const t = useTranslations("Admin");
+  const described = describeReturn(summary);
+  if (described.kind !== "edit") return <>{t(`deskReturnKind_${described.kind}`)}</>;
+  return (
+    <>
+      {described.changes.map((change, index) => (
+        <span key={change.field}>
+          {index > 0 && " · "}
+          {t(`deskReturnField_${change.field}`)}{" "}
+          <span data-numeric>{money(change.from)}</span> {t("deskReturnArrow")} <span data-numeric>{money(change.to)}</span>
+        </span>
+      ))}
+    </>
   );
 }
 

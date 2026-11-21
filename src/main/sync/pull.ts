@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { StockModel } from "../../site/lib/data/device-catalogue.ts";
 import type { AccessGrant } from "../../site/lib/permissions.ts";
 import type { DeskDeputyRef, RepairService } from "../../site/lib/data/repair-desk.ts";
+import { RETURN_COLUMNS, returnBookFrom, type ReturnEntry, type ReturnRow } from "../../site/lib/data/desk-figures.ts";
 import { store } from "../db/store";
 import { TICKET_SELECT, type RawFinance, type RawTicket } from "../desk/raw";
 import { refs, type BenchPerson, type Brand, type Issue, type Viewer } from "../desk/refs";
@@ -477,5 +478,59 @@ export async function pullPayments(client: SupabaseClient, full: boolean): Promi
   if (!added && held && !full) return false;
   store.setRef("payments", book);
   store.setMeta("paymentsCursor", String(last));
+  return true;
+}
+
+/* ── «راجع» ───────────────────────────────────────────────────────────── */
+
+/**
+ * `repair_ticket_returns` — the ledger the database keeps by itself of every
+ * change to a ticket's money made on a later day than it was opened
+ * (20261121_repair_returns.sql). The figures count a ticket's own day as it
+ * was then and each change on the day it was made — the site's
+ * `lib/data/desk-figures.ts`, run here by `src/main/desk/board.ts`.
+ *
+ * Append-only, so followed by its own id. Kept as the `returns` ref, by the
+ * ticket's server id, oldest first; `null` while the table is not on the
+ * server, and nothing is «راجع».
+ *
+ * Never fails a sync: the tickets and their money arrive without it.
+ */
+export async function pullReturns(client: SupabaseClient, full: boolean): Promise<boolean> {
+  const held = store.ref<Record<string, ReturnEntry[]> | null>("returns");
+  const cursor = full || !held ? 0 : Number(store.meta("returnsCursor") ?? 0);
+  const book: Record<string, ReturnEntry[]> = {};
+  if (!full && held) for (const [id, entries] of Object.entries(held)) book[id] = [...entries];
+  let last = cursor;
+  let added = 0;
+  try {
+    for (let from = 0; from < 200_000; from += PAGE) {
+      const result = await client
+        .from("repair_ticket_returns")
+        .select(`id, ${RETURN_COLUMNS}`)
+        .gt("id", cursor)
+        .order("id")
+        .range(from, from + PAGE - 1);
+      if (result.error) {
+        const missing = result.error.code === "PGRST205" || result.error.code === "42P01";
+        if (missing && held !== null) {
+          store.setRef("returns", null);
+          return true;
+        }
+        return false;
+      }
+      const rows = (result.data ?? []) as unknown as (ReturnRow & { id: number })[];
+      for (const [id, entries] of Object.entries(returnBookFrom(rows))) (book[id] ??= []).push(...entries);
+      for (const row of rows) if (row.id > last) last = row.id;
+      added += rows.length;
+      if (rows.length < PAGE) break;
+    }
+  } catch {
+    return false;
+  }
+  if (!added && held && !full) return false;
+  for (const entries of Object.values(book)) entries.sort((a, b) => a.at.localeCompare(b.at));
+  store.setRef("returns", book);
+  store.setMeta("returnsCursor", String(last));
   return true;
 }
