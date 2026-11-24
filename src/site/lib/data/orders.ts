@@ -35,6 +35,15 @@ export type OrderLine = {
    * file, have none.
    */
   colour?: LineColour | null;
+  /**
+   * The configuration, as figures — from the variant the line points at, or
+   * from `track_order` once 20261122 has run. Optional: a reader that cannot
+   * reach them leaves `lineChoicesOf` to read them out of `variantLabel`.
+   */
+  storageGb?: number | null;
+  ramGb?: number | null;
+  /** The phone a case was bought for — `order_items.fit_model`, 20261122. */
+  fitModel?: string | null;
 };
 
 /** A colour as an order line remembers it. */

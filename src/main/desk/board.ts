@@ -20,18 +20,17 @@ import { recentDevicesFrom } from "../../site/lib/data/recent-devices.ts";
 import { recentFaultsFrom } from "../../site/lib/data/repair-faults.ts";
 import { MAKE_CODES } from "../../site/lib/data/device-name.ts";
 import {
-  bookedFields,
   computeFigures,
+  figureContext,
+  figureFacts,
   isMoneyFilter,
   matchesMoneyFilter,
   matchesStatsStatus,
-  moneyAcross,
   owesMoney,
   returnedWithinIds,
-  returnMoneyWithin,
   returnSummary,
   sameValue,
-  warrantySpan,
+  stateAt,
   STATS_GROUPS,
   type MoneyFilter,
   type PaymentBook,
@@ -489,17 +488,20 @@ function buildBoard(
   // Tickets opened before the figures' period whose money came in, or
   // changed («راجع»), within it.
   const pending = figures ? waiting() : (new Map() as Waiting);
-  const returns = figures ? returnBook(pending) : null;
-  const refunds = returns !== null;
-  const book = figures ? paymentBook(pending, refunds) : null;
-  const across = (row: DeskRow) => moneyAcross(row, book, figures ?? window, { complete: true, refunds });
-  const earlier: DeskRow[] = [];
-  if (figures?.since) {
-    for (const { id, raw } of before) {
-      const row = shapeRow(id, raw, locale, scope, viewerId);
-      if (across(row).within !== 0 || returnSummary(row.id, returns, figures)) earlier.push(row);
-    }
-  }
+  // Every recorded change; `figureContext` cuts it down to the real «راجع» and
+  // works out the day each ticket was paid in full — the site's rule.
+  const changes = figures ? returnBook(pending) : null;
+  const book = figures ? paymentBook(pending, changes !== null) : null;
+  const bounds = figures ?? window;
+  const candidates: DeskRow[] = [];
+  if (figures?.since) for (const { id, raw } of before) candidates.push(shapeRow(id, raw, locale, scope, viewerId));
+  const context = figureContext({ rows: [...opened, ...candidates], book, returns: changes, since: bounds.since, complete: true });
+  const returns = context.returns;
+  const facts = (row: DeskRow) => figureFacts(row, context, bounds);
+  const earlier = candidates.filter((row) => {
+    const known = facts(row);
+    return known.paid.within !== 0 || known.returnMoney !== 0 || known.returned !== null || known.booked;
+  });
 
   /* ── The tickets panel ── */
   const inPanelWindow = (row: DeskRow) =>
@@ -530,7 +532,7 @@ function buildBoard(
     ...row,
     earlier: true,
     // Ordinary money only: what a «راجع» moved is its own mark, and the till's.
-    paidWithin: figures ? across(row).within - returnMoneyWithin(row.id, book, returns, figures) : null,
+    paidWithin: figures ? facts(row).paid.within : null,
     returned: returnedIn(row),
   });
   if (view === "all" && figures && window.since === figures.since && window.until === figures.until) {
@@ -545,13 +547,7 @@ function buildBoard(
   // Pressed from a card: only the tickets behind its figure — the site's rule.
   const behind =
     moneyFilter && figures
-      ? listed.filter((row) =>
-          matchesMoneyFilter(row, moneyFilter, across(row), !row.earlier, {
-            booked: row.earlier ? null : bookedFields(row, returns),
-            returnMoney: returnMoneyWithin(row.id, book, returns, figures),
-            warranty: returns ? warrantySpan(row, returns, figures) : null,
-          }),
-        )
+      ? listed.filter((row) => matchesMoneyFilter(row, moneyFilter, facts(row), !row.earlier))
       : listed;
 
   const counts: Record<string, number> = {};
@@ -573,7 +569,7 @@ function buildBoard(
       opened,
       earlier,
       book,
-      returns,
+      returns: changes,
       bounds: figures,
       filters: { status: statsStatus, terms, holderId },
       // This computer holds the whole ledger, and changes not yet sent.
@@ -584,18 +580,16 @@ function buildBoard(
       window: figures,
       totals: result.totals,
       byTech: result.byTech,
-      // Each row as its own day counted it — what جرد الأرباح prints.
-      rows: result.rows.map((row) => {
-        const booked = bookedFields(row, returns);
-        return booked ? { ...row, booked } : row;
-      }),
-      paidRows: result.paidRows.map((row) => ({
-        ...row,
-        paidWithin: across(row).within - returnMoneyWithin(row.id, book, returns, figures),
-      })),
+      // What جرد الأرباح prints: the period's tickets — one not paid in full by
+      // its end marked — then the earlier tickets paid in full within it.
+      rows: [
+        ...result.rows.map((row) => (result.booked.has(row.id) ? row : { ...row, unbooked: true })),
+        ...result.bookedRows.map((row) => ({ ...row, earlier: true })),
+      ],
+      paidRows: result.paidRows.map((row) => ({ ...row, paidWithin: facts(row).paid.within })),
       returnRows: result.returnRows.map((row) => ({ ...row, returned: returnSummary(row.id, returns, figures) })),
       ledger: book !== null,
-      returns: returns !== null,
+      returns: changes !== null,
     };
   }
 
@@ -607,7 +601,10 @@ function buildBoard(
   }
 
   return {
-    rows: status ? inScope.filter((row) => matchesStatsStatus(row.status, status)) : inScope,
+    // An earlier ticket by the status it came into the period with — the site's rule.
+    rows: status
+      ? inScope.filter((row) => matchesStatsStatus(row.earlier ? stateAt(row, context.changes, bounds.since).status : row.status, status))
+      : inScope,
     counts,
     totals,
     stats,

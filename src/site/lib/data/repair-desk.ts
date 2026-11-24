@@ -268,9 +268,11 @@ export function repairMoney({
 /**
  * The figures panel's cards, as the shop defined each of them on 2026-11-20.
  *
- * Two clocks: what a ticket *is* belongs to the day it was opened, and money
- * belongs to the day it came in — see `lib/data/desk-figures.ts`, which
- * decides both and calls `addToTotals` once per ticket.
+ * Three clocks: how many tickets and what they still owe belong to the day
+ * they were opened, what a ticket came to belongs to the day it was paid in
+ * full, and money belongs to the day it came in — see
+ * `lib/data/desk-figures.ts`, which decides all three and calls `addToTotals`
+ * once per ticket.
  *
  * ⚠️ **«واصل بالخزنة» is the warranty that came in plus «واصل نقد» plus
  * «واصل آجل»**, the shop's own sum — and it is every dinar actually in the
@@ -397,12 +399,18 @@ export function emptyTotals(): DeskTotals {
  * period and within it; by default all of it, within (no period, or a list
  * the reader picked by hand). Cancelled tickets are counted and carry no money.
  *
- * `booked` — what the ticket's own day counted it as: its state before the
- * first «راجع» (`bookedState` in `lib/data/desk-figures.ts`). A later change
- * is that later day's, so the day a ticket was opened keeps the price, the
- * warranty, the part and the status it had then. Absent, the ticket as it is
- * now. What is still owed (الديون) is never booked: it is what the ticket
- * owes now, and it moves with every payment anyway.
+ * `booked` — the ticket was paid in full within the period (the shop,
+ * 2026-11-24): its repair amount, its warranty, its part and its profit count
+ * here, as the ticket is now. An آجل ticket opened yesterday and settled today
+ * counts in today's مبلغ الصيانة, أسعار الشراء and الربح — and not in
+ * yesterday's, which never saw it paid. A later «راجع» changes those figures
+ * on this day too; the day of the «راجع» moves only the till. Defaults to
+ * `counted`, which is what a list the reader picked by hand wants.
+ *
+ * `remaining` — what it still owed at the period's end (الديون), and
+ * `settled` — whether it was paid in full by then, which puts the money that
+ * came in under «واصل نقد» rather than «واصل آجل». Both default to the ticket
+ * as it is now. Read off the ledger, a past day keeps the debts it had.
  *
  * `refunds` — cancelling gives the money back on the day it happens
  * (20261121_repair_returns.sql), so a cancelled ticket's money still flows
@@ -420,14 +428,16 @@ export function addToTotals(
   },
   {
     counted = true,
+    booked = counted,
     paid,
-    booked,
     refunds = false,
     warranty = null,
+    remaining = null,
+    settled = null,
   }: {
     counted?: boolean;
+    booked?: boolean;
     paid?: { before: number; within: number };
-    booked?: { status: string; price: number | null; warrantyPrice?: number | null; costPrice: number | null } | null;
     refunds?: boolean;
     /**
      * The warranty at the start and at the end of the period
@@ -435,14 +445,15 @@ export function addToTotals(
      * yesterday's takings. The ticket's warranty now when absent.
      */
     warranty?: { start: number; end: number } | null;
+    remaining?: number | null;
+    settled?: boolean | null;
   } = {},
 ): void {
   const off = (status: string) => status === "cancelled" || status === "declined";
-  const own = booked ?? row;
   if (counted) {
     totals.tickets += 1;
-    if (off(own.status)) totals.cancelled += 1;
-    else if (own.status === "completed") totals.completed += 1;
+    if (off(row.status)) totals.cancelled += 1;
+    else if (row.status === "completed") totals.completed += 1;
     else totals.open += 1;
   }
 
@@ -454,17 +465,9 @@ export function addToTotals(
     terms: row.paymentTerms,
   });
 
-  // What the ticket came to on its own day.
-  if (counted && !off(own.status)) {
-    const day = booked
-      ? repairMoney({
-          price: own.price,
-          warranty: own.warrantyPrice ?? null,
-          cost: own.costPrice,
-          collected: row.collected,
-          terms: row.paymentTerms,
-        })
-      : money;
+  // What the ticket came to, on the day it was paid in full.
+  if (booked && !off(row.status)) {
+    const day = money;
     totals.maintenance += day.base;
     totals.revenue += day.price;
     // `money.warranty` rather than the raw column, so an unpriced ticket counts
@@ -483,14 +486,15 @@ export function addToTotals(
     totals.profit += day.base - cost;
   }
 
-  // What it still owes, and how it is paid: the ticket as it is now.
+  // What it still owed at the period's end, and how it is paid.
   if (counted && !off(row.status)) {
     if (row.paymentTerms === "deferred") {
       totals.deferred += 1;
       if (row.collected == null) totals.missingCollected += 1;
     }
-    totals.outstanding += money.remaining;
-    if (money.remaining > 0) totals.owing += 1;
+    const owed = remaining ?? money.remaining;
+    totals.outstanding += owed;
+    if (owed > 0) totals.owing += 1;
   }
 
   // A cancelled ticket's money moves only as a refund, dated by the ledger.
@@ -504,8 +508,9 @@ export function addToTotals(
   const warrantyNow = Math.min(warranty?.end ?? money.warranty, Math.max(0, flow.before + flow.within));
   const warrantyIn = warrantyNow - warrantyBefore;
   const repairIn = flow.within - warrantyIn;
-  // A deferred ticket paid in full is cash now (the shop, 2026-11-20).
-  if (row.paymentTerms === "cash" || money.remaining === 0) totals.collectedCash += repairIn;
+  // A deferred ticket paid in full is cash (the shop, 2026-11-20) — paid in
+  // full by the period's end, so a deposit taken on an earlier day stays آجل there.
+  if (settled ?? (row.paymentTerms === "cash" || money.remaining === 0)) totals.collectedCash += repairIn;
   else totals.collectedDeferred += repairIn;
   totals.tillWarranty += warrantyIn;
   totals.till += flow.within;

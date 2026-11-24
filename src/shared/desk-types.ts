@@ -87,8 +87,8 @@ export type DeskRow = RepairCard & {
   earlier?: boolean;
   /** «راجع» — its money changed within the period on a later day than it was opened. */
   returned?: ReturnSummary | null;
-  /** On a figures row: what the ticket's own day counted, before a later «راجع». */
-  booked?: { status: string; price: number | null; warrantyPrice: number | null; costPrice: number | null } | null;
+  /** On a figures row: not paid in full by the period's end — its amount counts on the day it is. */
+  unbooked?: boolean;
   holderId: string | null;
   holderName: string | null;
   holderRank: DeskRank | null;
