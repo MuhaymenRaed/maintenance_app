@@ -4,17 +4,7 @@ import { useTranslations } from "next-intl";
 import { ClipboardList, Cpu, FilePlus2, Settings2, TrendingUp, Users, Wallet, Wrench, type LucideIcon } from "lucide-react";
 import { MARK_DOT, MARK_PATH, MARK_VIEWBOX } from "@/lib/brand/mark";
 import { cn } from "@/lib/utils";
-
-/**
- * The six tabs above the home screen (the shop's drawing, 2026-11-24), each
- * one job: add a ticket, the tickets, the safe, the profit, the workshop, the
- * settings. «إضافة تذكرة» is a press that opens the new-ticket window; the
- * other five replace the home screen beneath the bar. Pressing the tab that is
- * open, or the mark at the start of the bar, goes back to the home screen.
- */
-export type DeskTab = "tickets" | "cash" | "profit" | "workshop" | "settings";
-
-export const DESK_TABS: readonly DeskTab[] = ["tickets", "cash", "profit", "workshop", "settings"];
+import type { DeskTab } from "@/lib/data/desk-tabs";
 
 const ICONS: Record<DeskTab, LucideIcon> = {
   tickets: ClipboardList,
@@ -24,6 +14,13 @@ const ICONS: Record<DeskTab, LucideIcon> = {
   settings: Settings2,
 };
 
+/**
+ * The six tabs above the home screen (the shop's drawing, 2026-11-24), each
+ * one job: add a ticket, the tickets, the safe, the profit, the workshop, the
+ * settings. «إضافة تذكرة» is a press that opens the new-ticket window; the
+ * other five replace the home screen beneath the bar. Pressing the tab that is
+ * open, or the mark at the start of the bar, goes back to the home screen.
+ */
 export function DeskTabBar({
   tab,
   tabs,

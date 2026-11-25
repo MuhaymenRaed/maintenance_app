@@ -4,6 +4,7 @@ import { useEffect, useState, useTransition } from "react";
 import { useTranslations } from "next-intl";
 import {
   ChevronDown,
+  ChevronLeft,
   CircleCheckBig,
   CircleDollarSign,
   ListChecks,
@@ -13,6 +14,7 @@ import {
   Search,
   ShieldCheck,
   TrendingUp,
+  Wallet,
   X,
 } from "lucide-react";
 import { ReportButtons, type ProfitReport, type ReportJob } from "@/components/admin/profit-report";
@@ -26,7 +28,7 @@ import { formatPrice } from "@/lib/format";
 import { statMoney } from "@/lib/data/stat-money";
 import { cn } from "@/lib/utils";
 import type { DeskRow } from "@/lib/queries/repair-desk";
-import { FigureGrid, TabHeading, useCompletedSplit, type FigureCard } from "@/components/admin/maintenance/figure-cards";
+import { FigureGrid, signedMoney, signTone, TabHeading, useCompletedSplit, type FigureCard } from "@/components/admin/maintenance/figure-cards";
 import type { DeskShared } from "@/components/admin/maintenance/desk-shared";
 
 /**
@@ -45,6 +47,7 @@ export function ProfitTab({
   report,
   job,
   onCompleted,
+  onTill,
 }: {
   shared: DeskShared;
   totals: DeskTotals;
@@ -54,6 +57,8 @@ export function ProfitTab({
   job: ReportJob;
   /** The completed tickets behind the figures. */
   onCompleted: () => void;
+  /** «واصل بالخزنة»'s card — تقارير الخزينة. */
+  onTill: () => void;
 }) {
   const t = useTranslations("Admin");
   const split = useCompletedSplit();
@@ -132,6 +137,7 @@ export function ProfitTab({
       />
 
       <FigureGrid cards={cards} />
+      {finance && <TillReference totals={totals} period={period} onOpen={onTill} />}
       <p className="text-[0.72rem] font-semibold text-muted">
         {t("profitRule")} · {t("printChooserShortcut")}
       </p>
@@ -149,6 +155,66 @@ export function ProfitTab({
         money={money}
       />
     </div>
+  );
+}
+
+/**
+ * «واصل بالخزنة», on the profit tab as well (the shop, 2026-11-25): whoever
+ * closes the day reads both tabs and wanted the drawer's figure here without
+ * switching. It is the safe's own figure, from the same totals, so the two
+ * tabs cannot disagree; its parts add up to it, and a press opens تقارير
+ * الخزينة.
+ *
+ * It differs from the cards above on purpose: those count a ticket once it is
+ * «مكتمل», this counts every dinar that came in during the period, whatever
+ * its ticket's state. The subtitle says so.
+ */
+function TillReference({ totals, period, onOpen }: { totals: DeskTotals; period: string; onOpen: () => void }) {
+  const t = useTranslations("Admin");
+  const parts: { key: string; label: string; value: number; signed?: boolean }[] = [
+    { key: "cash", label: t("financeCollectedCash"), value: totals.collectedCash },
+    { key: "deferred", label: t("financeCollectedDeferred"), value: totals.collectedDeferred },
+    { key: "warranty", label: t("cashWarrantyIn"), value: totals.tillWarranty },
+    ...(totals.returnTill ? [{ key: "returns", label: t("deskReturnsCard"), value: totals.returnTill, signed: true }] : []),
+  ];
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="press block w-full rounded-panel border border-success/35 bg-success/6 p-4 text-start shadow-card transition-colors hover:border-success/60"
+    >
+      <span className="flex flex-wrap items-center gap-3">
+        <span className="grid size-12 shrink-0 place-items-center rounded-full bg-success/15 text-success">
+          <Wallet className="size-6" aria-hidden />
+        </span>
+        <span className="min-w-[12rem] flex-1">
+          <span className="block text-[0.95rem] font-black text-ink">{t("financeTill")}</span>
+          <span className="block text-[0.72rem] font-semibold leading-snug text-muted">{t("profitTillSub", { period })}</span>
+        </span>
+        <span className="text-[2rem] font-black leading-none text-success" data-numeric>
+          {statMoney(totals.till)}
+        </span>
+      </span>
+      <span
+        className={cn(
+          "mt-3 grid grid-cols-2 gap-2 max-sm:[&>*:last-child:nth-child(odd)]:col-span-2",
+          parts.length === 4 ? "sm:grid-cols-4" : "sm:grid-cols-3",
+        )}
+      >
+        {parts.map((part) => (
+          <span key={part.key} className="flex min-w-0 flex-col gap-0.5 rounded-card bg-surface/80 px-3 py-2">
+            <span className="text-[0.68rem] font-bold text-muted">{part.label}</span>
+            <span className={cn("text-[1rem] font-black text-ink", part.signed && signTone(part.value))} data-numeric>
+              {part.signed ? signedMoney(part.value) : statMoney(part.value)}
+            </span>
+          </span>
+        ))}
+      </span>
+      <span className="mt-3 inline-flex items-center gap-1 text-[0.76rem] font-extrabold text-brand">
+        {t("profitTillOpen")}
+        <ChevronLeft className="size-4 ltr:rotate-180" aria-hidden />
+      </span>
+    </button>
   );
 }
 

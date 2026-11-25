@@ -1,6 +1,6 @@
 {
   "site": "B:\\Programming Projects\\Next JS\\Al_Isnad",
-  "syncedAt": "2026-11-25T12:26:16.692Z",
+  "syncedAt": "2026-11-25T21:20:56.311Z",
   "files": [
     "components/account/status-pill.tsx",
     "components/admin/app-window.tsx",
@@ -53,10 +53,12 @@
     "lib/data/delivery-zones.ts",
     "lib/data/desk-board.ts",
     "lib/data/desk-figures.ts",
+    "lib/data/desk-tabs.ts",
     "lib/data/device-catalogue.ts",
     "lib/data/device-name.ts",
     "lib/data/image-swipe.ts",
     "lib/data/money-field.ts",
+    "lib/data/money-words.ts",
     "lib/data/orders.ts",
     "lib/data/queue-window.ts",
     "lib/data/recent-devices.ts",
@@ -89,6 +91,7 @@
     "lib/repair/fault-edits.ts",
     "lib/search.ts",
     "lib/supabase/database.types.ts",
+    "lib/ui/admin-content.ts",
     "lib/ui/swallow-click.ts",
     "lib/utils.ts",
     "lib/validation/account.ts",

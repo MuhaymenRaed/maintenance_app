@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { useLocale, useTranslations } from "next-intl";
 import { Check, ChevronDown, Info, Loader2, Trash2, X } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Select, type SelectOption } from "@/components/ui/select";
@@ -16,6 +17,7 @@ import {
   readMoney,
   showMoney,
 } from "@/lib/data/money-field";
+import { moneyInWords } from "@/lib/data/money-words";
 
 /**
  * The parts every dashboard editor is made of.
@@ -261,7 +263,7 @@ export function NumberInput({
  * own, because every failure in it is silent: the field keeps working and
  * saves the wrong figure.
  */
-type MoneyInputProps =
+type MoneyInputProps = (
   | (NumberInputShape & {
       clearable: true;
       value: number | null;
@@ -271,7 +273,19 @@ type MoneyInputProps =
       clearable?: false;
       value: number;
       onChange: (value: number) => void;
-    });
+    })
+) & {
+  /**
+   * The currency inside the box, at the end a reader meets it: the left of an
+   * Arabic box, the right of an English one. For a box as wide as its field.
+   */
+  unit?: boolean;
+  /**
+   * The figure's size in words under the box — «مليون و350 ألف» — so a
+   * dropped or doubled zero is seen while typing (`lib/data/money-words.ts`).
+   */
+  readBack?: boolean;
+};
 
 /**
  * Saves a field a moment after the typing stops, as well as on blur.
@@ -337,7 +351,11 @@ export function MoneyInput({
   disabled,
   placeholder,
   onCommit,
+  unit = false,
+  readBack = false,
 }: MoneyInputProps) {
+  const locale = useLocale();
+  const tStore = useTranslations("Store");
   const emit = onChange as (value: number | null) => void;
   const settle = useSettledCommit(onCommit);
 
@@ -380,7 +398,7 @@ export function MoneyInput({
     return draft;
   }
 
-  return (
+  const box = (
     <input
       type="text"
       // `decimal` rather than `numeric`: the second draws a keypad with no
@@ -431,8 +449,29 @@ export function MoneyInput({
       }}
       dir="ltr"
       data-numeric
-      className={cn(input, className)}
+      // The box is left-to-right in both scripts, so the room for the unit is
+      // a physical side: the left in Arabic, where the unit is read last.
+      className={cn(input, unit && (locale === "ar" ? "pl-12" : "pr-12"), className)}
     />
+  );
+  if (!unit && !readBack) return box;
+
+  const words = readBack && value !== null ? moneyInWords(value, locale) : null;
+  return (
+    <span className="block">
+      <span className="relative block">
+        {box}
+        {unit && (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 end-3.5 flex items-center text-[0.74rem] font-bold text-muted"
+          >
+            {tStore("currency")}
+          </span>
+        )}
+      </span>
+      {words && <span className="mt-1 block text-[0.7rem] font-bold text-muted">{words}</span>}
+    </span>
   );
 }
 

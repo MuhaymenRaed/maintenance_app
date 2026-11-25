@@ -15,7 +15,7 @@ const WORDS = {
     trayOffline: "غير متصل — يعمل محلياً",
     trayPending: (n: number) => `${n} تعديل بانتظار الرفع`,
     newTicketTitle: (code: string) => `حجز صيانة جديد ${code}`,
-    handedTitle: (code: string) => `أُسندت إليك التذكرة ${code}`,
+    handedTitle: (code: string) => `أُسند إليك الوصل ${code}`,
     newTicketBody: (device: string, name: string) => `${device} — ${name}`,
     movedTitle: (code: string) => `تحديث على ${code}`,
     movedBody: (device: string) => `تغيّرت حالة ${device} من لوحة التحكم`,

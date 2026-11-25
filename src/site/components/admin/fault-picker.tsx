@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useSyncExternalStore, useTransition } from "react";
 import { useLocale, useTranslations } from "next-intl";
-import { Check, ListChecks, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
+import { Check, ListChecks, Loader2, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { ChipMultiSelect } from "@/components/ui/chip-multi-select";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EntityDialog, input } from "@/components/admin/form-kit";
@@ -10,6 +10,7 @@ import { addRepairIssue, editRepairIssue, updateRepairFaults } from "@/lib/actio
 import { useEditConfirm } from "@/components/admin/edit-confirm";
 import { faultEdits, withFaultEdits } from "@/lib/repair/fault-edits";
 import type { RepairService } from "@/lib/data/repair-desk";
+import { normalizeSearch } from "@/lib/search";
 import { cn } from "@/lib/utils";
 import {
   cleanFaultName,
@@ -162,6 +163,9 @@ function FaultListEditor({
  * takes a new fault (`allowAdd`), filed the way a fault typed at the counter
  * is, so the next ticket is offered it.
  */
+/** A fault list longer than this gets a search above it. */
+const SEARCH_FROM = 8;
+
 export function FaultList({
   service,
   issues: given,
@@ -177,7 +181,9 @@ export function FaultList({
   const [adding, setAdding] = useState("");
   const [added, setAdded] = useState<{ code: string; name: string }[]>([]);
   const locale = useLocale() === "en" ? "en" : "ar";
-  const [names, setNames] = useState<Record<string, string>>({});
+  /** The one fault being renamed, and what is typed for it. Every other row stays shut. */
+  const [editing, setEditing] = useState<{ code: string; draft: string } | null>(null);
+  const [query, setQuery] = useState("");
   const [asking, setAsking] = useState<
     | { kind: "rename"; code: string; from: string; to: string }
     | { kind: "retire"; code: string; name: string }
@@ -203,11 +209,7 @@ export function FaultList({
       }
       if (ask.kind === "rename") faultEdits.renamed(ask.code, cleanFaultName(ask.to));
       else faultEdits.retired(ask.code);
-      setNames((current) => {
-        const next = { ...current };
-        delete next[ask.code];
-        return next;
-      });
+      setEditing((current) => (current?.code === ask.code ? null : current));
     });
   }
 
@@ -227,6 +229,8 @@ export function FaultList({
   }
   // Just added, until the page's own list carries it.
   const shown = [...issues, ...added.filter((issue) => !issues.some((other) => other.code === issue.code))];
+  const needle = normalizeSearch(query.trim());
+  const visible = needle ? shown.filter((issue) => normalizeSearch(issue.name).includes(needle)) : shown;
 
   return (
     <>
@@ -261,48 +265,99 @@ export function FaultList({
           </button>
         </div>
       )}
-      <ul className="space-y-2">
-        {shown.map((issue) => {
-          const draft = names[issue.code] ?? issue.name;
-          const changed = cleanFaultName(draft) !== issue.name && cleanFaultName(draft).length >= 2;
-          return (
-            <li key={issue.code} className="flex items-center gap-2">
-              <input
-                value={draft}
-                onChange={(event) => setNames((current) => ({ ...current, [issue.code]: event.target.value }))}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && changed) {
-                    event.preventDefault();
-                    setAsking({ kind: "rename", code: issue.code, from: issue.name, to: draft });
-                  }
-                }}
-                aria-label={t("deskFaultNameFor", { name: issue.name })}
-                className={cn(input, "h-10 min-w-0 flex-1")}
-              />
-              <button
-                type="button"
-                disabled={!changed || pending}
-                onClick={() => setAsking({ kind: "rename", code: issue.code, from: issue.name, to: draft })}
-                aria-label={t("deskFaultRename")}
-                title={t("deskFaultRename")}
-                className="press flex size-10 shrink-0 items-center justify-center rounded-control border border-info/40 bg-info/8 text-info transition-opacity disabled:opacity-35"
-              >
-                <Pencil className="size-4" aria-hidden />
-              </button>
-              <button
-                type="button"
-                disabled={pending}
-                onClick={() => setAsking({ kind: "retire", code: issue.code, name: issue.name })}
-                aria-label={t("deskFaultRetire", { name: issue.name })}
-                title={t("deskFaultRetire", { name: issue.name })}
-                className="press flex size-10 shrink-0 items-center justify-center rounded-control border border-brand/40 bg-brand/8 text-brand disabled:opacity-35"
-              >
-                <Trash2 className="size-4" aria-hidden />
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+      {shown.length > SEARCH_FROM && (
+        <label className="relative mb-3 block">
+          <Search className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-muted" aria-hidden />
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={t("settingsFaultSearch")}
+            aria-label={t("settingsFaultSearch")}
+            className={cn(input, "h-10 ps-9")}
+          />
+        </label>
+      )}
+      {visible.length === 0 ? (
+        <p className="rounded-card border border-dashed border-line px-3 py-4 text-center text-[0.78rem] font-bold text-muted">
+          {t("settingsFaultNoMatch")}
+        </p>
+      ) : (
+        <ul className="grid gap-1.5 sm:grid-cols-2">
+          {visible.map((issue) => {
+            if (editing?.code === issue.code) {
+              const draft = editing.draft;
+              const changed = cleanFaultName(draft) !== issue.name && cleanFaultName(draft).length >= 2;
+              const ask = () => {
+                if (changed) setAsking({ kind: "rename", code: issue.code, from: issue.name, to: draft });
+              };
+              return (
+                <li key={issue.code} className="flex items-center gap-1.5 sm:col-span-2">
+                  <input
+                    autoFocus
+                    value={draft}
+                    onChange={(event) => setEditing({ code: issue.code, draft: event.target.value })}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        ask();
+                      }
+                    }}
+                    aria-label={t("deskFaultNameFor", { name: issue.name })}
+                    className={cn(input, "h-10 min-w-0 flex-1")}
+                  />
+                  <button
+                    type="button"
+                    disabled={!changed || pending}
+                    onClick={ask}
+                    aria-label={t("deskFaultRename")}
+                    title={t("deskFaultRename")}
+                    className="press flex size-10 shrink-0 items-center justify-center rounded-control bg-brand text-white transition-opacity hover:bg-brand-hover disabled:opacity-35"
+                  >
+                    <Check className="size-4" aria-hidden />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditing(null)}
+                    aria-label={t("cancel")}
+                    title={t("cancel")}
+                    className="press flex size-10 shrink-0 items-center justify-center rounded-control border border-line bg-canvas text-muted transition-colors hover:text-ink"
+                  >
+                    <X className="size-4" aria-hidden />
+                  </button>
+                </li>
+              );
+            }
+            return (
+              <li key={issue.code} className="flex min-h-10 items-center gap-1 rounded-control border border-line bg-canvas ps-3 pe-1">
+                <span className="min-w-0 flex-1 truncate text-[0.8rem] font-bold text-ink" title={issue.name}>
+                  {issue.name}
+                </span>
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => setEditing({ code: issue.code, draft: issue.name })}
+                  aria-label={t("deskFaultEditFor", { name: issue.name })}
+                  title={t("deskFaultEditFor", { name: issue.name })}
+                  className="press flex size-8 shrink-0 items-center justify-center rounded-control text-info transition-colors hover:bg-info/10 disabled:opacity-35"
+                >
+                  <Pencil className="size-3.5" aria-hidden />
+                </button>
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => setAsking({ kind: "retire", code: issue.code, name: issue.name })}
+                  aria-label={t("deskFaultRetire", { name: issue.name })}
+                  title={t("deskFaultRetire", { name: issue.name })}
+                  className="press flex size-8 shrink-0 items-center justify-center rounded-control text-brand transition-colors hover:bg-brand/10 disabled:opacity-35"
+                >
+                  <Trash2 className="size-3.5" aria-hidden />
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
       <ConfirmDialog
         open={asking !== null}
         tone={asking?.kind === "retire" ? "danger" : "normal"}

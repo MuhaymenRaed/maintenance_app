@@ -33,6 +33,19 @@ import { cn } from "@/lib/utils";
 import type { DeskRow } from "@/lib/queries/repair-desk";
 import { ReturnsCard, TabHeading } from "@/components/admin/maintenance/figure-cards";
 import type { DeskGoal, DeskShared } from "@/components/admin/maintenance/desk-shared";
+import type { TicketList } from "@/lib/data/desk-tabs";
+
+type Part = "all" | "waiting" | "progress";
+
+/** The pickers' field — `Select` carries no skin of its own. */
+const pickerField = "h-10 rounded-control border border-line bg-canvas px-3 text-[0.8rem] font-bold text-ink transition-colors hover:border-brand/45 focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/20";
+
+const NO_FILTERS: TicketFilters = { terms: null, holder: null, handed: null, edited: false, mine: false, search: "" };
+
+const byCreated = (a: DeskRow, b: DeskRow) => b.createdAt.localeCompare(a.createdAt);
+const byCompleted = (a: DeskRow, b: DeskRow) => (b.completedAt ?? b.createdAt).localeCompare(a.completedAt ?? a.createdAt);
+const byReturned = (a: DeskRow, b: DeskRow) =>
+  (b.returned?.at ?? b.createdAt).localeCompare(a.returned?.at ?? a.createdAt);
 
 /**
  * كشف التذاكر — every ticket the period holds, cut into the shop's lists
@@ -50,21 +63,6 @@ import type { DeskGoal, DeskShared } from "@/components/admin/maintenance/desk-s
  * Every list, filter and word typed is worked out in the browser from the
  * period's rows (`lib/data/desk-board.ts`): nothing here asks the server.
  */
-export type TicketList = "all" | "completed" | "incomplete" | "cancelled" | "returned" | "owing" | "requests";
-
-export const TICKET_LISTS: readonly TicketList[] = ["all", "completed", "incomplete", "cancelled", "returned", "owing", "requests"];
-type Part = "all" | "waiting" | "progress";
-
-/** The pickers' field — `Select` carries no skin of its own. */
-const pickerField = "h-10 rounded-control border border-line bg-canvas px-3 text-[0.8rem] font-bold text-ink transition-colors hover:border-brand/45 focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/20";
-
-const NO_FILTERS: TicketFilters = { terms: null, holder: null, handed: null, edited: false, mine: false, search: "" };
-
-const byCreated = (a: DeskRow, b: DeskRow) => b.createdAt.localeCompare(a.createdAt);
-const byCompleted = (a: DeskRow, b: DeskRow) => (b.completedAt ?? b.createdAt).localeCompare(a.completedAt ?? a.createdAt);
-const byReturned = (a: DeskRow, b: DeskRow) =>
-  (b.returned?.at ?? b.createdAt).localeCompare(a.returned?.at ?? a.createdAt);
-
 export function TicketsTab({
   shared,
   totals,

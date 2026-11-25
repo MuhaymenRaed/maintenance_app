@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import { AlertTriangle, CloudOff } from "lucide-react";
-import { RepairDeskView, type DeskTab, type RepairDeskViewData, type TicketList } from "@/components/admin/repair-desk-view";
-import { DESK_TABS } from "@/components/admin/maintenance/tab-bar";
-import { TICKET_LISTS } from "@/components/admin/maintenance/tickets-tab";
+import { RepairDeskView, type RepairDeskViewData } from "@/components/admin/repair-desk-view";
+import { DESK_TABS, TICKET_LISTS, type DeskTab, type TicketList } from "@/lib/data/desk-tabs";
 import { cn } from "@/lib/utils";
 import type { DeskPageData } from "../../shared/desk-types";
 import { alignBasePath, useRoute } from "../lib/router";
@@ -11,7 +10,7 @@ import { requestPage, useDeskData } from "../lib/desk-data";
 import { useSettings } from "../lib/settings";
 import { useSync } from "../lib/sync";
 import { FirstRun } from "./first-run";
-import { AppSettings } from "./settings-page";
+import { useAppSettingsGroup } from "./settings-page";
 import { openSyncPanel } from "./sync-panel";
 
 /**
@@ -39,9 +38,9 @@ import { openSyncPanel } from "./sync-panel";
  * - **work still waiting to reach the server**, a strip under the tabs with a
  *   way into the sync panel — a change saved offline is real and on screen,
  *   and the reader should know it has not yet reached the dashboard;
- * - **this computer's settings**, drawn inside a manager's الإعدادات tab under
- *   the bench's own (`AppSettings`). A technician has no such tab; his narrow
- *   settings stay on the app's own page.
+ * - **this computer's settings**, listed in a manager's الإعدادات tab under
+ *   the bench's own (`useAppSettingsGroup`). A technician has no such tab; his
+ *   narrow settings stay on the app's own page.
  *
  * The desk's password — the editor, the reports and the settings ask for it
  * every time — is the site's `desk-gate.tsx`, switched on in `app.tsx`.
@@ -101,6 +100,7 @@ function Desk({
   const tDesk = useTranslations("Desk");
   const { locale } = useSettings();
   const sync = useSync();
+  const appSettings = useAppSettingsGroup();
 
   // One object per read, so the view works its lists out once per read
   // rather than on every redraw of this page (the sync pill redraws it).
@@ -164,7 +164,7 @@ function Desk({
       list={list}
       openId={openId}
       notices={notices}
-      appSettings={data.isTech ? undefined : <AppSettings />}
+      appSettings={data.isTech ? undefined : appSettings}
       data={view}
     />
   );

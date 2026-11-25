@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import {
   Archive,
@@ -27,6 +27,7 @@ import {
 import { Callout, ChoiceCards, Field, input, Section, SelectField, Toggle } from "@/components/admin/form-kit";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { LockedPanel } from "@/components/admin/desk-gate";
+import type { SettingsGroup } from "@/components/admin/maintenance/settings-tab";
 import { openPrinterSetup } from "@/lib/print/station";
 import { formatDayTime } from "@/lib/data/datetime";
 import type { RepairService } from "@/lib/data/repair-desk";
@@ -112,24 +113,54 @@ export function SettingsPage() {
 }
 
 /**
- * The app's own settings inside the desk's الإعدادات tab (the shop,
- * 2026-11-24): a manager finds the bench's settings and this computer's in one
- * place. Already behind the desk's password — the tab asked for it — so it
- * asks nothing more, and its sections switch in place rather than through the
- * address, which belongs to the desk.
+ * The app's own settings as sections of the desk's الإعدادات tab: a manager
+ * finds the bench's settings and this computer's in one side list (the shop,
+ * 2026-11-25), under their own heading, rather than a second settings screen
+ * under the first (2026-11-24). Already behind the desk's password — the tab
+ * asked for it — so it asks nothing more.
+ *
+ * ⚠️ The printing section has the bench's own key, `printing`, on purpose:
+ * the desk lists this one in its place, because it holds the same printer
+ * setup and the print agent besides (`settings-tab.tsx`).
  */
-export function AppSettings() {
+export function useAppSettingsGroup(): SettingsGroup {
   const t = useTranslations("Desk");
-  const [tab, setTab] = useState<Tab>("general");
-  return (
-    <section className="space-y-4 border-t border-line pt-5">
-      <header className="border-s-[3px] border-brand ps-3.5">
-        <h2 className="text-[1.05rem] font-black leading-tight tracking-[-0.02em] text-ink">{t("appSettingsTitle")}</h2>
-        <p className="text-[0.8rem] font-medium text-muted">{t("settingsSub")}</p>
-      </header>
-      <SettingsPanel technician={false} tab={tab} onTab={setTab} />
-    </section>
-  );
+  return {
+    title: t("appSettingsTitle"),
+    sections: TABS.map(({ key, Icon }) => ({
+      key,
+      label: t(`tab_${key}`),
+      Icon,
+      content: sectionOf(key, false),
+    })),
+  };
+}
+
+/** One section's body — the page's and the desk's settings tab's. */
+function sectionOf(tab: Tab, technician: boolean): ReactNode {
+  switch (tab) {
+    case "general":
+      return <General technician={technician} />;
+    case "appearance":
+      return <Appearance />;
+    case "notifications":
+      return <Notifications />;
+    case "printing":
+      return <Printing />;
+    case "sync":
+      return <SyncSettings />;
+    case "backups":
+      return <Backups />;
+    case "account":
+      return (
+        <>
+          <Account />
+          {!technician && <DeskPassword />}
+        </>
+      );
+    case "about":
+      return <About />;
+  }
 }
 
 /** The sections and their list — the page's, and the desk's settings tab's. */
@@ -202,19 +233,7 @@ function SettingsPanel({
             {t("techSettingsNote")}
           </p>
         )}
-        {tab === "general" && <General technician={technician} />}
-        {tab === "appearance" && <Appearance />}
-        {tab === "notifications" && <Notifications />}
-        {tab === "printing" && <Printing />}
-        {tab === "sync" && <SyncSettings />}
-        {tab === "backups" && <Backups />}
-        {tab === "account" && (
-          <>
-            <Account />
-            {!technician && <DeskPassword />}
-          </>
-        )}
-        {tab === "about" && <About />}
+        {sectionOf(tab, technician)}
       </section>
     </div>
   );

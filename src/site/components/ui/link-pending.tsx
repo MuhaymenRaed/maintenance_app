@@ -5,6 +5,7 @@ import { useLinkStatus } from "next/link";
 import { Loader2 } from "lucide-react";
 import { BrandLogo, BrandMark } from "@/components/store/brand-logo";
 import { cn } from "@/lib/utils";
+import { ADMIN_CONTENT_ID } from "@/lib/ui/admin-content";
 
 /**
  * "That press landed, and we are fetching."
@@ -126,16 +127,6 @@ export function LinkPendingTab({
     </span>
   );
 }
-
-/**
- * The id `admin/layout.tsx` puts on the box this veil is scoped to.
- *
- * A plain shared string rather than a context: the layout only needs it once,
- * to set the `id`, and this file only needs it once, to look the node up —
- * React context would be one provider for a value that never changes and is
- * read in exactly one place.
- */
-export const ADMIN_CONTENT_ID = "admin-content-veil-target";
 
 /**
  * "This section is arriving" — confined to the dashboard's own content box.

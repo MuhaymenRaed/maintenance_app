@@ -8,13 +8,14 @@ import { LockedPanel, useGuardedAction } from "@/components/admin/desk-gate";
 import { bookedFields, computeFigures } from "@/lib/data/desk-figures";
 import { moneyMoves } from "@/lib/data/desk-board";
 import { DeskHome } from "@/components/admin/maintenance/desk-home";
-import { DeskTabBar, DESK_TABS, type DeskTab } from "@/components/admin/maintenance/tab-bar";
+import { DeskTabBar } from "@/components/admin/maintenance/tab-bar";
+import { DESK_TABS, TICKET_LISTS, type DeskTab, type TicketList } from "@/lib/data/desk-tabs";
 import { PeriodBar } from "@/components/admin/maintenance/period-bar";
-import { TicketsTab, TICKET_LISTS, type TicketList } from "@/components/admin/maintenance/tickets-tab";
+import { TicketsTab } from "@/components/admin/maintenance/tickets-tab";
 import { CashTab, cashMoveLines } from "@/components/admin/maintenance/cash-tab";
 import { ProfitTab } from "@/components/admin/maintenance/profit-tab";
 import { WorkshopTab } from "@/components/admin/maintenance/workshop-tab";
-import { SettingsTab } from "@/components/admin/maintenance/settings-tab";
+import { SettingsTab, type SettingsGroup } from "@/components/admin/maintenance/settings-tab";
 import {
   useDeskShared,
   type DeskGoal,
@@ -22,8 +23,7 @@ import {
 } from "@/components/admin/maintenance/desk-shared";
 
 export type { DeskGoal, RepairDeskViewData } from "@/components/admin/maintenance/desk-shared";
-export type { DeskTab } from "@/components/admin/maintenance/tab-bar";
-export type { TicketList } from "@/components/admin/maintenance/tickets-tab";
+export type { DeskTab, TicketList } from "@/lib/data/desk-tabs";
 
 /**
  * One bench's maintenance section, drawn — the repair desk and the
@@ -78,8 +78,8 @@ export function RepairDeskView({
   goal?: DeskGoal | null;
   /** What the app draws under the tabs — work waiting to reach the server. */
   notices?: ReactNode;
-  /** The desktop app's own settings, drawn inside الإعدادات. */
-  appSettings?: ReactNode;
+  /** The desktop app's own settings, listed in الإعدادات under the bench's. */
+  appSettings?: SettingsGroup;
 }) {
   const t = useTranslations("Admin");
   const shared = useDeskShared(data, locale);
@@ -298,6 +298,7 @@ export function RepairDeskView({
             report={report}
             job={profitJob}
             onCompleted={() => showTab("tickets", "completed")}
+            onTill={() => showTab("cash")}
           />
         </LockedPanel>
       )}
