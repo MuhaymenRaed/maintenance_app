@@ -26,7 +26,8 @@ import {
   PaperStamps,
   PaperTitle,
 } from "@/components/admin/repair-print";
-import { addToTotals, emptyTotals, repairMoney, type DeskTotals, type PaymentTerms } from "@/lib/data/repair-desk";
+import { emptyTotals, repairMoney, type DeskTotals, type PaymentTerms } from "@/lib/data/repair-desk";
+import { computeFigures } from "@/lib/data/desk-figures";
 import { describeReturn, returnDirection, type ReturnDescription, type ReturnSummary } from "@/lib/data/desk-figures";
 import { baghdadDay } from "@/lib/data/date-window";
 import { formatPrice } from "@/lib/format";
@@ -48,6 +49,7 @@ import { connectionProblem, openPrinterSetup, printerState, resolvePrinters } fr
 import type { StationSettings } from "@/lib/print/station-settings";
 import { stationSettings } from "@/lib/print/station-store";
 import { useOwnerDocument } from "@/lib/windows/owner-document";
+import { useCompletedSplit } from "@/components/admin/maintenance/figure-cards";
 import { cn } from "@/lib/utils";
 
 /**
@@ -114,12 +116,14 @@ export type ReportSourceRow = {
   costPrice: number | null;
   collected: number | null;
   paymentTerms: PaymentTerms;
+  /** When it became «مكتمل» — the day the figures book it on (2026-11-24). */
+  completedAt: string | null;
   /**
-   * Not paid in full by the period's end (2026-11-24): its amount counts on
-   * the day it is, so the row prints «آجل» and no amount, and the report
-   * still adds up to the period's totals.
+   * What the ticket's own day counted, when a later «راجع» changed it
+   * (2026-11-21). The row prints this, so yesterday's report still adds up to
+   * yesterday's totals after today's change.
    */
-  unbooked?: boolean;
+  booked?: { status: string; price: number | null; warrantyPrice: number | null; costPrice: number | null } | null;
 };
 
 /** One report to print. */
@@ -139,7 +143,33 @@ export type ReportJob = {
    * period's tickets, "but not always, only if such a راجع happened".
    */
   returns?: readonly (ReportSourceRow & { returned: ReturnSummary })[];
+  /**
+   * Which report: جرد الأرباح (the default) or تقرير الخزينة — the safe's
+   * movements in the period (the shop, 2026-11-24). The cash report prints
+   * `moves` and closes on the safe's own cards.
+   */
+  kind?: "profit" | "cash";
+  moves?: readonly CashMoveLine[];
 };
+
+/** One movement of the safe, as تقرير الخزينة prints it. */
+export type CashMoveLine = {
+  id: string;
+  code: string;
+  customer: string;
+  device: string;
+  employee: string;
+  kind: "cash" | "settle" | "deposit" | "return";
+  /** Signed: a refund is negative. */
+  amount: number;
+  at: string;
+};
+
+/** Nothing to print: no ticket, no «مرتجع» — or, for the safe, no movement. */
+export function isEmptyJob(job: ReportJob): boolean {
+  if (job.kind === "cash") return !job.moves?.length;
+  return job.rows.length === 0 && !job.returns?.length;
+}
 
 type ReportRow = {
   /**
@@ -162,8 +192,6 @@ type ReportRow = {
   /** Priced, with no purchase price typed: its part counted as zero. */
   noCost: boolean;
   cancelled: boolean;
-  /** Not paid in full by the period's end — no amount here. */
-  owing?: boolean;
   device: string;
   fault: string;
   day: string;
@@ -172,12 +200,34 @@ type ReportRow = {
   openedDay?: string;
 };
 
-type BuiltReport = { rows: ReportRow[]; totals: DeskTotals; includeCancelled: boolean };
+type CashLine = CashMoveLine & { no: number; day: string; clock: string };
+
+type BuiltReport = {
+  kind: "profit" | "cash";
+  rows: ReportRow[];
+  moves: CashLine[];
+  totals: DeskTotals;
+  includeCancelled: boolean;
+};
 
 /** The rows, in the order they came in, and the totals they close on. */
 export function buildProfitReport(job: ReportJob, unassigned: string): BuiltReport {
+  if (job.kind === "cash") {
+    const moves = (job.moves ?? [])
+      .slice()
+      .sort((a, b) => a.at.localeCompare(b.at))
+      .map((move, index) => ({
+        ...move,
+        employee: move.employee.trim() || unassigned,
+        no: index + 1,
+        day: baghdadDay(Date.parse(move.at)),
+        clock: clockOf(Date.parse(move.at)),
+      }));
+    return { kind: "cash", rows: [], moves, totals: job.totals ?? emptyTotals(), includeCancelled: true };
+  }
   const out: ReportRow[] = [];
   const kept = job.rows
+    .map((row) => (row.booked ? { ...row, ...row.booked } : row))
     .filter((row) => job.includeCancelled || (row.status !== "cancelled" && row.status !== "declined"))
     .slice()
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -190,9 +240,9 @@ export function buildProfitReport(job: ReportJob, unassigned: string): BuiltRepo
       cost: row.costPrice,
       collected: row.collected,
       terms: row.paymentTerms,
+      completed: row.status === "completed",
     });
-    const owing = !cancelled && Boolean(row.unbooked);
-    const priced = row.price != null && !cancelled && !owing;
+    const priced = row.price != null && !cancelled;
     out.push({
       kind: "ticket",
       no: out.length + 1,
@@ -200,13 +250,12 @@ export function buildProfitReport(job: ReportJob, unassigned: string): BuiltRepo
       code: row.code,
       employee: row.holderName?.trim() || unassigned,
       amount: priced ? money.base : null,
-      warranty: cancelled || owing ? 0 : money.warranty,
+      warranty: cancelled ? 0 : money.warranty,
       // ⚠️ A part with no price typed counts as zero (the shop, 2026-11-20),
       // and the row says so with a mark the summary explains.
       profit: priced ? money.base - (money.cost ?? 0) : null,
       noCost: priced && money.cost == null && money.base > 0,
       cancelled,
-      owing,
       device: row.deviceModel,
       fault: [...row.issues, ...row.customFaults].filter(Boolean).join("، "),
       day: baghdadDay(Date.parse(row.createdAt)),
@@ -279,10 +328,14 @@ export function buildProfitReport(job: ReportJob, unassigned: string): BuiltRepo
 
   let totals = job.totals;
   if (!totals) {
-    totals = emptyTotals();
-    for (const row of job.rows) addToTotals(totals, row);
+    totals = computeFigures({
+      rows: job.rows.map((row) => ({ ...row, holderId: null })),
+      book: null,
+      bounds: { since: null, until: null },
+      filters: { status: "all", terms: null, holderId: null },
+    }).totals;
   }
-  return { rows: out, totals, includeCancelled: Boolean(job.includeCancelled) };
+  return { kind: "profit", rows: out, moves: [], totals, includeCancelled: Boolean(job.includeCancelled) };
 }
 
 /* ── The ways out, and a look first ──────────────────────────────────────── */
@@ -560,16 +613,18 @@ export function useProfitReport(): ProfitReport {
   }
 
   /** The pictures as one PDF file, downloaded. */
-  async function downloadPdf(out: PdfImagePage[], printedAt: number, frozen: ReportContext) {
+  async function downloadPdf(out: PdfImagePage[], printedAt: number, job: ReportJob) {
     const { jpegPagesToPdf, safeFilename } = await import("@/lib/print/pdf");
-    const name = `${safeFilename(`${t("profitReport")} - ${frozen.desk} - ${baghdadDay(printedAt)}`)}.pdf`;
-    const bytes = jpegPagesToPdf(out, { title: `${t("profitReport")} — ${frozen.desk}`, creator: brand("name") });
+    const frozen = job.context;
+    const title = t(job.kind === "cash" ? "cashReport" : "profitReport");
+    const name = `${safeFilename(`${title} - ${frozen.desk} - ${baghdadDay(printedAt)}`)}.pdf`;
+    const bytes = jpegPagesToPdf(out, { title: `${title} — ${frozen.desk}`, creator: brand("name") });
     download(new Blob([bytes], { type: "application/pdf" }), name);
     setStatus({ tone: "done", text: t("profitReportSaved", { file: name }) });
   }
 
-  async function savePdf(pages: HTMLElement[], printedAt: number, frozen: ReportContext) {
-    await downloadPdf(await pdfPages(pages), printedAt, frozen);
+  async function savePdf(pages: HTMLElement[], printedAt: number, job: ReportJob) {
+    await downloadPdf(await pdfPages(pages), printedAt, job);
   }
 
   async function showPreview(pages: HTMLElement[], printedAt: number, job: ReportJob) {
@@ -599,7 +654,7 @@ export function useProfitReport(): ProfitReport {
     try {
       const pages = await within(drawn.promise, 30_000, "drawing the report timed out");
       if (mode === "preview") await showPreview(pages, printedAt, job);
-      else if (mode === "pdf") await savePdf(pages, printedAt, job.context);
+      else if (mode === "pdf") await savePdf(pages, printedAt, job);
       else await printDirect(pages, paper, current);
     } catch (error) {
       setStatus(
@@ -620,7 +675,7 @@ export function useProfitReport(): ProfitReport {
 
   function start(mode: ReportMode, job: ReportJob) {
     if (running.current) return;
-    if (!job.rows.length && !job.returns?.length) {
+    if (isEmptyJob(job)) {
       setStatus({ tone: "error", title: t("profitReportEmpty"), detail: null, setup: false });
       return;
     }
@@ -680,7 +735,7 @@ export function useProfitReport(): ProfitReport {
           preview={preview}
           busy={task !== null}
           onClose={closePreview}
-          onDownload={() => void downloadPdf(preview.pages, preview.printedAt, preview.job.context)}
+          onDownload={() => void downloadPdf(preview.pages, preview.printedAt, preview.job)}
           onPrint={(mode) => {
             const job = preview.job;
             closePreview();
@@ -725,10 +780,10 @@ export function ReportButtons({
 }) {
   const t = useTranslations("Admin");
   const words = useModeWords();
-  // A period with only «راجع» in it is still a report.
-  const empty = job.rows.length === 0 && !job.returns?.length;
+  // A period with only «مرتجع» in it is still a report.
+  const empty = isEmptyJob(job);
   return (
-    <div role="group" aria-label={t("profitReport")} className={cn("flex flex-wrap items-center gap-1.5", className)}>
+    <div role="group" aria-label={t(job.kind === "cash" ? "cashReport" : "profitReport")} className={cn("flex flex-wrap items-center gap-1.5", className)}>
       {MODES.map(({ mode, Icon }) => {
         const mine = report.busy === mode;
         return (
@@ -774,8 +829,8 @@ export function ReportPrintDialog({
   const t = useTranslations("Admin");
   const words = useModeWords();
   const owner = useOwnerDocument();
-  // A period with only «راجع» in it is still a report.
-  const empty = job.rows.length === 0 && !job.returns?.length;
+  // A period with only «مرتجع» in it is still a report.
+  const empty = isEmptyJob(job);
   return (
     <Dialog.Root open={open} onOpenChange={(next) => !next && onClose()}>
       <Dialog.Portal container={owner?.body}>
@@ -794,7 +849,9 @@ export function ReportPrintDialog({
               <p className="mt-0.5 text-[0.78rem] font-medium leading-relaxed text-muted">
                 {empty
                   ? t("profitReportEmpty")
-                  : t("printChooserBody", { count: job.rows.length, period: job.context.period })}
+                  : job.kind === "cash"
+                    ? t("cashChooserBody", { count: job.moves?.length ?? 0, period: job.context.period })
+                    : t("printChooserBody", { count: job.rows.length, period: job.context.period })}
               </p>
             </div>
             <Dialog.Close
@@ -994,10 +1051,19 @@ function ReportStage({ task }: { task: ReportTask }) {
   if (!layout) {
     return createPortal(
       <div ref={measured} aria-hidden inert dir={dir} lang={locale} style={OFFSCREEN}>
-        <ReportPage {...common} measure="first" first lines={[]} startIndex={0} pageNo={1} pageCount={1} />
-        <ReportPage {...common} measure="next" first={false} lines={report.rows} startIndex={0} pageNo={1} pageCount={1} />
+        <ReportPage {...common} measure="first" first lines={[]} moves={[]} startIndex={0} pageNo={1} pageCount={1} />
+        <ReportPage
+          {...common}
+          measure="next"
+          first={false}
+          lines={report.rows}
+          moves={report.moves}
+          startIndex={0}
+          pageNo={1}
+          pageCount={1}
+        />
         <div data-measure-tail style={{ width: `${paper.sheetWidthMm - 20}mm` }}>
-          <ReportSummary report={report} />
+          {report.kind === "cash" ? <CashSummary report={report} /> : <ReportSummary report={report} />}
         </div>
       </div>,
       document.body,
@@ -1012,7 +1078,8 @@ function ReportStage({ task }: { task: ReportTask }) {
           {...common}
           first={index === 0}
           last={index === layout.length - 1}
-          lines={indices.map((row) => report.rows[row])}
+          lines={report.kind === "cash" ? [] : indices.map((row) => report.rows[row])}
+          moves={report.kind === "cash" ? indices.map((row) => report.moves[row]) : []}
           startIndex={indices[0] ?? 0}
           pageNo={index + 1}
           pageCount={layout.length}
@@ -1078,6 +1145,7 @@ function ReportPage({
   first,
   last = false,
   lines,
+  moves,
   startIndex,
   pageNo,
   pageCount,
@@ -1091,6 +1159,8 @@ function ReportPage({
   /** The page the totals close. */
   last?: boolean;
   lines: readonly ReportRow[];
+  /** A cash report's movements on this page. */
+  moves: readonly CashLine[];
   startIndex: number;
   pageNo: number;
   pageCount: number;
@@ -1100,6 +1170,8 @@ function ReportPage({
   const brand = useTranslations("Brand");
   const day = baghdadDay(printedAt);
   const clock = clockOf(printedAt);
+  const cash = report.kind === "cash";
+  const title = t(cash ? "cashReport" : "profitReport");
 
   return (
     <article
@@ -1114,7 +1186,7 @@ function ReportPage({
         <div className="flex shrink-0 flex-col gap-[1.8mm]">
           <Letterhead markClass="size-[18mm]">
             <PaperEyebrow Icon={ClipboardList}>{context.desk}</PaperEyebrow>
-            <PaperTitle>{t("profitReport")}</PaperTitle>
+            <PaperTitle>{title}</PaperTitle>
             <PaperStamps
               stamps={[
                 { label: t("profitReportPrinted"), value: day },
@@ -1129,7 +1201,7 @@ function ReportPage({
           <header className="flex items-end justify-between gap-[6mm]">
             <div className="min-w-0">
               <p className="text-[8pt] font-bold leading-[1.2] text-[#a90f1d]">{context.desk}</p>
-              <p className="mt-[0.6mm] text-[14pt] font-bold leading-[1.15] text-[#e11d2e]">{t("profitReport")}</p>
+              <p className="mt-[0.6mm] text-[14pt] font-bold leading-[1.15] text-[#e11d2e]">{title}</p>
             </div>
             <div className="me-[10mm] flex shrink-0 items-center gap-[2mm]">
               <CompanyMark className="size-[9mm]" />
@@ -1154,13 +1226,15 @@ function ReportPage({
       )}
 
       <div data-slot className="mt-[3mm] min-h-0 flex-1 overflow-hidden">
-        {(lines.length > 0 || measure) && <ReportTable lines={lines} startIndex={startIndex} />}
-        {last && !measure && <ReportSummary report={report} />}
+        {cash
+          ? (moves.length > 0 || measure) && <CashTable lines={moves} startIndex={startIndex} />
+          : (lines.length > 0 || measure) && <ReportTable lines={lines} startIndex={startIndex} />}
+        {last && !measure && (cash ? <CashSummary report={report} /> : <ReportSummary report={report} />)}
       </div>
 
       <footer className="mt-[2.4mm] flex shrink-0 items-center justify-between gap-[4mm] border-0 border-t-[0.25mm] border-solid border-[#f2c4ca] pt-[1.8mm] text-[7.4pt] font-semibold leading-[1.3]">
         <p className="min-w-0 whitespace-nowrap">
-          {t("profitReport")} — {context.desk} · <span data-numeric>{day}  {clock}</span>
+          {title} — {context.desk} · <span data-numeric>{day}  {clock}</span>
         </p>
         <p className="shrink-0 whitespace-nowrap font-bold text-[#a90f1d]">
           {t("profitReportPage", { page: String(pageNo), pages: String(pageCount) })}
@@ -1182,14 +1256,18 @@ function ReportPage({
  */
 function ReportSummary({ report }: { report: BuiltReport }) {
   const t = useTranslations("Admin");
+  const split = useCompletedSplit();
   const { totals } = report;
+  const elsewhere = split(totals);
   // The panel's order (the shop, 2026-11-20), three a row.
   const cards: { key: string; label: string; value: string; sub?: string; strong?: boolean }[] = [
     {
       key: "count",
       label: t("profitReportTotalCount"),
       value: String(totals.tickets),
-      sub: t("deskTicketsSub", { completed: totals.completed, cancelled: totals.cancelled, open: totals.open }),
+      sub:
+        t("deskTicketsSub", { completed: totals.completed, cancelled: totals.cancelled, open: totals.open }) +
+        (elsewhere ? ` — ${elsewhere}` : ""),
     },
     { key: "maintenance", label: t("financePriceTotal"), value: money(totals.maintenance) },
     { key: "cost", label: t("financeCostTotal"), value: money(totals.cost) },
@@ -1428,13 +1506,7 @@ function ReportTable({ lines, startIndex }: { lines: readonly ReportRow[]; start
               </td>
               <td className={cn(CELL, "text-start font-bold")}>{line.employee}</td>
               <td className={cn(CELL, "text-center font-bold")} data-numeric>
-                {line.cancelled
-                  ? t("profitReportCancelledShort")
-                  : line.owing
-                    ? t("profitReportOwingShort")
-                    : line.amount == null
-                      ? "—"
-                      : money(line.amount)}
+                {line.cancelled ? t("profitReportCancelledShort") : line.amount == null ? "—" : money(line.amount)}
               </td>
               <td className={cn(CELL, "text-center")} data-numeric>
                 {line.warranty > 0 ? money(line.warranty) : "—"}
@@ -1457,5 +1529,141 @@ function ReportTable({ lines, startIndex }: { lines: readonly ReportRow[]; start
         })}
       </tbody>
     </table>
+  );
+}
+
+/* ── تقرير الخزينة ─────────────────────────────────────────────────────── */
+
+/**
+ * The safe's movements, one row each, in the order the money moved — the
+ * same fixed-width table as جرد الأرباح, so a row measures what it draws.
+ */
+const CASH_WIDTHS = ["8mm", "21mm", "30mm", undefined, "26mm", "24mm", "24mm", "25mm"] as const;
+
+function CashTable({ lines, startIndex }: { lines: readonly CashLine[]; startIndex: number }) {
+  const t = useTranslations("Admin");
+  const heads = [
+    "#",
+    t("cashReportColCode"),
+    t("cashReportColCustomer"),
+    t("profitReportColDevice"),
+    t("profitReportColEmployee"),
+    t("cashReportColKind"),
+    t("cashReportColAmount"),
+    t("cashReportColTime"),
+  ];
+  return (
+    <table className="w-full table-fixed border-collapse">
+      <colgroup>
+        {CASH_WIDTHS.map((width, index) => (
+          <col key={index} style={width ? { width } : undefined} />
+        ))}
+      </colgroup>
+      <thead>
+        <tr>
+          {heads.map((head, index) => (
+            <th
+              key={index}
+              scope="col"
+              className={cn(
+                "border-0 bg-[#e11d2e] px-[1.3mm] py-[1.7mm] text-center align-middle text-[7.8pt] font-bold leading-[1.25] text-white",
+                index > 0 && "border-s-[0.25mm] border-solid border-[#f3939e]",
+              )}
+            >
+              {head}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {lines.map((line, offset) => {
+          const n = startIndex + offset;
+          const refund = line.amount < 0;
+          return (
+            <tr key={`${line.id}-${line.at}`} className={n % 2 ? "bg-[#fdeff1]" : "bg-white"}>
+              <td className={cn(CELL, "text-center font-bold text-[#a90f1d]")} data-numeric>
+                {line.no}
+              </td>
+              <td className={cn(CELL, "text-center font-bold")} data-numeric>
+                {line.code}
+              </td>
+              <td className={cn(CELL, "text-start font-bold")}>{line.customer}</td>
+              <td className={cn(CELL, "text-center")} dir="auto">
+                {line.device}
+              </td>
+              <td className={cn(CELL, "text-start")}>{line.employee}</td>
+              <td className={cn(CELL, "text-center font-bold", line.kind === "return" && "text-[#333333]")}>
+                {t(`cashMove_${line.kind}`)}
+              </td>
+              <td className={cn(CELL, "text-center font-bold", refund && "text-[#e11d2e]")} data-numeric>
+                {signed(line.amount)}
+              </td>
+              <td className={cn(CELL, "whitespace-nowrap text-center")} data-numeric>
+                {line.day} {line.clock}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+/**
+ * The safe's figures after the last movement — the cash tab's own cards, on
+ * paper. «واصل بالخزنة» is the one in red: it is what the drawer is counted
+ * against at closing time.
+ */
+function CashSummary({ report }: { report: BuiltReport }) {
+  const t = useTranslations("Admin");
+  const { totals } = report;
+  const cards: { key: string; label: string; value: string; sub?: string; strong?: boolean }[] = [
+    { key: "cash", label: t("financeCollectedCash"), value: money(totals.collectedCash) },
+    { key: "deferred", label: t("financeCollectedDeferred"), value: money(totals.collectedDeferred) },
+    { key: "warranty", label: t("cashWarrantyIn"), value: money(totals.tillWarranty) },
+    totals.returnTill
+      ? { key: "returns", label: t("deskReturnsCard"), value: signed(totals.returnTill), sub: t("deskReturnsTillSub") }
+      : { key: "moves", label: t("cashMovesCount"), value: String(report.moves.length) },
+    {
+      key: "till",
+      label: t("financeTill"),
+      value: money(totals.till),
+      sub: t(totals.returnTill ? "financeTillFormulaReturns" : "financeTillFormula"),
+      strong: true,
+    },
+    { key: "debts", label: t("financeOutstanding"), value: money(totals.outstanding), sub: t("cashDebtsNow") },
+  ];
+  return (
+    <section className="shrink-0 pt-[3.4mm]">
+      <dl className="grid grid-cols-3 gap-[2mm]">
+        {cards.map((card) => (
+          <div
+            key={card.key}
+            className={cn(
+              "flex flex-col justify-between gap-[1.2mm] rounded-[2mm] border-[0.25mm] border-solid px-[2.8mm] py-[2mm]",
+              card.strong ? "border-[#e11d2e] bg-[#e11d2e]" : "border-[#f2c4ca] bg-[#fdeff1]",
+            )}
+          >
+            <dt className={cn("text-[7.4pt] font-bold leading-[1.3]", card.strong ? "text-white" : "text-[#a90f1d]")}>
+              {card.label}
+            </dt>
+            <dd className={cn("text-[13pt] font-bold leading-[1.1]", card.strong ? "text-white" : "text-[#000]")}>
+              <span data-numeric>{card.value}</span>
+              {card.sub && (
+                <span className={cn("mt-[0.8mm] block text-[6.6pt] font-semibold leading-[1.25]", card.strong ? "text-white" : "text-[#000]")}>
+                  {card.sub}
+                </span>
+              )}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <ul className="mt-[1.8mm] flex flex-wrap gap-x-[5mm] gap-y-[0.8mm] text-[7.6pt] font-semibold leading-[1.3]">
+        <li className="flex items-center gap-[1.4mm]">
+          <span className="size-[1.4mm] shrink-0 rotate-45 bg-[#e11d2e]" aria-hidden />
+          {t("cashReportRule")}
+        </li>
+      </ul>
+    </section>
   );
 }

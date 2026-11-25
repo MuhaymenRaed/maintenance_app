@@ -1,51 +1,60 @@
-import { addToTotals, emptyTotals, isOpenTicket, repairMoney, type DeskTotals, type PaymentTerms } from "./repair-desk.ts";
+import { emptyTotals, isOpenTicket, repairMoney, type DeskTotals, type PaymentTerms } from "./repair-desk.ts";
+import { stageOf } from "./repair-stage.ts";
+import { baghdadDay } from "./date-window.ts";
 
 /**
+ * ⚠️ **Superseded in part on 2026-11-24 — read this first.** The shop's rule
+ * is now one sentence: **only «مكتمل» counts.** A ticket is *booked* once, on
+ * the Baghdad day it became «مكتمل» (`completedAt`, kept by a trigger in
+ * 20261124_maintenance_stages.sql), as it stood at the end of that day; money
+ * is still dated by the day it came in (`repair_ticket_payments`), and a نقد
+ * ticket's money comes in when it completes. «راجع» is called «مرتجع» on
+ * screen now and is a later-day change to a *booked* ticket. The "two clocks"
+ * below survive as the money clock; the "opened" clock is gone from the
+ * figures — a ticket's opening day only decides which list it sits in
+ * (`lib/data/desk-board.ts`).
+ *
  * The repair desk's figures panel — which tickets each card counts, and on
  * which day each dinar came in. Pure and shared: the dashboard runs it over
  * the server's rows (`lib/queries/repair-desk.ts`) and the desktop app over
  * its own copy (`src/main/desk/board.ts`), so a card reads the same on both.
  *
  * ---------------------------------------------------------------------------
- * Three clocks (the shop, 2026-11-20 and 2026-11-24)
+ * Two clocks, on purpose (the shop, 2026-11-20)
  * ---------------------------------------------------------------------------
- * - **How many tickets, and what is still owed** — التذاكر and الديون —
- *   belong to the day a ticket was **opened**. الديون is what those tickets
- *   still owed at the period's end, so yesterday keeps the debts it had.
- * - **What a ticket came to** — مبلغ الصيانة, أسعار الشراء, الربح الصافي and
- *   الضمان — belongs to the day it was **paid in full** (`bookingMoment`).
- *   A نقد ticket is paid in full the moment it is opened; an آجل ticket on the
- *   day its last dinar came in. The shop, 2026-11-24: "the ticket must effect
- *   only the reports of the day that it gets filled by … so its day remain as
- *   it is". An آجل ticket opened yesterday and settled today counts in today's
- *   مبلغ الصيانة, parts and profit, and never in yesterday's.
+ * - **What a ticket is** — how many, what was charged, the warranty, the
+ *   parts, the profit, what is still owed — belongs to the day it was
+ *   **opened**. Those cards count the tickets opened in the period.
  * - **Money** — «واصل نقد», «واصل آجل», «واصل بالخزنة» — belongs to the day it
- *   **came in**, every dinar once. The dates come from `repair_ticket_payments`,
- *   a ledger the database keeps by itself (`20261120_repair_payments.sql`);
- *   until that file runs, a deferred ticket paid in full is dated by the last
- *   change to its money row, and everything else by the day it was opened.
+ *   **came in**. A deferred ticket from yesterday settled today puts its
+ *   money in today's figures, and today's list shows the ticket with a mark
+ *   saying so. The dates come from `repair_ticket_payments`, a ledger the
+ *   database keeps by itself (`20261120_repair_payments.sql`); until that
+ *   file runs, a deferred ticket paid in full is dated by the last change to
+ *   its money row, and everything else by the day it was opened.
  *
  * ---------------------------------------------------------------------------
- * «راجع» — the till of its own day, the rest on the ticket's (2026-11-24)
+ * «راجع» — a past day stays as it was (the shop, 2026-11-21)
  * ---------------------------------------------------------------------------
- * A change made on a later day than the ticket was paid in full — its price
- * brought down or up, a warranty added, the ticket cancelled — is a «راجع».
- * On the day of the change it moves ONE figure: «واصل بالخزنة», by the money
- * actually handed back or taken; the «راجع» card says what changed. The day
- * the ticket was paid in full counts it as it is now: "its original day must
- * change its statics all of it based on the status of راجع and the ticket".
- * Its till there keeps the money that came in that day — the drawer had it —
- * so every day's till is what the drawer held, and a refund is counted once.
+ * A ticket from an earlier day whose price is brought down or up, or which
+ * is cancelled, is shown on the day of the change under «راجع». The day a
+ * ticket was opened counts it as it was at the end of that day —
+ * `bookedState` — so a report printed yesterday reads the same today.
  *
- * A change before the ticket was paid in full is not a «راجع»: an آجل ticket
- * priced today and settled today is simply today's.
+ * ⚠️ On the day of the change a «راجع» moves ONE figure: «واصل بالخزنة», by
+ * the money actually handed back or taken (the shop, the same afternoon: "the
+ * other statistics must show fully like there is no راجع at all"). مبلغ
+ * الصيانة, the parts, the profit, the warranty, «واصل نقد» and «واصل آجل»
+ * read as if nothing had changed; the «راجع» card says what did, and the till
+ * carries a note. Which payment is a «راجع»'s is told by the moment: the
+ * payments ledger and the «راجع» are written by triggers in one transaction,
+ * so they share one `now()` (`returnMoneyWithin`).
  *
- * Which payment is a «راجع»'s is told by the moment: the payments ledger and
- * `repair_ticket_returns` are written by triggers in one transaction, so they
- * share one `now()` (`returnMoneyWithin`). Until 20261121_repair_returns.sql
- * runs there is no book and nothing is a «راجع». The same file makes a
- * cancellation post its refund in the payments ledger on the day it happens,
- * which is what `refunds` turns on.
+ * The changes come from `repair_ticket_returns`, which the database keeps by
+ * itself (20261121_repair_returns.sql). Until that file runs there is no
+ * book, and a ticket counts as it is now on the day it was opened — what the
+ * desk always did. The same file makes a cancellation post its refund in the
+ * payments ledger on the day it happens, which is what `refunds` turns on.
  */
 
 export type PaymentEntry = { at: string; amount: number };
@@ -70,10 +79,15 @@ export type ReturnBook = Record<string, readonly ReturnEntry[]> | null;
 
 const isOff = (status: string) => status === "cancelled" || status === "declined";
 
-/** What a state counts for — nothing at all once cancelled. */
+/**
+ * What a state counts for: its money while it is «مكتمل», nothing otherwise
+ * (2026-11-24). So a booked ticket cancelled, reopened or completed again on a
+ * later day is a «مرتجع» of exactly what it stopped (or started) counting —
+ * the same test the database's `repair_record_return_v2` makes.
+ */
 export function stateValue(state: TicketState): { price: number; warranty: number; base: number; cost: number } {
-  if (isOff(state.status)) return { price: 0, warranty: 0, base: 0, cost: 0 };
-  const money = repairMoney({ price: state.price, warranty: state.warranty, cost: state.cost, collected: null, terms: "deferred" });
+  if (state.status !== "completed") return { price: 0, warranty: 0, base: 0, cost: 0 };
+  const money = repairMoney({ price: state.price, warranty: state.warranty, cost: state.cost, collected: null, terms: "deferred", completed: true });
   return { price: money.price, warranty: money.warranty, base: money.base, cost: money.cost ?? 0 };
 }
 
@@ -84,129 +98,13 @@ export function sameValue(a: TicketState, b: TicketState): boolean {
   return x.price === y.price && x.warranty === y.warranty && x.cost === y.cost;
 }
 
-/** The Baghdad calendar day of an instant — Iraq keeps UTC+3 all year. */
-export function baghdadDayOf(at: string): string {
-  return new Date(Date.parse(at) + 3 * 3_600_000).toISOString().slice(0, 10);
-}
-
 /**
- * When a ticket was paid in full — the day its amount, its part, its warranty
- * and its profit belong to (the shop, 2026-11-24).
- *
- * - an instant: the last event of the first Baghdad day that **ended** with
- *   everything it had taken covering what it was charged then;
- * - `"before"`: before the book starts (`since`) — the site reads the ledger
- *   from the period's start on, and that is all it needs to know;
- * - `null`: not paid in full yet, or never priced — counted nowhere yet.
- *
- * ⚠️ By the day's end, not the first moment, and that is load-bearing: the
- * desk opens an آجل ticket as نقد and turns it آجل a moment later, so the
- * ledger reads +25,000 then −25,000 within one minute. "Paid in full at
- * 16:55" would book an unpaid ticket on the day it was opened.
- *
- * The price at a moment is the ticket's state after every change made up to
- * it — a change and its payment share one `now()` — so a نقد ticket whose
- * price was raised a week later is still paid in full on its own day, and the
- * raise is a «راجع».
+ * The ticket as its own day counted it: its state before the first «راجع».
+ * Null when it has none — the ticket as it is now.
  */
-export type Moment = string | "before" | null;
-
-export function bookingMoment(
-  row: FigureRow,
-  book: PaymentBook,
-  returns: ReturnBook,
-  { since = null, complete = false }: { since?: string | null; complete?: boolean } = {},
-): Moment {
-  const off = isOff(row.status);
-  const now = repairMoney({
-    price: row.price,
-    warranty: row.warrantyPrice,
-    cost: row.costPrice,
-    collected: row.collected,
-    terms: row.paymentTerms,
-  });
-  if (book === null) {
-    if (off || now.price <= 0 || now.remaining > 0) return null;
-    const at = fallbackPaidAt(row);
-    return since !== null && at < since ? "before" : at;
-  }
-
-  const current: TicketState = { status: row.status, price: row.price, warranty: row.warrantyPrice, cost: row.costPrice };
-  const changes = returns?.[row.id] ?? [];
-  // What it was charged once everything up to `time` had happened.
-  const priceAfter = (time: number) => {
-    const next = changes.find((entry) => Date.parse(entry.at) > time);
-    return stateValue(next ? next.before : current).price;
-  };
-
-  const paidNow = off ? 0 : now.collected;
-  const events = (book[row.id] ?? []).map((entry) => ({ time: Date.parse(entry.at), at: entry.at, amount: entry.amount }));
-  const recorded = events.reduce((sum, entry) => sum + entry.amount, 0);
-  let paid = 0;
-  if (complete) {
-    // A change made on this computer and not sent yet, dated by the money row.
-    const unsent = paidNow - recorded;
-    if (unsent !== 0) {
-      const at = row.financeAt && row.financeAt > row.createdAt ? row.financeAt : row.createdAt;
-      events.push({ time: Date.parse(at), at, amount: unsent });
-    }
-  } else if (since !== null && row.createdAt < since) {
-    // The book starts at `since`: what was paid before it is the rest.
-    paid = paidNow - recorded;
-    const price = priceAfter(Date.parse(since) - 1);
-    if (price > 0 && paid >= price) return "before";
-  } else {
-    // Money the ledger does not account for came in when the ticket was opened.
-    const unrecorded = paidNow - recorded;
-    if (unrecorded !== 0) events.push({ time: Date.parse(row.createdAt), at: row.createdAt, amount: unrecorded });
-  }
-  // A change with no money can settle a ticket too — a price brought down to
-  // what it had already paid.
-  for (const entry of changes) events.push({ time: Date.parse(entry.at), at: entry.at, amount: 0 });
-  events.sort((a, b) => a.time - b.time);
-
-  for (let index = 0; index < events.length; index += 1) {
-    const event = events[index];
-    paid += event.amount;
-    const next = events[index + 1];
-    // Only a day's end decides.
-    if (next && baghdadDayOf(next.at) === baghdadDayOf(event.at)) continue;
-    const price = priceAfter(event.time);
-    if (price > 0 && paid >= price) return event.at;
-  }
-  return null;
-}
-
-/** Whether a ticket was paid in full within the period. */
-export function bookedWithin(moment: Moment, bounds: Bounds): boolean {
-  return typeof moment === "string" && moment !== "before" && withinBounds(moment, bounds);
-}
-
-/**
- * Every ticket's paid-in-full moment, and the «راجع» book cut down to what is
- * really a «راجع»: a change made on a later day than the ticket was paid in
- * full. A change before then — an آجل ticket priced the day it is settled — is
- * that day's own business. `since` is where the payments book starts.
- */
-export function deskBookings(
-  rows: readonly FigureRow[],
-  book: PaymentBook,
-  returns: ReturnBook,
-  { since = null, complete = false }: { since?: string | null; complete?: boolean } = {},
-): { moments: Map<string, Moment>; returns: ReturnBook } {
-  const moments = new Map<string, Moment>();
-  for (const row of rows) moments.set(row.id, bookingMoment(row, book, returns, { since, complete }));
-  if (!returns) return { moments, returns: null };
-  const kept: Record<string, ReturnEntry[]> = {};
-  for (const row of rows) {
-    const entries = returns[row.id];
-    const moment = moments.get(row.id) ?? null;
-    if (!entries?.length || moment === null) continue;
-    const later =
-      moment === "before" ? [...entries] : entries.filter((entry) => baghdadDayOf(entry.at) > baghdadDayOf(moment));
-    if (later.length) kept[row.id] = later;
-  }
-  return { moments, returns: kept };
+export function bookedState(id: string, returns: ReturnBook): TicketState | null {
+  const first = returns?.[id]?.[0];
+  return first ? first.before : null;
 }
 
 /**
@@ -233,6 +131,33 @@ export function warrantySpan(row: FigureRow, returns: ReturnBook, bounds: Bounds
   };
 }
 
+/** The ticket as it is now, in the figures' own shape. */
+export function currentState(row: FigureRow): TicketState {
+  return { status: row.status, price: row.price, warranty: row.warrantyPrice, cost: row.costPrice };
+}
+
+/**
+ * The ticket's booking, when it falls in the period: the state it ended its
+ * completion day in, if that state is «مكتمل». A ticket completed and taken
+ * back off the same day has no completion day at all (the trigger clears it).
+ */
+export function bookedWithin(row: FigureRow, returns: ReturnBook, bounds: Bounds): TicketState | null {
+  if (!row.completedAt || !withinBounds(row.completedAt, bounds)) return null;
+  const state = bookedState(row.id, returns) ?? currentState(row);
+  return state.status === "completed" ? state : null;
+}
+
+/** `bookedState` in the shape the filters take. */
+export function bookedFields(
+  row: FigureRow,
+  returns: ReturnBook,
+): { status: string; price: number | null; warrantyPrice: number | null; costPrice: number | null } | null {
+  const state = bookedState(row.id, returns);
+  // The purchase price is never a «راجع»: typed the day after the part
+  // arrives, it still belongs to the ticket's own profit.
+  return state ? { status: state.status, price: state.price, warrantyPrice: state.warranty, costPrice: row.costPrice } : null;
+}
+
 /** A ticket's «راجع» within the period, added up. */
 export type ReturnSummary = {
   /** The change in what the customer is charged — the repair and its warranty. */
@@ -249,6 +174,9 @@ export type ReturnSummary = {
   /** Called off within the period, or brought back. */
   cancelled: boolean;
   restored: boolean;
+  /** Taken back off «مكتمل» to the bench, or completed again. */
+  reopened: boolean;
+  recompleted: boolean;
   /** When the last change was made. */
   at: string;
   changes: number;
@@ -281,6 +209,10 @@ export function returnSummary(id: string, returns: ReturnBook, bounds: Bounds): 
     after: last.after,
     cancelled: !isOff(first.before.status) && isOff(last.after.status),
     restored: isOff(first.before.status) && !isOff(last.after.status),
+    reopened:
+      first.before.status === "completed" && last.after.status !== "completed" && !isOff(last.after.status),
+    recompleted:
+      first.before.status !== "completed" && !isOff(first.before.status) && last.after.status === "completed",
     at: last.at,
     changes: entries.length,
   };
@@ -291,7 +223,7 @@ export function returnSummary(id: string, returns: ReturnBook, bounds: Bounds): 
  * brought back, or which of the three figures moved and from what to what.
  */
 export type ReturnDescription = {
-  kind: "cancelDelivered" | "cancel" | "restore" | "edit";
+  kind: "cancelDelivered" | "cancel" | "restore" | "reopen" | "recomplete" | "edit";
   changes: { field: "price" | "warranty" | "cost"; from: number; to: number }[];
 };
 
@@ -300,6 +232,8 @@ export function describeReturn(summary: ReturnSummary): ReturnDescription {
     return { kind: summary.before.status === "completed" ? "cancelDelivered" : "cancel", changes: [] };
   }
   if (summary.restored) return { kind: "restore", changes: [] };
+  if (summary.reopened) return { kind: "reopen", changes: [] };
+  if (summary.recompleted) return { kind: "recomplete", changes: [] };
   const from = stateValue(summary.before);
   const to = stateValue(summary.after);
   const changes: ReturnDescription["changes"] = [];
@@ -417,6 +351,13 @@ export type FigureRow = {
   id: string;
   status: string;
   createdAt: string;
+  /**
+   * When the ticket became «مكتمل» — its booking day. Null while it never has
+   * (or left the stage the same day). See `20261124_maintenance_stages.sql`.
+   */
+  completedAt: string | null;
+  /** «تم التسليم للزبون» — a badge, never money. */
+  handedOverAt?: string | null;
   price: number | null;
   warrantyPrice: number | null;
   costPrice: number | null;
@@ -438,17 +379,10 @@ export function withinBounds(at: string, bounds: Bounds): boolean {
 
 /** The day a ticket's money is dated by when there is no ledger. */
 export function fallbackPaidAt(row: FigureRow): string {
-  const money = repairMoney({
-    price: row.price,
-    warranty: row.warrantyPrice,
-    cost: row.costPrice,
-    collected: row.collected,
-    terms: row.paymentTerms,
-  });
-  if (row.paymentTerms === "deferred" && money.price > 0 && money.remaining === 0 && row.financeAt && row.financeAt > row.createdAt) {
-    return row.financeAt;
-  }
-  return row.createdAt;
+  // نقد: when it became «مكتمل» — before that it has paid nothing.
+  if (row.paymentTerms === "cash") return row.completedAt ?? row.createdAt;
+  // آجل: the last change to what was collected — the only stand-in there is.
+  return row.financeAt && row.financeAt > row.createdAt ? row.financeAt : row.createdAt;
 }
 
 /**
@@ -496,6 +430,7 @@ export function moneyAcross(
         cost: row.costPrice,
         collected: row.collected,
         terms: row.paymentTerms,
+        completed: row.completedAt != null,
       }).collected;
 
   if (book === null) {
@@ -513,9 +448,14 @@ export function moneyAcross(
     else if (bounds.until !== null && entry.at >= bounds.until) after += entry.amount;
     else within += entry.amount;
   }
+  // Opened after the period: nothing of it was before the period or in it,
+  // whatever the ledger dates later. Without this a نقد ticket opened today,
+  // which the old ledger priced at its opening, reached into yesterday as a
+  // negative payment and was listed there (2026-11-25).
+  if (bounds.until !== null && row.createdAt >= bounds.until) return { before: 0, within };
   if (complete) {
     const unsent = paid - ahead - within - after;
-    const at = row.financeAt && row.financeAt > row.createdAt ? row.financeAt : row.createdAt;
+    const at = fallbackPaidAt(row);
     if (before(at, bounds.since)) ahead += unsent;
     else if (withinBounds(at, bounds)) within += unsent;
     if (from(row.createdAt, bounds.since)) return { before: 0, within: within + ahead };
@@ -562,142 +502,47 @@ const byFilters = (row: FigureRow, filters: FigureFilters, withHolder: boolean) 
 export type FigureHolderRow = DeskTotals & { holderId: string | null; name: string };
 
 /**
- * What the figures read of the books once, for every ticket on the page: the
- * books themselves, each ticket's paid-in-full moment, and the «راجع» book cut
- * down to real «راجع» (`deskBookings`). `since` is where the payments book
- * starts — the figures' period on the site, everything in the desk app.
- */
-export type FigureContext = {
-  book: PaymentBook;
-  /** Every recorded change — what a ticket's price was at a moment. */
-  changes: ReturnBook;
-  /** Only the «راجع»: changes made after the day a ticket was paid in full. */
-  returns: ReturnBook;
-  moments: Map<string, Moment>;
-  since: string | null;
-  complete: boolean;
-  /** The same file that keeps the «راجع» makes a cancellation post its refund. */
-  refunds: boolean;
-};
-
-export function figureContext({
-  rows,
-  book,
-  returns,
-  since,
-  complete = false,
-}: {
-  rows: readonly FigureRow[];
-  book: PaymentBook;
-  returns: ReturnBook;
-  since: string | null;
-  complete?: boolean;
-}): FigureContext {
-  const booked = deskBookings(rows, book, returns, { since, complete });
-  return { book, changes: returns, returns: booked.returns, moments: booked.moments, since, complete, refunds: returns !== null };
-}
-
-/** Everything a card asks of one ticket in one period. */
-export type FigureFacts = {
-  /** Paid in full within the period: its amount, part, warranty and profit count here. */
-  booked: boolean;
-  /** The ordinary money, before the period and within it — a «راجع»'s left out. */
-  paid: { before: number; within: number };
-  /** What a «راجع» moved in the till within the period. */
-  returnMoney: number;
-  /** Its «راجع» within the period. */
-  returned: ReturnSummary | null;
-  /** The warranty at the period's start and end — what its money is split by. */
-  warranty: { start: number; end: number } | null;
-  /** What it still owed at the period's end, and whether it was paid in full by then. */
-  remaining: number;
-  settled: boolean;
-};
-
-export function figureFacts(row: FigureRow, context: FigureContext, bounds: Bounds): FigureFacts {
-  const { book, changes, returns, complete, refunds } = context;
-  const all = moneyAcross(row, book, bounds, { complete, refunds });
-  const returnMoney = returnMoneyWithin(row.id, book, returns, bounds);
-  const moment = context.moments.has(row.id)
-    ? (context.moments.get(row.id) ?? null)
-    : bookingMoment(row, book, changes, { since: context.since, complete });
-  const now = repairMoney({
-    price: row.price,
-    warranty: row.warrantyPrice,
-    cost: row.costPrice,
-    collected: row.collected,
-    terms: row.paymentTerms,
-  });
-  let remaining: number;
-  let settled: boolean;
-  if (isOff(row.status)) {
-    remaining = 0;
-    settled = true;
-  } else if (book === null) {
-    remaining = now.remaining;
-    settled = row.paymentTerms === "cash" || now.remaining === 0;
-  } else {
-    // As it stood at the period's end: what it was charged then, less every
-    // dinar it had taken by then.
-    const price = stateValue(stateAt(row, changes, bounds.until)).price;
-    remaining = Math.max(0, price - (all.before + all.within));
-    settled = remaining === 0;
-  }
-  return {
-    booked: bookedWithin(moment, bounds),
-    paid: { before: all.before, within: all.within - returnMoney },
-    returnMoney,
-    returned: returnSummary(row.id, returns, bounds),
-    warranty: changes ? warrantySpan(row, changes, bounds) : null,
-    remaining,
-    settled,
-  };
-}
-
-/**
- * The cards and the per-person table.
+ * The cards and the per-person table, under the one rule (2026-11-24): only
+ * «مكتمل» counts.
  *
- * `opened` is every ticket opened in the period (the search already applied);
- * `earlier` is every ticket opened before it whose money came in, or changed,
- * within it. Both are narrowed here by the figures' own filters.
+ * `rows` is every ticket the page holds — opened in the period, completed in
+ * it, paid or changed in it, and every one still open — narrowed here by the
+ * figures' own filters. For each:
  *
- * التذاكر and الديون count the tickets opened in the period; مبلغ الصيانة, the
- * parts, the warranty and the profit count the tickets paid in full within it,
- * whichever day they were opened (`bookingMoment`), each as it is now; the
- * money is the money that came in within it. A «راجع» within the period moves
- * the till and its own card, nothing else.
+ * - **booked within the period** (`bookedWithin`): it completed in it, and
+ *   ended that day «مكتمل». Only these count in مبلغ الصيانة, الضمان, أسعار
+ *   الشراء and الربح — as they stood at the end of that day; the purchase price
+ *   is the ticket's own, whenever it was typed.
+ * - **money within the period**: what the ledger dates in it, ordinary and
+ *   «مرتجع» apart. Ordinary money is split the warranty's part first; the rest
+ *   is «واصل نقد» for a نقد ticket or an آجل complete by the period's end, and
+ *   «واصل آجل» otherwise. A «مرتجع»'s money reaches the safe and nothing else.
+ * - **the debts, now**: what «بانتظار الزبون» tickets still owe, whatever
+ *   day — a debt is a fact about today, not about the period.
+ * - the counts of what was **opened** in the period (التذاكر · قيد العمل ·
+ *   ملغاة), which say nothing about money.
+ *
+ * A website request (`requested`) is in none of it until it is accepted.
  */
 export function computeFigures<R extends FigureRow>({
-  opened,
-  earlier,
+  rows,
   book,
   returns = null,
   bounds,
   filters,
   complete = false,
 }: {
-  opened: readonly R[];
-  earlier: readonly R[];
+  rows: readonly R[];
   book: PaymentBook;
-  /** `repair_ticket_returns`, every change — null until its migration runs. */
+  /** `repair_ticket_returns` — null until its migration runs. */
   returns?: ReturnBook;
   bounds: Bounds;
   filters: FigureFilters;
   /** The book holds every entry — see `moneyAcross`. */
   complete?: boolean;
-}): {
-  totals: DeskTotals;
-  byTech: FigureHolderRow[];
-  rows: R[];
-  paidRows: R[];
-  returnRows: R[];
-  /** Tickets opened before the period and paid in full within it. */
-  bookedRows: R[];
-  /** Every ticket whose amount counts in this period. */
-  booked: Set<string>;
-} {
-  const context = figureContext({ rows: [...opened, ...earlier], book, returns, since: bounds.since, complete });
-  const refunds = context.refunds;
+}): { totals: DeskTotals; byTech: FigureHolderRow[]; booked: R[]; paidRows: R[]; moneyRows: R[]; returnRows: R[] } {
+  // The same file that keeps the «مرتجع» makes a cancellation post its refund.
+  const refunds = returns !== null;
   const totals = emptyTotals();
   const perHolder = new Map<string, FigureHolderRow>();
   const holderOf = (row: R) => {
@@ -710,62 +555,199 @@ export function computeFigures<R extends FigureRow>({
     return entry;
   };
 
-  const optionsOf = (facts: FigureFacts, counted: boolean) => ({
-    counted,
-    booked: facts.booked,
-    paid: facts.paid,
-    refunds,
-    warranty: facts.warranty,
-    remaining: facts.remaining,
-    settled: facts.settled,
-  });
-
-  const rows: R[] = [];
-  const returnRows: R[] = [];
-  const bookedRows: R[] = [];
-  const booked = new Set<string>();
-  for (const row of opened) {
-    if (!byFilters(row, filters, false)) continue;
-    const facts = figureFacts(row, context, bounds);
-    addToTotals(holderOf(row), row, optionsOf(facts, true));
-    if (facts.returned) addReturnToTotals(holderOf(row), facts.returned, facts.returnMoney);
-    if (!byFilters(row, filters, true)) continue;
-    rows.push(row);
-    if (facts.booked) booked.add(row.id);
-    addToTotals(totals, row, optionsOf(facts, true));
-    if (facts.returned) {
-      returnRows.push(row);
-      addReturnToTotals(totals, facts.returned, facts.returnMoney);
-    }
-  }
-
+  const booked: R[] = [];
   const paidRows: R[] = [];
-  for (const row of earlier) {
-    // A ticket from an earlier day is filtered by the status it came into the
-    // period with: one delivered before and refunded today is a delivered
-    // ticket's refund, so «مكتمل» keeps it in the till (the shop, 2026-11-24).
-    const own = { ...row, status: stateAt(row, context.changes, bounds.since).status };
-    if (!byFilters(own, filters, false)) continue;
-    const facts = figureFacts(row, context, bounds);
-    if (facts.paid.within === 0 && !facts.returned && !facts.booked) continue;
-    addToTotals(holderOf(row), row, optionsOf(facts, false));
-    if (facts.returned) addReturnToTotals(holderOf(row), facts.returned, facts.returnMoney);
-    if (!byFilters(own, filters, true)) continue;
-    // A refund is a «راجع», not a payment from an earlier day.
-    if (facts.paid.within > 0) paidRows.push(row);
-    if (facts.booked) {
-      bookedRows.push(row);
-      booked.add(row.id);
-    }
-    if (facts.returned) returnRows.push(row);
-    addToTotals(totals, row, optionsOf(facts, false));
-    if (facts.returned) addReturnToTotals(totals, facts.returned, facts.returnMoney);
+  const moneyRows: R[] = [];
+  const returnRows: R[] = [];
+  for (const row of rows) {
+    if (stageOf(row.status) === "request") continue;
+    if (!byFilters(row, filters, false)) continue;
+    const fact = tallyRow(row, { book, returns, bounds, complete, refunds });
+    addTally(holderOf(row), fact);
+    if (!byFilters(row, filters, true)) continue;
+    addTally(totals, fact);
+    if (fact.booked) booked.push(row);
+    if (fact.ordinary !== 0) moneyRows.push(row);
+    if (fact.ordinary > 0 && !fact.opened) paidRows.push(row);
+    if (fact.returned) returnRows.push(row);
   }
 
   const byTech = [...perHolder.values()].sort(
     (a, b) => Number(!a.holderId) - Number(!b.holderId) || b.maintenance - a.maintenance || b.tickets - a.tickets,
   );
-  return { totals, byTech, rows, paidRows, returnRows, bookedRows, booked };
+  return { totals, byTech, booked, paidRows, moneyRows, returnRows };
+}
+
+/** One ticket's part in a period's figures — worked out once, added twice. */
+type RowTally = {
+  opened: boolean;
+  /** The stage now — what the debts read. */
+  stage: ReturnType<typeof stageOf>;
+  /**
+   * The stage at the period's end — what the counts of opened tickets read, so
+   * a ticket completed yesterday and cancelled today is not yesterday's
+   * cancellation.
+   */
+  stageThen: ReturnType<typeof stageOf>;
+  deferred: boolean;
+  booked: TicketState | null;
+  /**
+   * Opened in the period and completed on a later day. The day it was opened
+   * keeps it among its completed tickets — the shop, 2026-11-25: a ticket
+   * paid in full on a later day is that day's too, "without decreasing the
+   * number of tickets from the day it got created in". Its money is the
+   * completion day's, never this one's.
+   */
+  completedLater: boolean;
+  cost: number | null;
+  /** Ordinary money within the period, and its split. */
+  ordinary: number;
+  warrantyIn: number;
+  repairIn: number;
+  cashLike: boolean;
+  /** The «مرتجع» within the period, and the money it moved. */
+  returned: ReturnSummary | null;
+  returnMoney: number;
+  /** What a «بانتظار الزبون» ticket still owes now. */
+  remaining: number;
+  missingCollected: boolean;
+};
+
+function tallyRow(
+  row: FigureRow,
+  { book, returns, bounds, complete, refunds }: { book: PaymentBook; returns: ReturnBook; bounds: Bounds; complete: boolean; refunds: boolean },
+): RowTally {
+  const stage = stageOf(row.status);
+  const opened = withinBounds(row.createdAt, bounds);
+  const all = moneyAcross(row, book, bounds, { complete, refunds });
+  const returnMoney = returnMoneyWithin(row.id, book, returns, bounds);
+  const ordinary = all.within - returnMoney;
+  // The warranty's part first, out of what the ticket had paid by then — and
+  // only once it is «مكتمل», so a deposit on a ticket still on the bench is
+  // all repair, and the warranty is recognised when the ticket completes.
+  const span = returns ? warrantySpan(row, returns, bounds) : null;
+  const warrantyNowValue = stateValue(currentState(row)).warranty;
+  const warrantyBefore = Math.min(span?.start ?? warrantyNowValue, Math.max(0, all.before));
+  const warrantyNow = Math.min(span?.end ?? warrantyNowValue, Math.max(0, all.before + ordinary));
+  const warrantyIn = ordinary === 0 ? 0 : warrantyNow - warrantyBefore;
+  const completeByEnd = row.completedAt != null && (bounds.until === null || row.completedAt < bounds.until);
+  const money = repairMoney({
+    price: row.price,
+    warranty: row.warrantyPrice,
+    cost: row.costPrice,
+    collected: row.collected,
+    terms: row.paymentTerms,
+    completed: row.completedAt != null,
+  });
+  return {
+    opened,
+    stage,
+    stageThen: stageOf(stateAt(row, returns, bounds.until).status),
+    deferred: row.paymentTerms === "deferred",
+    booked: bookedWithin(row, returns, bounds),
+    completedLater: opened && row.completedAt != null && bounds.until !== null && row.completedAt >= bounds.until,
+    cost: row.costPrice,
+    ordinary,
+    warrantyIn,
+    repairIn: ordinary - warrantyIn,
+    cashLike: row.paymentTerms === "cash" || completeByEnd,
+    returned: returnSummary(row.id, returns, bounds),
+    returnMoney,
+    remaining: stage === "waiting" ? money.remaining : 0,
+    missingCollected: row.paymentTerms === "deferred" && (stage === "accepted" || stage === "waiting") && row.collected == null,
+  };
+}
+
+function addTally(into: DeskTotals, fact: RowTally): void {
+  if (fact.opened) {
+    into.tickets += 1;
+    if (fact.completedLater) {
+      // Counted here as well as on the day it completed; its money is there.
+      into.completed += 1;
+      into.completedLater += 1;
+    } else if (fact.stageThen === "cancelled") into.cancelled += 1;
+    else if (fact.stageThen === "accepted" || fact.stageThen === "waiting") into.open += 1;
+    if (fact.deferred && fact.stageThen !== "cancelled") into.deferred += 1;
+  }
+  if (fact.booked) {
+    const value = stateValue(fact.booked);
+    into.completed += 1;
+    if (!fact.opened) into.completedEarlier += 1;
+    into.maintenance += value.base;
+    into.revenue += value.price;
+    if (value.warranty > 0) {
+      into.warranty += value.warranty;
+      into.warrantyTickets += 1;
+    }
+    // ⚠️ No purchase price typed counts as zero, and the profit goes on —
+    // the shop's rule of 2026-11-20; `missingCost` says how many.
+    const cost = fact.cost ?? 0;
+    into.cost += cost;
+    if (fact.cost == null && value.base > 0) into.missingCost += 1;
+    into.profit += value.base - cost;
+  }
+  if (fact.ordinary !== 0) {
+    if (fact.cashLike) into.collectedCash += fact.repairIn;
+    else into.collectedDeferred += fact.repairIn;
+    into.tillWarranty += fact.warrantyIn;
+    into.till += fact.ordinary;
+    if (!fact.opened && fact.ordinary > 0) into.paidFromEarlier += 1;
+  }
+  if (fact.returned) addReturnToTotals(into, fact.returned, fact.returnMoney);
+  if (fact.remaining > 0) {
+    into.outstanding += fact.remaining;
+    into.owing += 1;
+  }
+  if (fact.missingCollected) into.missingCollected += 1;
+}
+
+/**
+ * When a ticket was paid in full, off its whole ledger: the last moment its
+ * running total went from below its price to at or above it. Null when it
+ * never did, or has no price.
+ *
+ * ⚠️ The stand-in for `completed_at` while `20261124_maintenance_stages.sql`
+ * has not run, and the rule its backfill dates an already-completed ticket
+ * by. Not the status history: the desk app's queued changes reach the server
+ * — and its history — at the moment it syncs, so on 2026-11-23 a whole
+ * morning's completions were all stamped 16:54, and the shop's own correction
+ * of RP-00099 reads there as a completion on the day it was made. The ledger
+ * agrees with the shop on every one: RP-00133 and RP-00122 paid in full on the
+ * 24th, the rest on the days they were closed.
+ */
+export function paidInFullAt(entries: readonly PaymentEntry[], price: number | null): string | null {
+  const target = Math.max(0, price ?? 0);
+  if (target <= 0) return null;
+  let sum = 0;
+  let reached: string | null = null;
+  for (const entry of [...entries].sort((a, b) => a.at.localeCompare(b.at))) {
+    const before = sum;
+    sum += entry.amount;
+    if (before < target && sum >= target) reached = entry.at;
+    else if (sum < target) reached = null;
+  }
+  return reached;
+}
+
+/**
+ * The «راجع» book without the entries a booking day owns — the rule
+ * `20261124_maintenance_stages.sql` cleans the ledger by: a change on or
+ * before the day a ticket was booked is that day's own business. Before the
+ * migration runs the ledger still holds entries recorded against the day a
+ * ticket was *opened*, and one of them booked RP-00122 at 1 dinar on the day
+ * it was paid 45,000. `completions` names the tickets whose booking day is
+ * known; every other ticket's entries are left as they are.
+ */
+export function dropBookingDayReturns(returns: ReturnBook, completions: ReadonlyMap<string, string>): ReturnBook {
+  if (!returns) return returns;
+  const out: Record<string, ReturnEntry[]> = {};
+  for (const [id, entries] of Object.entries(returns)) {
+    const booked = completions.get(id);
+    const day = booked ? baghdadDay(Date.parse(booked)) : null;
+    const kept = day ? entries.filter((entry) => baghdadDay(Date.parse(entry.at)) > day) : [...entries];
+    if (kept.length) out[id] = kept;
+  }
+  return out;
 }
 
 /** Ticket ids the ledger dates money for within the period. */
@@ -778,9 +760,13 @@ export function paidWithinIds(book: PaymentBook, bounds: Bounds): Set<string> {
   return ids;
 }
 
-/** A deferred ticket that still owes — the «الآجل» list (the shop, 2026-11-20). */
-export function owesMoney(row: Omit<FigureRow, "id" | "createdAt" | "holderId" | "holderName">): boolean {
-  if (row.paymentTerms !== "deferred" || row.status === "cancelled" || row.status === "declined") return false;
+/**
+ * An آجل ticket waiting for its customer and still owing — «آجل غير واصل»
+ * (the shop, 2026-11-24). A ticket still on the bench owes nothing yet: the
+ * work is not done.
+ */
+export function owesMoney(row: Omit<FigureRow, "id" | "createdAt" | "holderId" | "holderName" | "completedAt">): boolean {
+  if (row.paymentTerms !== "deferred" || stageOf(row.status) !== "waiting") return false;
   return (
     repairMoney({
       price: row.price,
@@ -788,82 +774,7 @@ export function owesMoney(row: Omit<FigureRow, "id" | "createdAt" | "holderId" |
       cost: row.costPrice,
       collected: row.collected,
       terms: row.paymentTerms,
+      completed: false,
     }).remaining > 0
   );
-}
-
-/* ── From a card to the tickets behind it ─────────────────────────────── */
-
-/**
- * The tickets panel's "behind this card" filter (`?mf=`, the shop,
- * 2026-11-20: "when the admin clicks a card, take him to the tickets with the
- * filters that show the tickets that led to that figure"). One per card that
- * is not simply "every ticket in the period":
- *
- * - `opened` — every ticket opened in the period, cancelled ones too: التذاكر.
- * - `active` — paid in full within the period and not cancelled, whichever
- *   day it was opened: مبلغ الصيانة, الربح.
- * - `warranty` — of those, the ones with a warranty: الضمان.
- * - `cost` — of those, the ones with a purchase price typed: أسعار الشراء.
- * - `cash` / `deferred` — money that came in within the period and counted in
- *   «واصل نقد» or «واصل آجل», whichever day the ticket was opened.
- * - `till` — any money that came in within the period: «واصل بالخزنة».
- * - `owing` — opened in the period and still owing at its end: الديون.
- */
-export const MONEY_FILTERS = ["opened", "active", "warranty", "cost", "cash", "deferred", "till", "owing"] as const;
-export type MoneyFilter = (typeof MONEY_FILTERS)[number];
-
-export function isMoneyFilter(value: unknown): value is MoneyFilter {
-  return typeof value === "string" && (MONEY_FILTERS as readonly string[]).includes(value);
-}
-
-/**
- * Whether a ticket is behind one card — read off the same `figureFacts` the
- * card was summed with, so the two cannot disagree. `opened` says the ticket
- * was opened in the period (an earlier ticket on the list only for its money,
- * or for being paid in full here, is not).
- *
- * A «راجع»'s money (`returnMoney`) is behind «واصل بالخزنة» and no other card,
- * as it is counted.
- */
-export function matchesMoneyFilter(
-  row: Omit<FigureRow, "id" | "createdAt" | "holderId" | "holderName">,
-  filter: MoneyFilter,
-  facts: Pick<FigureFacts, "booked" | "paid"> & Partial<Omit<FigureFacts, "booked" | "paid">>,
-  opened: boolean,
-): boolean {
-  if (filter === "opened") return opened;
-  const money = repairMoney({
-    price: row.price,
-    warranty: row.warrantyPrice,
-    cost: row.costPrice,
-    collected: row.collected,
-    terms: row.paymentTerms,
-  });
-  const off = isOff(row.status);
-  const counted = facts.booked && !off;
-  const { paid, warranty = null, returnMoney = 0 } = facts;
-  const remaining = off ? 0 : (facts.remaining ?? money.remaining);
-  const settled = facts.settled ?? (row.paymentTerms === "cash" || money.remaining === 0);
-  // The same split `addToTotals` makes: the warranty paid first — over the
-  // ordinary money only, a «راجع»'s being the till's alone.
-  const warrantyBefore = Math.min(warranty?.start ?? money.warranty, Math.max(0, paid.before));
-  const warrantyNow = Math.min(warranty?.end ?? money.warranty, Math.max(0, paid.before + paid.within));
-  const repairIn = paid.within - (warrantyNow - warrantyBefore);
-  switch (filter) {
-    case "active":
-      return counted;
-    case "warranty":
-      return counted && money.warranty > 0;
-    case "cost":
-      return counted && money.cost != null;
-    case "owing":
-      return opened && !off && remaining > 0;
-    case "till":
-      return paid.within + returnMoney !== 0;
-    case "cash":
-      return repairIn !== 0 && settled;
-    case "deferred":
-      return repairIn !== 0 && !settled;
-  }
 }

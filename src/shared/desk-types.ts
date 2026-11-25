@@ -2,11 +2,11 @@
  * The repair desk's shapes, shared by the main process (which computes them
  * from the local database) and the renderer (which draws them).
  *
- * They are the site's own types — `RepairCard`, `DeskRow`, `DeskBoard`,
+ * They are the site's own types — `RepairCard`, `DeskRow`, `DeskData`,
  * `DeskPerson` from `lib/queries/*` — restated here because those modules are
  * server-only and the app never copies them. The renderer's override of
- * `@/lib/queries/repair-desk` re-exports these, so the copied board imports
- * `DeskRow` from the path it always has.
+ * `@/lib/queries/repair-desk` re-exports these, so the copied components
+ * import them from the path they always have.
  *
  * Two fields are the app's own: `sync` on a row, which says whether this
  * ticket has a change still waiting to reach the server, and `localCode`, the
@@ -20,12 +20,11 @@ import type {
   DeskControl,
   DeskDeputyRef,
   DeskRank,
-  DeskTotals,
   PaymentTerms,
   RepairService,
 } from "../site/lib/data/repair-desk.ts";
 import type { QueueWindow } from "../site/lib/data/queue-window.ts";
-import type { MoneyFilter, ReturnSummary, StatsStatus } from "../site/lib/data/desk-figures.ts";
+import type { PaymentBook, ReturnBook, ReturnSummary } from "../site/lib/data/desk-figures.ts";
 import type { StockModel } from "../site/lib/data/device-catalogue.ts";
 import type { AccessGrant } from "../site/lib/permissions.ts";
 
@@ -85,10 +84,19 @@ export type DeskRow = RepairCard & {
   paidWithin?: number | null;
   /** On the list from before the period — for its money or its «راجع». */
   earlier?: boolean;
-  /** «راجع» — its money changed within the period on a later day than it was opened. */
+  /** «راجع» — its money changed within the period on a later day than it was booked. */
   returned?: ReturnSummary | null;
-  /** On a figures row: not paid in full by the period's end — its amount counts on the day it is. */
-  unbooked?: boolean;
+  /** On the day it was opened: the later moment it became «مكتمل». */
+  completedLater?: string | null;
+  /** On a figures row: what the ticket's own day counted, before a later «راجع». */
+  booked?: { status: string; price: number | null; warrantyPrice: number | null; costPrice: number | null } | null;
+  /** When it became «مكتمل» — its booking day (2026-11-24). Null while it never has. */
+  completedAt: string | null;
+  /** «تم التسليم للزبون» — a badge for the bench, never money. */
+  handedOverAt?: string | null;
+  handedOverBy?: string | null;
+  /** Who set the badge, by name. */
+  handedOverName?: string | null;
   holderId: string | null;
   holderName: string | null;
   holderRank: DeskRank | null;
@@ -110,15 +118,17 @@ export type DeskPerson = {
 
 export type DeskScope = { authority: DeskAuthority; people: DeskPerson[] };
 
-export type DeskView = "all" | "mine" | "pending" | "edited" | "owing" | "returned";
-
-export type DeskTechRow = DeskTotals & { holderId: string | null; name: string };
-
 export type DeskAvailability = {
   service: boolean;
   finance: boolean;
   warranty: boolean;
   customFaults: boolean;
+  /**
+   * `completed_at`, `handed_over_*` and `requested` — 20261124_maintenance_stages.sql.
+   * Asked of the server on every refs pull; until it is there the ledgers keep
+   * their old rules and nothing here stamps a booking day.
+   */
+  stages?: boolean;
   /**
    * A ticket's faults can be changed after it is opened — `set_repair_faults`,
    * 20261116_repair_faults_editable.sql. Asked of the server on every refs pull.
@@ -126,30 +136,26 @@ export type DeskAvailability = {
   faultsEdit?: boolean;
 };
 
-/** The figures panel — the site's `DeskStats`, from `lib/data/desk-figures.ts`. */
-export type DeskStats = {
-  status: StatsStatus;
+/**
+ * The period's raw rows and the two ledgers — the site's `DeskData`, read
+ * from this computer instead of the server. Every list, card and table is
+ * worked out from it in the window (`lib/data/desk-board.ts`,
+ * `computeFigures`), the same way the dashboard works them out in the
+ * browser.
+ */
+export type DeskData = {
+  rows: DeskRow[];
+  book: PaymentBook;
+  returns: ReturnBook;
+  /** The period. */
   window: QueueWindow;
-  totals: DeskTotals;
-  byTech: DeskTechRow[];
-  rows: DeskRow[];
-  paidRows: DeskRow[];
-  /** «راجع» — every ticket whose money changed in the period on a later day, with its summary. */
-  returnRows?: DeskRow[];
-  /** Money is dated by the ledger (`repair_ticket_payments`). */
-  ledger: boolean;
-  /** The «راجع» ledger is on the server (`repair_ticket_returns`). */
-  returns?: boolean;
-};
-
-export type DeskBoard = {
-  rows: DeskRow[];
-  counts: Record<string, number>;
-  totals: DeskTotals;
-  stats: DeskStats | null;
-  /** «راجع» within the tickets panel's period — the tab's count. */
-  returnedCount?: number;
-  available: DeskAvailability;
+  available: {
+    service: boolean;
+    finance: boolean;
+    warranty: boolean;
+    customFaults: boolean;
+    stages: boolean;
+  };
   truncated: boolean;
 };
 
@@ -162,22 +168,17 @@ export type DeskViewer = {
   grant: AccessGrant;
 };
 
-/** What the page asks for — the dashboard's URL parameters, plus the language. */
+/**
+ * What the page asks the main process for: the period and the language.
+ * Everything else in the address — the tab, the list, the ticket to open —
+ * is the window's own business, and changing it reads nothing.
+ */
 export type DeskPageParams = {
   locale: "ar" | "en";
-  view?: string;
   when?: string;
   from?: string;
   to?: string;
   days?: string;
-  q?: string;
-  status?: string;
-  terms?: string;
-  tech?: string;
-  /** The figures' own status filter. */
-  sstatus?: string;
-  /** "The tickets behind this card", pressed from a figures card. */
-  mf?: string;
 };
 
 /** Everything the desk page draws, computed in one place, as the server did. */
@@ -192,19 +193,9 @@ export type DeskPageData =
       people: DeskPerson[];
       deputies: DeskDeputyRef[];
       isTech: boolean;
-      defaultView: DeskView;
-      view: DeskView;
-      window: QueueWindow;
-      search: string;
-      status: string | null;
-      statsStatus: StatsStatus;
-      moneyFilter: MoneyFilter | null;
-      statuses: RepairStatus[];
+      /** The period's rows and the ledgers — the whole ledger, so `complete`. */
+      desk: DeskData;
       flow: RepairStatus[];
-      terms: PaymentTerms | null;
-      tech: string | null;
-      board: DeskBoard;
-      counts: { mine: number; pending: number; olderOpen: number; edited?: number; owing?: number };
       branches: { id: string; name: string }[];
       brands: { code: string; name: string }[];
       models: Record<string, StockModel[]>;
@@ -216,6 +207,7 @@ export type DeskPageData =
       today: string;
       now: number;
       canDelete: boolean;
+      faultsEditable: boolean;
       /** The bench's default holder (`work_defaults`) — what the counter's dialog opens on. */
       defaultHolderId?: string | null;
     };

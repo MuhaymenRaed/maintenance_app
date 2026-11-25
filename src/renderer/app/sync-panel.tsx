@@ -67,6 +67,9 @@ const KIND_LABEL: Record<OpKind, string> = {
   photos: "opPhotos",
   delete: "opDelete",
   faults: "opFaults",
+  details: "opDetails",
+  handover: "opHandover",
+  decide: "opDecide",
 };
 
 /** The fields an `update` or `finance` change carries, in words. */
@@ -80,6 +83,11 @@ const FIELD_KEYS: Record<string, string> = {
   costPrice: "fieldCostPrice",
   collected: "fieldCollected",
   paymentTerms: "fieldPaymentTerms",
+  brandCode: "fieldBrand",
+  deviceModel: "fieldDevice",
+  customerName: "fieldCustomerName",
+  customerPhone: "fieldPhone",
+  customerPhone2: "fieldPhone2",
 };
 
 function SyncPanel({ onClose }: { onClose: () => void }) {
@@ -107,7 +115,7 @@ function SyncPanel({ onClose }: { onClose: () => void }) {
   const when = (iso: string | null) => (iso ? formatDayTime(locale, iso) : t("never"));
 
   const describe = (item: OutboxItem) => {
-    if (item.kind === "update" || item.kind === "finance") {
+    if (item.kind === "update" || item.kind === "finance" || item.kind === "details") {
       return item.detail
         .split(", ")
         .filter(Boolean)
@@ -115,6 +123,8 @@ function SyncPanel({ onClose }: { onClose: () => void }) {
         .join(locale === "ar" ? "، " : ", ");
     }
     if (item.kind === "photos") return t("opPhotosCount", { count: Number(item.detail) || 0 });
+    if (item.kind === "handover") return t(item.detail === "on" ? "opHandoverOn" : "opHandoverOff");
+    if (item.kind === "decide") return t(item.detail === "accept" ? "opDecideAccept" : "opDecideRefuse");
     return item.detail;
   };
 

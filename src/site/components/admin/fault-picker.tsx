@@ -2,11 +2,11 @@
 
 import { useMemo, useState, useSyncExternalStore, useTransition } from "react";
 import { useLocale, useTranslations } from "next-intl";
-import { Check, ListChecks, Loader2, Pencil, Trash2 } from "lucide-react";
+import { Check, ListChecks, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import { ChipMultiSelect } from "@/components/ui/chip-multi-select";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EntityDialog, input } from "@/components/admin/form-kit";
-import { editRepairIssue, updateRepairFaults } from "@/lib/actions/repair-desk";
+import { addRepairIssue, editRepairIssue, updateRepairFaults } from "@/lib/actions/repair-desk";
 import { useEditConfirm } from "@/components/admin/edit-confirm";
 import { faultEdits, withFaultEdits } from "@/lib/repair/fault-edits";
 import type { RepairService } from "@/lib/data/repair-desk";
@@ -118,12 +118,7 @@ export function FaultPicker({
   );
 }
 
-/**
- * The bench's list, editable: each fault's name, saved behind a "rename?"
- * confirmation, and a bin behind a "take it off?" one. A ticket that carries
- * a fault keeps it either way — a rename shows on it, a retired fault stays
- * on it and is simply not offered to the next ticket.
- */
+/** The bench's list in its own window — opened from a ticket's fault picker. */
 function FaultListEditor({
   service,
   issues,
@@ -134,6 +129,53 @@ function FaultListEditor({
   onClose: () => void;
 }) {
   const t = useTranslations("Admin");
+  return (
+    <EntityDialog
+      title={t("deskFaultManageTitle")}
+      subtitle={t("deskFaultManageHint")}
+      closeLabel={t("close")}
+      onClose={onClose}
+      windowId={`fault-list:${service}`}
+      width={460}
+      height={560}
+      confirmClose={false}
+      footer={
+        <button
+          type="button"
+          onClick={onClose}
+          className="press inline-flex h-10 items-center rounded-control border border-line px-4 text-[0.82rem] font-bold"
+        >
+          {t("close")}
+        </button>
+      }
+    >
+      <FaultList service={service} issues={issues} />
+    </EntityDialog>
+  );
+}
+
+/**
+ * The bench's list, editable: each fault's name, saved behind a "rename?"
+ * confirmation, and a bin behind a "take it off?" one. A ticket that carries
+ * a fault keeps it either way — a rename shows on it, a retired fault stays
+ * on it and is simply not offered to the next ticket. In الإعدادات it also
+ * takes a new fault (`allowAdd`), filed the way a fault typed at the counter
+ * is, so the next ticket is offered it.
+ */
+export function FaultList({
+  service,
+  issues: given,
+  allowAdd = false,
+}: {
+  service: RepairService;
+  issues: readonly { code: string; name: string }[];
+  allowAdd?: boolean;
+}) {
+  const t = useTranslations("Admin");
+  const overrides = useSyncExternalStore(faultEdits.subscribe, faultEdits.snapshot, faultEdits.server);
+  const issues = useMemo(() => withFaultEdits(given, overrides, []), [given, overrides]);
+  const [adding, setAdding] = useState("");
+  const [added, setAdded] = useState<{ code: string; name: string }[]>([]);
   const locale = useLocale() === "en" ? "en" : "ar";
   const [names, setNames] = useState<Record<string, string>>({});
   const [asking, setAsking] = useState<
@@ -169,33 +211,58 @@ function FaultListEditor({
     });
   }
 
-  return (
-    <EntityDialog
-      title={t("deskFaultManageTitle")}
-      subtitle={t("deskFaultManageHint")}
-      closeLabel={t("close")}
-      onClose={onClose}
-      windowId={`fault-list:${service}`}
-      width={460}
-      height={560}
-      confirmClose={false}
-      footer={
-        <button
-          type="button"
-          onClick={onClose}
-          className="press inline-flex h-10 items-center rounded-control border border-line px-4 text-[0.82rem] font-bold"
-        >
-          {t("close")}
-        </button>
+  function add() {
+    const name = cleanFaultName(adding);
+    if (name.length < 2) return;
+    setError(null);
+    startTransition(async () => {
+      const result = await addRepairIssue(service, name);
+      if (!result.ok) {
+        setError(result.error);
+        return;
       }
-    >
+      setAdding("");
+      setAdded((current) => (current.some((issue) => issue.code === result.id) ? current : [...current, { code: result.id, name }]));
+    });
+  }
+  // Just added, until the page's own list carries it.
+  const shown = [...issues, ...added.filter((issue) => !issues.some((other) => other.code === issue.code))];
+
+  return (
+    <>
       {error && (
         <p role="alert" className="mb-3 rounded-card bg-brand/10 px-3 py-2 text-[0.78rem] font-bold text-brand">
           {t.has(error) ? t(error as "updateFailed") : t("updateFailed")}
         </p>
       )}
+      {allowAdd && (
+        <div className="mb-3 flex items-center gap-2">
+          <input
+            value={adding}
+            onChange={(event) => setAdding(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                add();
+              }
+            }}
+            placeholder={t("settingsFaultAdd")}
+            aria-label={t("settingsFaultAdd")}
+            className={cn(input, "h-10 min-w-0 flex-1")}
+          />
+          <button
+            type="button"
+            onClick={add}
+            disabled={pending || cleanFaultName(adding).length < 2}
+            className="press inline-flex h-10 shrink-0 items-center gap-1.5 rounded-control bg-brand px-4 text-[0.8rem] font-extrabold text-white hover:bg-brand-hover disabled:opacity-50"
+          >
+            {pending ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Plus className="size-4" aria-hidden />}
+            {t("settingsFaultAddButton")}
+          </button>
+        </div>
+      )}
       <ul className="space-y-2">
-        {issues.map((issue) => {
+        {shown.map((issue) => {
           const draft = names[issue.code] ?? issue.name;
           const changed = cleanFaultName(draft) !== issue.name && cleanFaultName(draft).length >= 2;
           return (
@@ -253,7 +320,7 @@ function FaultListEditor({
         onConfirm={run}
         onCancel={() => setAsking(null)}
       />
-    </EntityDialog>
+    </>
   );
 }
 

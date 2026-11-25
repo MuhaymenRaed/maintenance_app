@@ -10,9 +10,9 @@ import type { AppNotice } from "../../shared/contract";
 import { chime } from "../lib/chime";
 import { DeskIntl } from "../lib/intl";
 import { markRead } from "../lib/notices";
-import { navigate, openTicket, useRoute } from "../lib/router";
+import { openTicket, toggleSettings, useRoute } from "../lib/router";
 import { readSettings, saveSettings } from "../lib/settings";
-import { syncNow, useSync } from "../lib/sync";
+import { syncNow, syncStore, useSync } from "../lib/sync";
 import { DeskPage } from "./desk-page";
 import { SettingsPage } from "./settings-page";
 import { SyncPanelHost } from "./sync-panel";
@@ -232,9 +232,9 @@ function useShortcuts() {
       if (!ctrl) return;
 
       if (event.key === ",") {
+        // A manager's settings are the desk's الإعدادات tab, a technician's the app's page.
         event.preventDefault();
-        const here = window.location.pathname.includes("/settings");
-        navigate(here ? "/admin/repairs" : "/settings");
+        toggleSettings(syncStore.snapshot().account?.role === "technician");
         return;
       }
       if (event.key.toLowerCase() === "f" && !event.shiftKey) {

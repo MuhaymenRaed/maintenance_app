@@ -37,6 +37,11 @@ export function registerIpc() {
   handle(CH.createDeskTicket, actions.createDeskTicket);
   handle(CH.updateRepairFaults, actions.updateRepairFaults);
   handle(CH.editRepairIssue, actions.editRepairIssue);
+  handle(CH.decideRepairRequest, actions.decideRepairRequest);
+  handle(CH.setRepairHandedOver, actions.setRepairHandedOver);
+  handle(CH.updateRepairDetails, actions.updateRepairDetails);
+  handle(CH.addRepairIssue, actions.addRepairIssue);
+  handle(CH.setDeskDefaultHolder, actions.setDeskDefaultHolder);
   handle(CH.deleteRecord, actions.deleteRecord);
   handle(CH.loadStatusHistory, actions.loadStatusHistory);
   handle(CH.loadWorldModels, (brand: string) => actions.loadWorldModels(brand));

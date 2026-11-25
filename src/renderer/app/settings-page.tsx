@@ -80,9 +80,6 @@ export function SettingsPage() {
   const route = useRoute();
   const sync = useSync();
   const technician = sync.account?.role === "technician";
-  const tabs = technician ? TABS.filter((entry) => TECH_TABS.has(entry.key)) : TABS;
-  const asked = route.query.tab as Tab | undefined;
-  const tab: Tab = tabs.some((entry) => entry.key === asked) ? asked! : "general";
 
   const body = (
     <div className="space-y-5">
@@ -92,55 +89,12 @@ export function SettingsPage() {
         </h1>
         <p className="text-[0.82rem] font-medium text-muted">{t("settingsSub")}</p>
       </header>
-
-      <div className="grid gap-5 md:grid-cols-[14rem_1fr]">
-        <nav aria-label={t("settings")} className="md:sticky md:top-20 md:self-start">
-          <ul className="flex gap-1.5 overflow-x-auto md:flex-col">
-            {tabs.map(({ key, Icon }) => (
-              <li key={key} className="shrink-0">
-                <a
-                  href={`/settings?tab=${key}`}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    navigate(`/settings?tab=${key}`, { replace: true });
-                  }}
-                  aria-current={tab === key ? "page" : undefined}
-                  className={cn(
-                    "flex items-center gap-2.5 rounded-control border px-3.5 py-2.5 text-[0.8rem] font-extrabold transition-colors",
-                    tab === key
-                      ? "border-brand/45 bg-brand/8 text-brand"
-                      : "border-transparent text-muted hover:border-line hover:text-ink",
-                  )}
-                >
-                  <Icon className="size-4 shrink-0" />
-                  {t(`tab_${key}`)}
-                </a>
-              </li>
-            ))}
-          </ul>
-        </nav>
-
-        <section className="desk-rise min-w-0 rounded-panel border border-line bg-surface p-5 shadow-card" key={tab}>
-          {technician && (
-            <p className="mb-4 rounded-card border border-info/35 bg-info/6 px-3.5 py-2.5 text-[0.78rem] font-bold leading-relaxed text-info">
-              {t("techSettingsNote")}
-            </p>
-          )}
-          {tab === "general" && <General technician={technician} />}
-          {tab === "appearance" && <Appearance />}
-          {tab === "notifications" && <Notifications />}
-          {tab === "printing" && <Printing />}
-          {tab === "sync" && <SyncSettings />}
-          {tab === "backups" && <Backups />}
-          {tab === "account" && (
-            <>
-              <Account />
-              {!technician && <DeskPassword />}
-            </>
-          )}
-          {tab === "about" && <About />}
-        </section>
-      </div>
+      <SettingsPanel
+        technician={technician}
+        tab={route.query.tab}
+        hrefOf={(key) => `/settings?tab=${key}`}
+        onTab={(key) => navigate(`/settings?tab=${key}`, { replace: true })}
+      />
     </div>
   );
 
@@ -154,6 +108,115 @@ export function SettingsPage() {
     <LockedPanel reason="settings" cancelHref="/admin/repairs">
       {body}
     </LockedPanel>
+  );
+}
+
+/**
+ * The app's own settings inside the desk's الإعدادات tab (the shop,
+ * 2026-11-24): a manager finds the bench's settings and this computer's in one
+ * place. Already behind the desk's password — the tab asked for it — so it
+ * asks nothing more, and its sections switch in place rather than through the
+ * address, which belongs to the desk.
+ */
+export function AppSettings() {
+  const t = useTranslations("Desk");
+  const [tab, setTab] = useState<Tab>("general");
+  return (
+    <section className="space-y-4 border-t border-line pt-5">
+      <header className="border-s-[3px] border-brand ps-3.5">
+        <h2 className="text-[1.05rem] font-black leading-tight tracking-[-0.02em] text-ink">{t("appSettingsTitle")}</h2>
+        <p className="text-[0.8rem] font-medium text-muted">{t("settingsSub")}</p>
+      </header>
+      <SettingsPanel technician={false} tab={tab} onTab={setTab} />
+    </section>
+  );
+}
+
+/** The sections and their list — the page's, and the desk's settings tab's. */
+function SettingsPanel({
+  technician,
+  tab: asked,
+  onTab,
+  hrefOf,
+}: {
+  technician: boolean;
+  tab: string | undefined;
+  onTab: (tab: Tab) => void;
+  /** On the page each section has an address; inside the desk it is a press. */
+  hrefOf?: (tab: Tab) => string;
+}) {
+  const t = useTranslations("Desk");
+  const tabs = technician ? TABS.filter((entry) => TECH_TABS.has(entry.key)) : TABS;
+  const tab: Tab = tabs.some((entry) => entry.key === asked) ? (asked as Tab) : "general";
+
+  return (
+    <div className="grid gap-5 md:grid-cols-[14rem_1fr]">
+      <nav aria-label={t("settings")} className="md:sticky md:top-20 md:self-start">
+        <ul className="flex gap-1.5 overflow-x-auto md:flex-col">
+          {tabs.map(({ key, Icon }) => {
+            const look = cn(
+              "flex w-full items-center gap-2.5 rounded-control border px-3.5 py-2.5 text-start text-[0.8rem] font-extrabold transition-colors",
+              tab === key
+                ? "border-brand/45 bg-brand/8 text-brand"
+                : "border-transparent text-muted hover:border-line hover:text-ink",
+            );
+            const label = (
+              <>
+                <Icon className="size-4 shrink-0" />
+                {t(`tab_${key}`)}
+              </>
+            );
+            return (
+              <li key={key} className="shrink-0">
+                {hrefOf ? (
+                  <a
+                    href={hrefOf(key)}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      onTab(key);
+                    }}
+                    aria-current={tab === key ? "page" : undefined}
+                    className={look}
+                  >
+                    {label}
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onTab(key)}
+                    aria-pressed={tab === key}
+                    className={look}
+                  >
+                    {label}
+                  </button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
+
+      <section className="desk-rise min-w-0 rounded-panel border border-line bg-surface p-5 shadow-card" key={tab}>
+        {technician && (
+          <p className="mb-4 rounded-card border border-info/35 bg-info/6 px-3.5 py-2.5 text-[0.78rem] font-bold leading-relaxed text-info">
+            {t("techSettingsNote")}
+          </p>
+        )}
+        {tab === "general" && <General technician={technician} />}
+        {tab === "appearance" && <Appearance />}
+        {tab === "notifications" && <Notifications />}
+        {tab === "printing" && <Printing />}
+        {tab === "sync" && <SyncSettings />}
+        {tab === "backups" && <Backups />}
+        {tab === "account" && (
+          <>
+            <Account />
+            {!technician && <DeskPassword />}
+          </>
+        )}
+        {tab === "about" && <About />}
+      </section>
+    </div>
   );
 }
 

@@ -390,7 +390,8 @@ export class Store {
     const raw = cloneRaw(record.raw);
     for (const op of this.ops) {
       if (op.ticketId !== id || op.state !== "pending") continue;
-      applyOp(raw, { kind: op.kind, payload: op.payload } as AnyOp);
+      // Dated by when it was made here, as the server will date it on arrival.
+      applyOp(raw, { kind: op.kind, payload: op.payload, createdAt: op.createdAt } as AnyOp);
     }
     return raw;
   }
@@ -414,7 +415,7 @@ export class Store {
    * last press is the one that lands.
    */
   addOp<K extends OpKind>(ticketId: string, kind: K, payload: OpPayload[K]): OpRecord {
-    if (kind === "update" || kind === "finance") {
+    if (kind === "update" || kind === "finance" || kind === "details") {
       const last = [...this.ops].reverse().find((op) => op.ticketId === ticketId);
       if (last && last.kind === kind && last.state === "pending" && last.attempts === 0 && !this.inFlight.has(last.id)) {
         last.payload = { ...(last.payload as object), ...(payload as object) } as OpPayload[OpKind];

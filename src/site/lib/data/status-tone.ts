@@ -23,8 +23,10 @@ const GOOD = new Set(["delivered", "completed", "approved", "ready", "work_done"
 const BAD = new Set(["cancelled", "declined", "void", "write_off"]);
 // `waiting_parts` waits on a supplier, which is the same amber as waiting on a
 // customer; `preparing` and `inspecting` are hands on the work and fall
-// through to "progress".
+// through to "progress". `requested` is a website booking waiting for a
+// manager to accept it onto the bench.
 const WAITING = new Set([
+  "requested",
   "review",
   "pending",
   "quote_sent",

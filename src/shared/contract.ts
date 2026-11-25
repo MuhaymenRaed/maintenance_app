@@ -34,16 +34,28 @@ export type FinancePatch = {
   collected?: number | null;
   paymentTerms?: PaymentTerms;
   /**
-   * The app's own: «الباقي» settled by «تم التسليم» — a consequence of a
-   * status move, so it does not put the ticket on the «المعدّلة» list.
+   * A queued change from before 2026-11-24, when «تم التسليم» settled
+   * «الباقي» by itself — a consequence of a status move, so it does not put
+   * the ticket on the «المعدّلة» list. Nothing makes one any more.
    */
   settle?: boolean;
+};
+
+/** The device and the customer, corrected after the ticket was opened — the site's `RepairDetailsPatch`. */
+export type RepairDetailsPatch = {
+  brandCode?: string | null;
+  deviceModel?: string;
+  customerName?: string;
+  customerPhone?: string;
+  customerPhone2?: string | null;
 };
 
 export type DeskTicketInput = {
   service: RepairService;
   customerName: string;
   customerPhone: string;
+  /** A second number to ring. Optional; refused only when it is not a number. */
+  customerPhone2?: string | null;
   branchId: string;
   deviceBrandCode: string | null;
   deviceModel: string;
@@ -194,7 +206,20 @@ export type OutboxItem = {
   error: string | null;
 };
 
-export type OpKind = "create" | "update" | "finance" | "assign" | "photos" | "delete" | "faults";
+export type OpKind =
+  | "create"
+  | "update"
+  | "finance"
+  | "assign"
+  | "photos"
+  | "delete"
+  | "faults"
+  /** The device and the customer, corrected (2026-11-24). */
+  | "details"
+  /** «تم التسليم للزبون» — set or taken off. */
+  | "handover"
+  /** A website request, accepted or refused. */
+  | "decide";
 
 /* ── Backups ──────────────────────────────────────────────────────────── */
 
@@ -247,6 +272,11 @@ export type DeskApi = {
   createDeskTicket(input: DeskTicketInput): Promise<CreateTicketResult>;
   updateRepairFaults(id: string, input: FaultsInput): Promise<FaultsResult>;
   editRepairIssue(input: FaultEditInput): Promise<DeskResult>;
+  decideRepairRequest(id: string, accept: boolean): Promise<DeskResult>;
+  setRepairHandedOver(id: string, handed: boolean): Promise<DeskResult>;
+  updateRepairDetails(id: string, patch: RepairDetailsPatch): Promise<DeskResult>;
+  addRepairIssue(service: RepairService, name: string): Promise<DeskResult>;
+  setDeskDefaultHolder(service: RepairService, holderId: string | null): Promise<DeskResult>;
   deleteRecord(input: { kind: RecordKind; id: string; label?: string; reason?: string }): Promise<RecordResult>;
   loadStatusHistory(kind: "order" | "repair" | "trade_in", id: string): Promise<{ available: boolean; events: StatusEvent[] }>;
   loadWorldModels(brandCode: string, locale: string): Promise<WorldModel[]>;
@@ -323,6 +353,11 @@ export const CH = {
   createDeskTicket: "desk:createDeskTicket",
   updateRepairFaults: "desk:updateRepairFaults",
   editRepairIssue: "desk:editRepairIssue",
+  decideRepairRequest: "desk:decideRepairRequest",
+  setRepairHandedOver: "desk:setRepairHandedOver",
+  updateRepairDetails: "desk:updateRepairDetails",
+  addRepairIssue: "desk:addRepairIssue",
+  setDeskDefaultHolder: "desk:setDeskDefaultHolder",
   deleteRecord: "desk:deleteRecord",
   loadStatusHistory: "desk:loadStatusHistory",
   loadWorldModels: "desk:loadWorldModels",

@@ -2,14 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { canWith } from "../../site/lib/permissions.ts";
-import {
-  repairMoney,
-  SERVICE_CAPABILITY,
-  settlesOnStatus,
-  techMayMoveFrom,
-  techMaySet,
-  type RepairService,
-} from "../../site/lib/data/repair-desk.ts";
+import { SERVICE_CAPABILITY, techMayMoveFrom, techMaySet, type RepairService } from "../../site/lib/data/repair-desk.ts";
+import { normalizePhone } from "../../site/lib/validation/account.ts";
 import { toRepairPrintFacts } from "../../site/lib/data/repair-print-facts.ts";
 import type { StatusEvent } from "../../site/lib/data/orders.ts";
 import type { WorldModel } from "../../site/lib/data/device-name.ts";
@@ -25,6 +19,7 @@ import type {
   PrintFactsResult,
   RecordKind,
   RecordResult,
+  RepairDetailsPatch,
   RepairPatch,
   SectionResult,
 } from "../../shared/contract";
@@ -33,8 +28,9 @@ import { paths, PHOTO_SCHEME } from "../config";
 import { sync } from "../sync/engine";
 import { supabase } from "../sync/client";
 import { pullTicket } from "../sync/pull";
+import { fileTypedFaults } from "../sync/push";
 import { authorizeTicket, deskScope } from "./board";
-import { draftTicket, financeOf, num, typedFaultCode, type OpPayload } from "./raw";
+import { detailsColumns, draftTicket, financeOf, num, typedFaultCode, type OpPayload } from "./raw";
 import { refs, type Issue } from "./refs";
 import { logger } from "../log";
 
@@ -93,28 +89,62 @@ export function updateRepair(id: string, patch: RepairPatch): SectionResult {
   }
   if (!Object.keys(clean).length) return { ok: true, id };
 
-  // «تم التسليم» on a deferred ticket settles «الباقي» — the shop's rule of
-  // 2026-11-17 (`settlesOnStatus`). Queued after the status, in the same
-  // transaction, so the two reach the server in that order.
-  const ledger = financeOf(verdict.raw);
-  const total = num(verdict.raw.actual_cost);
-  const settles =
-    clean.status !== undefined &&
-    verdict.control === "full" &&
-    refs.available().finance &&
-    total != null &&
-    settlesOnStatus(clean.status, ledger?.payment_terms === "deferred" ? "deferred" : "cash") &&
-    repairMoney({
-      price: total,
-      warranty: num(verdict.raw.warranty_price),
-      cost: num(ledger?.cost_price),
-      collected: num(ledger?.collected),
-      terms: "deferred",
-    }).remaining > 0;
-  queued(() => {
-    store.addOp(id, "update", clean);
-    if (settles) store.addOp(id, "finance", { collected: total, settle: true });
-  });
+  // Where «مكتمل» lands — «بانتظار الزبون» on an آجل that still owes — is
+  // decided by `applyOp` from this computer's copy and again by the push
+  // from the server's, as `updateRepair` decides it (2026-11-24). Nothing
+  // here writes money any more: «تم التسليم» used to fill «الباقي» as paid.
+  queued(() => store.addOp(id, "update", clean));
+  return { ok: true, id };
+}
+
+/* ── A website request, the badge, and the ticket's own details (2026-11-24) ── */
+
+/**
+ * The site's `decideRepairRequest`: accepting a website booking makes it an
+ * official ticket («تم قبول الطلب»); refusing it cancels it. Only a request
+ * can be decided.
+ */
+export function decideRepairRequest(id: string, accept: boolean): DeskResult {
+  const verdict = authorizeTicket(id);
+  if (!verdict.ok) return verdict;
+  if (verdict.control !== "full") return { ok: false, error: "not_your_ticket" };
+  if (verdict.raw.status !== "requested") return { ok: false, error: "not_a_request" };
+  queued(() => store.addOp(id, "decide", { accept: Boolean(accept) }));
+  return { ok: true, id };
+}
+
+/**
+ * The site's `setRepairHandedOver`: «تم التسليم للزبون», a badge the bench
+ * sets when the device is in the customer's hands — the technician holding
+ * the ticket as well as a manager. It moves no money and no stage.
+ */
+export function setRepairHandedOver(id: string, handed: boolean): DeskResult {
+  const verdict = authorizeTicket(id);
+  if (!verdict.ok) return verdict;
+  if (verdict.control === "none") return { ok: false, error: "not_your_ticket" };
+  if (!refs.available().stages) return { ok: false, error: "handoverUnavailable" };
+  queued(() => store.addOp(id, "handover", { handed: Boolean(handed), by: handed ? verdict.viewerId : null }));
+  return { ok: true, id };
+}
+
+/**
+ * The site's `updateRepairDetails`: the device and the customer, corrected
+ * after the ticket was opened — a manager's, behind the desk's password. Each
+ * field is checked the way the counter's form checks it (`detailsColumns`),
+ * and the change puts the ticket on «المعدّلة».
+ */
+export function updateRepairDetails(id: string, patch: RepairDetailsPatch): DeskResult {
+  const verdict = authorizeTicket(id);
+  if (!verdict.ok) return verdict;
+  if (verdict.control !== "full") return { ok: false, error: "not_your_ticket" };
+  const clean: RepairDetailsPatch = {};
+  for (const key of ["brandCode", "deviceModel", "customerName", "customerPhone", "customerPhone2"] as const) {
+    if (patch[key] !== undefined) (clean as Record<string, unknown>)[key] = patch[key];
+  }
+  const checked = detailsColumns(clean);
+  if (!checked.ok) return checked;
+  if (!Object.keys(checked.columns).length) return { ok: true, id };
+  queued(() => store.addOp(id, "details", clean));
   return { ok: true, id };
 }
 
@@ -199,6 +229,10 @@ export async function createDeskTicket(input: DeskTicketInput): Promise<CreateTi
 
   if (input.customerName.trim().length < 2) return { ok: false, error: "customer_name_required" };
   if (!/^07\d{9}$/.test(input.customerPhone.replace(/[\s()-]/g, ""))) return { ok: false, error: "phone_invalid" };
+  // A second number is optional, refused only when it is not one — the site's rule.
+  const phone2Typed = (input.customerPhone2 ?? "").trim();
+  const phone2 = phone2Typed ? normalizePhone(phone2Typed) : "";
+  if (phone2 && !/^07\d{9}$/.test(phone2)) return { ok: false, error: "phone_invalid" };
   if (!input.branchId) return { ok: false, error: "branch_required" };
   if (input.deviceModel.trim().length < 2) return { ok: false, error: "device_required" };
   const listedCodes = [...new Set(input.issueCodes.filter((code) => code.trim()))];
@@ -221,7 +255,7 @@ export async function createDeskTicket(input: DeskTicketInput): Promise<CreateTi
   const person = scope.people.find((candidate) => candidate.userId === input.holderId);
   const branch = refs.branches().find((candidate) => candidate.id === input.branchId) ?? null;
   const issues = new Map(refs.issues().map((issue) => [issue.code, { name_ar: issue.name_ar, name_en: issue.name_en }]));
-  const clean: DeskTicketInput = { ...input, service, issueCodes, newFaults, customFaults };
+  const clean: DeskTicketInput = { ...input, service, issueCodes, newFaults, customFaults, customerPhone2: phone2 || null };
   let localCode = "";
 
   queued(() => {
@@ -233,6 +267,7 @@ export async function createDeskTicket(input: DeskTicketInput): Promise<CreateTi
         branch: branch ? { name_ar: branch.name_ar, name_en: branch.name_en } : null,
         issues,
         holderName: person?.name ?? viewer.name,
+        stages: Boolean(refs.available().stages),
       }),
       localCode,
     );
@@ -345,6 +380,81 @@ function typedFaults(service: RepairService, names: readonly string[]): OpPayloa
   }
   if (added.length) store.setRef("issues", [...all, ...added]);
   return out;
+}
+
+/* ── The bench's settings ─────────────────────────────────────────────── */
+
+/**
+ * A fault put on the bench's list from الإعدادات — the site's
+ * `addRepairIssue`, filed the same way a fault typed at the counter is
+ * (`fileTypedFaults`), so the next ticket is offered it.
+ *
+ * ⚠️ Online only, as `editRepairIssue` is: the list is the shop's, shared by
+ * every counter and by the site, and a fault added on one computer offline
+ * would be told it worked while no other counter could see it.
+ */
+export async function addRepairIssue(serviceAsked: RepairService, name: string): Promise<DeskResult> {
+  const service: RepairService = serviceAsked === "software" ? "software" : "hardware";
+  const viewer = refs.viewer();
+  if (!viewer) return { ok: false, error: "not_signed_in" };
+  if (!canWith(viewer.role, viewer.grant, SERVICE_CAPABILITY[service])) return { ok: false, error: "forbidden" };
+  if (!deskScope(service)?.authority.manages) return { ok: false, error: "forbidden" };
+  const clean = cleanFaultName(String(name ?? ""));
+  if (clean.length < 2) return { ok: false, error: "fault_name_short" };
+  if (sync.status.state === "offline") return { ok: false, error: "needs_connection" };
+  try {
+    const { filed } = await fileTypedFaults(supabase(), service, [clean]);
+    const code = filed[0];
+    if (!code) return { ok: false, error: "fault_not_filed" };
+    const list = refs.issues();
+    if (!list.some((issue) => issue.code === code)) {
+      store.setRef("issues", [...list, { code, name_ar: clean, name_en: clean, service }]);
+    }
+    store.bump();
+    return { ok: true, id: code };
+  } catch (error) {
+    log.warn("addRepairIssue failed", error);
+    return { ok: false, error: "needs_connection" };
+  }
+}
+
+/**
+ * Who holds a new ticket on this bench unless the counter picks somebody else
+ * — the site's `setDeskDefaultHolder` (`work_defaults`). An owner's setting;
+ * the table's own policy decides again. Null clears it.
+ *
+ * ⚠️ Online only: it is the shop's setting, read by the site and every counter.
+ */
+export async function setDeskDefaultHolder(serviceAsked: RepairService, holderId: string | null): Promise<DeskResult> {
+  const service: RepairService = serviceAsked === "software" ? "software" : "hardware";
+  const viewer = refs.viewer();
+  if (!viewer) return { ok: false, error: "not_signed_in" };
+  if (!canWith(viewer.role, viewer.grant, SERVICE_CAPABILITY[service])) return { ok: false, error: "forbidden" };
+  const scope = deskScope(service);
+  if (!scope?.authority.everything) return { ok: false, error: "forbidden" };
+  if (holderId && !scope.people.some((person) => person.userId === holderId)) return { ok: false, error: "not_your_team" };
+  if (sync.status.state === "offline") return { ok: false, error: "needs_connection" };
+  const kind = service === "software" ? "repair_software" : "repair_hardware";
+  try {
+    const result = await supabase()
+      .from("work_defaults")
+      .upsert({ kind, user_id: holderId, updated_at: new Date().toISOString() }, { onConflict: "kind" })
+      .select("kind");
+    if (result.error) {
+      const code = result.error.code ?? "";
+      return { ok: false, error: code === "42P01" || code === "PGRST205" ? "defaultsUnavailable" : "forbidden" };
+    }
+    if (!result.data?.length) return { ok: false, error: "forbidden" };
+    const defaults = { ...(store.ref<Record<string, string>>("workDefaults") ?? {}) };
+    if (holderId) defaults[kind] = holderId;
+    else delete defaults[kind];
+    store.setRef("workDefaults", defaults);
+    store.bump();
+    return { ok: true, id: kind };
+  } catch (error) {
+    log.warn("setDeskDefaultHolder failed", error);
+    return { ok: false, error: "needs_connection" };
+  }
 }
 
 /* ── Reads the dialogs make ───────────────────────────────────────────── */
@@ -511,6 +621,8 @@ export async function loadRepairPrintFacts(ticketId: string, locale: string): Pr
       createdAt: raw.created_at,
       warrantyDays: raw.warranty_days ?? null,
       warrantyStart: raw.warranty_start ?? null,
+      // A نقد ticket has paid nothing before «مكتمل» — the receipt says what is owed.
+      completed: raw.status === "completed",
     }),
   };
 }

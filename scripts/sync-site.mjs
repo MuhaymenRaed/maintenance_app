@@ -69,6 +69,9 @@ const ENTRIES = [
   "lib/print/station.ts",
   "lib/print/station-settings.ts",
   "lib/print/station-store.ts",
+  // How a phone number is folded before it is checked — the main process
+  // corrects a ticket's numbers with it (`updateRepairDetails`).
+  "lib/validation/account.ts",
 ];
 
 /**

@@ -2321,6 +2321,7 @@ export type Database = {
         | "diagnosing"
         | "waiting_parts"
         | "quote_sent"
+        | "requested"
         | "approved"
         | "declined"
         | "in_repair"
@@ -2496,6 +2497,7 @@ export const Constants = {
         "diagnosing",
         "waiting_parts",
         "quote_sent",
+        "requested",
         "approved",
         "declined",
         "in_repair",

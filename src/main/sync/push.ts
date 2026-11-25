@@ -1,10 +1,20 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { repairBase, repairTotal, type RepairService } from "../../site/lib/data/repair-desk.ts";
+import { repairBase, repairTotal, type PaymentTerms, type RepairService } from "../../site/lib/data/repair-desk.ts";
+import { completionStatus, settledStatus } from "../../site/lib/data/repair-stage.ts";
 import { cleanFaultName, faultsChangedMeaning } from "../../site/lib/data/repair-faults.ts";
 import { store, type OpRecord } from "../db/store";
-import { faultsOfRaw, isContentEdit, markerFor, num, typedFaultCode, type OpPayload, type RawTicket } from "../desk/raw";
+import {
+  detailsColumns,
+  faultsOfRaw,
+  isContentEdit,
+  markerFor,
+  num,
+  typedFaultCode,
+  type OpPayload,
+  type RawTicket,
+} from "../desk/raw";
 import { refs } from "../desk/refs";
 import { getSettings } from "../settings";
 import { paths, PHOTO_SCHEME } from "../config";
@@ -109,6 +119,12 @@ async function send(client: SupabaseClient, userId: string, op: OpRecord) {
       return finish(client, op, await sendDelete(client, userId, role, op));
     case "faults":
       return finish(client, op, await sendFaults(client, userId, role, op));
+    case "details":
+      return finish(client, op, await sendDetails(client, userId, role, op));
+    case "handover":
+      return finish(client, op, await sendHandover(client, userId, role, op));
+    case "decide":
+      return finish(client, op, await sendDecide(client, userId, role, op));
   }
 }
 
@@ -211,7 +227,7 @@ async function sendCreate(client: SupabaseClient, userId: string, role: string, 
       p_address_line: null,
       p_customer_name: input.customerName.trim(),
       p_customer_phone: input.customerPhone.replace(/[\s()-]/g, ""),
-      p_customer_phone2: null,
+      p_customer_phone2: input.customerPhone2 || null,
       p_preferred_at: null,
       p_notes: input.notes.trim() || null,
       p_photos: [],
@@ -295,23 +311,35 @@ async function sendUpdate(client: SupabaseClient, userId: string, role: string, 
   const id = serverIdOf(op);
   const patch = op.payload as OpPayload["update"];
   const money: { actual_cost?: number | null; warranty_price?: number | null } = {};
-  if (patch.price !== undefined || patch.warranty !== undefined) {
+  let total: number | null = null;
+  if (patch.price !== undefined || patch.warranty !== undefined || patch.status === "completed") {
     // Read the server's own total and warranty now, as `authorizeRepair`
     // does, so the half that did not change is the server's, not this
     // computer's memory of it.
-    const current = await client.from("repair_tickets").select("actual_cost, warranty_price").eq("id", id).maybeSingle();
+    const current = await client
+      .from("repair_tickets")
+      .select("actual_cost, quote_amount, warranty_price")
+      .eq("id", id)
+      .maybeSingle();
     if (current.error) throw failureOf(current, "update (read)");
     if (!current.data) throw new SyncFailure("refused", "record_not_found");
-    const heldWarranty = num(current.data.warranty_price as number | null);
-    const warranty = patch.warranty !== undefined ? whole(patch.warranty) : heldWarranty;
-    const base = patch.price !== undefined ? whole(patch.price) : repairBase(num(current.data.actual_cost as number | null), heldWarranty);
-    money.actual_cost = repairTotal(base, warranty);
-    if (patch.warranty !== undefined) money.warranty_price = warranty || null;
+    total = num(current.data.actual_cost as number | null) ?? num(current.data.quote_amount as number | null);
+    if (patch.price !== undefined || patch.warranty !== undefined) {
+      const heldWarranty = num(current.data.warranty_price as number | null);
+      const warranty = patch.warranty !== undefined ? whole(patch.warranty) : heldWarranty;
+      const base = patch.price !== undefined ? whole(patch.price) : repairBase(num(current.data.actual_cost as number | null), heldWarranty);
+      money.actual_cost = repairTotal(base, warranty);
+      if (patch.warranty !== undefined) money.warranty_price = warranty || null;
+    }
   }
+  // «مكتمل» on an آجل that still owes lands on «بانتظار الزبون» — decided from
+  // the server's own money at the moment it is sent, as `updateRepair` does.
+  const status =
+    patch.status === "completed" ? await landing(client, id, money.actual_cost ?? total) : patch.status;
   const result = await client
     .from("repair_tickets")
     .update({
-      ...(patch.status !== undefined && { status: patch.status }),
+      ...(status !== undefined && { status }),
       ...(patch.quoteNotes !== undefined && { quote_notes: patch.quoteNotes }),
       ...(patch.warrantyDays !== undefined && { warranty_days: whole(patch.warrantyDays) || null }),
       ...(patch.warrantyStart !== undefined && { warranty_start: patch.warrantyStart || null }),
@@ -327,11 +355,30 @@ async function sendUpdate(client: SupabaseClient, userId: string, role: string, 
     entityId: id,
     amount: money.actual_cost ?? null,
     detail: {
-      ...(patch.status ? { status: patch.status } : {}),
+      ...(status ? { status } : {}),
       ...(patch.warranty != null ? { warranty: patch.warranty } : {}),
     },
   });
   return id;
+}
+
+/**
+ * Where «مكتمل» lands — the site's `landingStatus`: an آجل ticket that still
+ * owes waits in «بانتظار الزبون»; everything else is complete. A ticket with
+ * no money row is a cash ticket. A refusal to read the money is the site's
+ * answer too (complete); a dropped line is retried, never guessed at.
+ */
+async function landing(client: SupabaseClient, id: string, total: number | null): Promise<"completed" | "ready"> {
+  const read = await client.from("repair_ticket_finance").select("payment_terms, collected").eq("ticket_id", id).maybeSingle();
+  if (read.error) {
+    const failure = failureOf(read, "update (money)");
+    if (failure.kind !== "refused") throw failure;
+    return "completed";
+  }
+  if (!read.data) return "completed";
+  const terms: PaymentTerms = read.data.payment_terms === "deferred" ? "deferred" : "cash";
+  const remaining = Math.max(0, (total ?? 0) - Math.max(0, Number(read.data.collected ?? 0) || 0));
+  return completionStatus(terms, remaining);
 }
 
 /**
@@ -354,15 +401,110 @@ async function sendFinance(client: SupabaseClient, userId: string, role: string,
   const row: Record<string, unknown> = { ticket_id: id, updated_by: userId, updated_at: new Date().toISOString() };
   if (patch.costPrice !== undefined) row.cost_price = whole(patch.costPrice);
   if (patch.collected !== undefined) row.collected = whole(patch.collected);
-  if (patch.paymentTerms !== undefined) row.payment_terms = patch.paymentTerms === "deferred" ? "deferred" : "cash";
-  const result = await client.from("repair_ticket_finance").upsert(row, { onConflict: "ticket_id" }).select("ticket_id");
+  if (patch.paymentTerms !== undefined) {
+    row.payment_terms = patch.paymentTerms === "deferred" ? "deferred" : "cash";
+    // Cash is paid in full; a figure kept from when it was deferred would
+    // only sit in the row contradicting it — `updateRepairFinance`.
+    if (row.payment_terms === "cash") row.collected = null;
+  }
+  const result = await client
+    .from("repair_ticket_finance")
+    .upsert(row, { onConflict: "ticket_id" })
+    .select("ticket_id, payment_terms, collected");
   check(result, "finance");
   if (!result.data?.length) throw new SyncFailure("refused", "forbidden");
   if (!patch.settle) await markEdited(client, id);
+  await settle(client, id, result.data[0] as { payment_terms?: string | null; collected?: number | string | null });
   await activity(client, userId, role, {
     action: "repairs.finance",
     entityId: id,
     detail: Object.fromEntries(Object.entries(patch).map(([key, value]) => [key, value ?? ""])) as Record<string, string | number>,
+  });
+  return id;
+}
+
+/**
+ * Paying the rest of a ticket that waits for its customer — or switching it
+ * to نقد — completes it (the shop, 2026-11-24): `updateRepairFinance`'s tail,
+ * after the money and never before, so a ticket whose money failed to save
+ * never reads as complete. A refusal leaves the money saved and the ticket
+ * waiting; a dropped line retries the whole change, which writes the same
+ * money again and settles then.
+ */
+async function settle(client: SupabaseClient, id: string, saved: { payment_terms?: string | null; collected?: number | string | null }) {
+  const ticket = await client.from("repair_tickets").select("status, actual_cost, quote_amount").eq("id", id).maybeSingle();
+  if (ticket.error) {
+    const failure = failureOf(ticket, "finance (settle)");
+    if (failure.kind !== "refused") throw failure;
+    return;
+  }
+  if (!ticket.data) return;
+  const terms: PaymentTerms = saved.payment_terms === "deferred" ? "deferred" : "cash";
+  const total = num(ticket.data.actual_cost as number | null) ?? num(ticket.data.quote_amount as number | null) ?? 0;
+  const paid = Math.max(0, Number(saved.collected ?? 0) || 0);
+  const next = settledStatus({ status: String(ticket.data.status ?? ""), terms, remaining: Math.max(0, total - paid) });
+  if (!next) return;
+  const moved = await client.from("repair_tickets").update({ status: next }).eq("id", id).select("id");
+  if (moved.error) {
+    const failure = failureOf(moved, "finance (settle)");
+    if (failure.kind !== "refused") throw failure;
+  }
+}
+
+/* ── `updateRepairDetails`, `setRepairHandedOver`, `decideRepairRequest` ── */
+
+async function sendDetails(client: SupabaseClient, userId: string, role: string, op: OpRecord): Promise<string> {
+  const id = serverIdOf(op);
+  const checked = detailsColumns(op.payload as OpPayload["details"]);
+  if (!checked.ok) throw new SyncFailure("refused", checked.error);
+  const columns = checked.columns;
+  if (!Object.keys(columns).length) return id;
+  const result = await client.from("repair_tickets").update(columns).eq("id", id).select("id");
+  check(result, "details");
+  if (!result.data?.length) throw new SyncFailure("refused", "forbidden");
+  await markEdited(client, id);
+  await activity(client, userId, role, {
+    action: "repairs.details",
+    entityId: id,
+    detail: Object.fromEntries(Object.entries(columns).map(([key, value]) => [key, value ?? ""])) as Record<string, string>,
+  });
+  return id;
+}
+
+/**
+ * The badge. Dated by when it was pressed here, which on a counter that was
+ * offline is the truth; the database writes who set it (`auth.uid()`).
+ */
+async function sendHandover(client: SupabaseClient, userId: string, role: string, op: OpRecord): Promise<string> {
+  const id = serverIdOf(op);
+  const payload = op.payload as OpPayload["handover"];
+  const result = await client
+    .from("repair_tickets")
+    .update({
+      handed_over_at: payload.handed ? op.createdAt : null,
+      handed_over_by: payload.handed ? userId : null,
+    })
+    .eq("id", id)
+    .select("id");
+  if (result.error?.code === "PGRST204" || result.error?.code === "42703") throw new SyncFailure("refused", "handoverUnavailable");
+  check(result, "handover");
+  if (!result.data?.length) throw new SyncFailure("refused", "forbidden");
+  await activity(client, userId, role, { action: "repairs.handover", entityId: id, detail: { handed: payload.handed } });
+  return id;
+}
+
+/** Only a ticket still waiting as a request can be decided — the server is asked, not this computer. */
+async function sendDecide(client: SupabaseClient, userId: string, role: string, op: OpRecord): Promise<string> {
+  const id = serverIdOf(op);
+  const payload = op.payload as OpPayload["decide"];
+  const status = payload.accept ? "approved" : "cancelled";
+  const result = await client.from("repair_tickets").update({ status }).eq("id", id).eq("status", "requested").select("id");
+  check(result, "decide");
+  if (!result.data?.length) throw new SyncFailure("refused", "not_a_request");
+  await activity(client, userId, role, {
+    action: "repairs.status",
+    entityId: id,
+    detail: { status, request: payload.accept ? "accepted" : "refused" },
   });
   return id;
 }
@@ -427,7 +569,7 @@ async function sendFaults(client: SupabaseClient, userId: string, role: string, 
  * write policy. A refusal is a name in `failed`; a dropped line is thrown, so
  * the change is retried rather than half-sent.
  */
-async function fileTypedFaults(
+export async function fileTypedFaults(
   client: SupabaseClient,
   service: RepairService,
   names: readonly string[],

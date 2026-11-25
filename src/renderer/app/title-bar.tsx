@@ -22,7 +22,7 @@ import { formatSince } from "@/lib/data/datetime";
 import { cn } from "@/lib/utils";
 import { isDark } from "../lib/appearance";
 import { clearAll, markRead, useNotices } from "../lib/notices";
-import { navigate, openTicket, useRoute } from "../lib/router";
+import { navigate, openTicket, toggleSettings, useRoute } from "../lib/router";
 import { saveSettings, useSettings } from "../lib/settings";
 import { useSync } from "../lib/sync";
 import { openSyncPanel } from "./sync-panel";
@@ -49,6 +49,9 @@ export function TitleBar() {
   const route = useRoute();
   const settings = useSettings();
   const dark = isDark(settings);
+  // A manager's settings are the desk's الإعدادات tab; a technician's, the app's page.
+  const technician = useSync().account?.role === "technician";
+  const inSettings = route.kind === "settings" || (!technician && route.query.tab === "settings");
 
   return (
     <header
@@ -95,11 +98,11 @@ export function TitleBar() {
           </button>
           <button
             type="button"
-            onClick={() => navigate(route.kind === "settings" ? "/admin/repairs" : "/settings")}
+            onClick={() => toggleSettings(technician)}
             aria-label={t("settings")}
-            aria-pressed={route.kind === "settings"}
+            aria-pressed={inSettings}
             title={t("settings")}
-            className={cn(glassControl, route.kind === "settings" && "border-brand/45 bg-brand/8 text-brand")}
+            className={cn(glassControl, inSettings && "border-brand/45 bg-brand/8 text-brand")}
           >
             <Settings className="size-4" aria-hidden />
           </button>

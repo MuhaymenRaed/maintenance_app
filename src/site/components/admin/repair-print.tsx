@@ -9,6 +9,7 @@ import { EntityDialog, Field, input, NumberInput } from "@/components/admin/form
 import { useOwnerDocument } from "@/lib/windows/owner-document";
 import { updateRepair } from "@/lib/actions/sections";
 import { MARK_DOT, MARK_MONO_PATH, MARK_PATH, MARK_VIEWBOX } from "@/lib/brand/mark";
+import { WORDMARK_AR_PATHS, WORDMARK_AR_VIEWBOX } from "@/lib/brand/wordmark";
 import { baghdadDay } from "@/lib/data/date-window";
 import { daysBetween, warrantyEnd } from "@/lib/data/repair-desk";
 import type { RepairPrintFacts } from "@/lib/data/repair-print-facts";
@@ -565,6 +566,31 @@ export function CompanyMark({ className }: { className?: string }) {
 }
 
 /**
+ * «شركة الاسناد» as it is lettered on the shopfront sign — the shop asked on
+ * 2026-11-25 for the papers' logo to carry the sign's own letterforms.
+ *
+ * ⚠️ **Drawn, never typeset.** The sign is set in DG Rafah and this repo has
+ * no copy of the face; what it has is the identity sheet's outlines of those
+ * exact letters (`lib/brand/wordmark.ts`, generated from
+ * `assets/brand/lockup/wordmark-ar.svg`). So the name is paths, like the mark
+ * beside it — as sharp as the type at any size, and nothing for the print
+ * station's rasteriser to fetch. It is the logo, so it stays Arabic on an
+ * English paper too; `label` is what a screen reader hears.
+ *
+ * Both sides are sized at the call site, written out as whole classes:
+ * Tailwind only emits a class it can read in the source.
+ */
+export function CompanyWordmark({ className, label, fill }: { className: string; label: string; fill: string }) {
+  return (
+    <svg viewBox={WORDMARK_AR_VIEWBOX} role="img" aria-label={label} className={cn("block shrink-0", className)}>
+      {WORDMARK_AR_PATHS.map((d, index) => (
+        <path key={index} d={d} fillRule="evenodd" fill={fill} />
+      ))}
+    </svg>
+  );
+}
+
+/**
  * The company's own lockup — the mark, the trading name, the trade under it.
  *
  * ⚠️ **This is what replaced `/print/repair-logo.webp`.** That picture is the
@@ -580,10 +606,13 @@ export function CompanyMark({ className }: { className?: string }) {
  * `<img>` has to be fetched and turned into a data URL before the sheet can
  * be drawn onto a canvas.
  *
- * ⚠️ **The name takes the mark's charcoal, not the page's ink.** `#333333` is
- * the shop's own value, read off their vector artwork; `#111` is this paper's
- * reading colour. They are a third of a step apart and they mean different
- * things — the lockup is the logo, and it keeps the logo's colour.
+ * ⚠️ **It is the shopfront sign, set on paper (2026-11-25).** The sign letters
+ * «شركة الاسناد» in red over the trade line in white on a charcoal board; on a
+ * white sheet the white becomes the mark's charcoal, `#333333` — the shop's
+ * own value off their vector artwork, never this paper's `#000` reading ink,
+ * because the lockup is the logo and keeps the logo's colours. The trade line
+ * is the short «للهاتف النقال» (`printTrade`), the shop's wording for the
+ * papers; the storefront keeps `Brand.trade`.
  *
  * The phone numbers are deliberately *not* in it. The receipt carries them in
  * a panel of their own a thumb's width below, and one number printed twice on
@@ -591,15 +620,14 @@ export function CompanyMark({ className }: { className?: string }) {
  */
 export function CompanyLockup({ markClass }: { markClass: string }) {
   const brand = useTranslations("Brand");
+  const t = useTranslations("Admin");
   return (
     <div className="flex shrink-0 items-center gap-[3.6mm]">
       <CompanyMark className={markClass} />
       <div className="min-w-0">
-        <p className="whitespace-nowrap text-[15pt] font-bold leading-[1.1] text-[#333333]">
-          {brand("name")}
-        </p>
-        <p className="mt-[1mm] whitespace-nowrap text-[9.4pt] font-bold leading-[1.15] text-[#e11d2e]">
-          {brand("trade")}
+        <CompanyWordmark className="h-[6.6mm] w-[30.84mm]" label={brand("name")} fill="#e11d2e" />
+        <p className="mt-[1.4mm] whitespace-nowrap text-[9.4pt] font-bold leading-[1.15] text-[#333333]">
+          {t("printTrade")}
         </p>
       </div>
     </div>
@@ -915,9 +943,15 @@ export function LabelSheet({
          * box is shorter than the ink inside it — the glyphs reach 1 px above
          * their own box, so hidden clipped the tops off the shop's own name.
          */}
+        {/*
+         * The shop's name as the sign letters it, like the A5 papers — in the
+         * head's one ink. ⚠️ The block must stay no taller than the 6.75 mm
+         * mark beside it: the header's height is in `label-fit.ts`'s pool,
+         * so a taller name here would quietly squeeze the name and fault rows.
+         */}
         <div className="min-w-0 flex-1">
-          <p className="whitespace-nowrap text-[8.6pt] font-bold leading-[1.2]">{t("printBadge")}</p>
-          <p className="whitespace-nowrap text-[6pt] font-semibold leading-[1.3]">{t("printDept")}</p>
+          <CompanyWordmark className="h-[3.4mm] w-[15.89mm]" label={t("printBadge")} fill="#000" />
+          <p className="mt-[0.5mm] whitespace-nowrap text-[6pt] font-semibold leading-[1.3]">{t("printDept")}</p>
         </div>
         <div className="flex shrink-0 flex-col justify-center self-stretch border-0 border-s-[0.25mm] border-solid border-[#000] ps-[1.75mm]">
           {site.repairCardPhones.map((phone) => (
@@ -1111,7 +1145,7 @@ export function ReceiptSheet({ facts, printedAt }: { facts: RepairPrintFacts; pr
    * the failure worth having, where breaking inside a value is not.
    */
   const stamps = [
-    { label: t("counterTicketCode"), value: facts.code },
+    { label: t("printSerial"), value: facts.code },
     { label: t("receiptPrintDate"), value: `${baghdadDay(printedAt)}  ${clock(printedAt)}` },
   ];
 
@@ -1431,7 +1465,7 @@ export function WarrantySheet({ facts }: { facts: RepairPrintFacts }) {
           <Letterhead markClass="size-[19mm]">
             <PaperEyebrow Icon={ShieldCheck}>{t("warrantyEyebrow")}</PaperEyebrow>
             <PaperTitle>{t("warrantySheetTitle")}</PaperTitle>
-            <PaperStamps stamps={[{ label: t("counterTicketCode"), value: facts.code }]} />
+            <PaperStamps stamps={[{ label: t("printSerial"), value: facts.code }]} />
           </Letterhead>
           <PaperRule />
         </div>

@@ -58,6 +58,11 @@ export type TicketForPrint = {
   createdAt: string;
   warrantyDays: number | null;
   warrantyStart: string | null;
+  /**
+   * The ticket has reached «مكتمل». A نقد ticket has paid nothing before it
+   * (2026-11-24), so a receipt printed at the counter says what is owed.
+   */
+  completed: boolean;
 };
 
 export function toRepairPrintFacts(ticket: TicketForPrint): RepairPrintFacts {
@@ -67,6 +72,7 @@ export function toRepairPrintFacts(ticket: TicketForPrint): RepairPrintFacts {
     cost: ticket.costPrice,
     collected: ticket.collected,
     terms: ticket.paymentTerms,
+    completed: ticket.completed,
   });
   return {
     code: ticket.code,

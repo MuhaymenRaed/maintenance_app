@@ -4,7 +4,7 @@ import type { AccessGrant } from "../../site/lib/permissions.ts";
 import type { DeskDeputyRef, RepairService } from "../../site/lib/data/repair-desk.ts";
 import { RETURN_COLUMNS, returnBookFrom, type ReturnEntry, type ReturnRow } from "../../site/lib/data/desk-figures.ts";
 import { store } from "../db/store";
-import { TICKET_SELECT, type RawFinance, type RawTicket } from "../desk/raw";
+import { ticketSelect, type RawFinance, type RawTicket } from "../desk/raw";
 import { refs, type BenchPerson, type Brand, type Issue, type Viewer } from "../desk/refs";
 import { check, failureOf } from "./client";
 import { logger } from "../log";
@@ -52,6 +52,9 @@ async function pageAll<T>(build: Paged<T>, what: string, cap = 50_000): Promise<
 }
 
 const minus = (iso: string, ms: number) => new Date(Date.parse(iso) - ms).toISOString();
+
+/** The columns a ticket is read with — the stage columns once the server has them. */
+const selectTickets = () => ticketSelect(Boolean(refs.available().stages));
 
 /* ── Reference data ───────────────────────────────────────────────────── */
 
@@ -148,6 +151,25 @@ export async function pullRefs(client: SupabaseClient, userId: string, email: st
       if (probe.error && !probe.error.code) return;
       const missing = probe.error?.code === "PGRST202" || probe.error?.code === "42883";
       store.setRef("available", { ...refs.available(), faultsEdit: !missing });
+    }],
+    ["stages", async () => {
+      // Whether the server keeps a booking day and the badge —
+      // 20261124_maintenance_stages.sql. A column it lacks is refused with
+      // 42703; any other error says nothing about the columns, and a dropped
+      // line has no code at all.
+      const probe = await client.from("repair_tickets").select("completed_at, handed_over_at").limit(1);
+      let stages: boolean;
+      if (!probe.error) stages = true;
+      else if (probe.error.code === "42703" || probe.error.code === "PGRST204") stages = false;
+      else return;
+      if (stages === Boolean(refs.available().stages)) return;
+      store.setRef("available", { ...refs.available(), stages });
+      // ⚠️ Every ticket here was read without the columns (or with them), and
+      // the file that adds them rewrites both ledgers — the dates of the money
+      // and the «مرتجع» of booked tickets. The next pass reads all of it again
+      // rather than only what changed.
+      store.setMeta("lastFullPull", new Date(0).toISOString());
+      log.info(`the server ${stages ? "keeps" : "no longer keeps"} the booking day — reading everything again`);
     }],
   ];
   for (const [name, task] of tasks) {
@@ -270,7 +292,7 @@ export async function pullAllTickets(client: SupabaseClient): Promise<PullOutcom
   const announce = store.meta("lastFullPull") !== null;
   const rows = await pageAll<RawTicket>(
     (from, to) =>
-      client.from("repair_tickets").select(TICKET_SELECT).eq("is_deleted", false).order("created_at").order("id").range(from, to) as never,
+      client.from("repair_tickets").select(selectTickets()).eq("is_deleted", false).order("created_at").order("id").range(from, to) as never,
     "tickets",
   );
   const outcome: PullOutcome = { arrived: [], moved: [], handed: [], changed: false };
@@ -311,7 +333,7 @@ export async function pullChanges(client: SupabaseClient): Promise<PullOutcome> 
     (from, to) =>
       client
         .from("repair_tickets")
-        .select(TICKET_SELECT)
+        .select(selectTickets())
         .gte("updated_at", minus(cursor, OVERLAP_MS))
         .order("updated_at")
         .order("id")
@@ -419,7 +441,7 @@ export async function learnOrigins(client: SupabaseClient): Promise<boolean> {
 }
 
 export async function pullTicket(client: SupabaseClient, serverId: string): Promise<RawTicket | null> {
-  const result = await client.from("repair_tickets").select(TICKET_SELECT).eq("id", serverId).maybeSingle();
+  const result = await client.from("repair_tickets").select(selectTickets()).eq("id", serverId).maybeSingle();
   if (result.error) throw failureOf(result, "ticket");
   const raw = result.data as unknown as RawTicket | null;
   if (raw) store.putServerTicket(raw);

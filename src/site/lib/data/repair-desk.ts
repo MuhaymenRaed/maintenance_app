@@ -52,10 +52,11 @@
  * part, which is not a debt anybody owes — so the figure here is the amount
  * still to collect from the customer, which is what the field exists for.
  *
- * ⚠️ **A cash ticket with nothing typed under الواصل counts as fully paid.**
- * Cash means paid at the counter, and asking the desk to type the price twice
- * for every walk-in is how the field stops being filled. A deferred ticket
- * with nothing typed has paid nothing.
+ * ⚠️ **A cash ticket counts as fully paid once it is «مكتمل», and as having
+ * paid nothing before** (the shop, 2026-11-24: only «مكتمل» counts). Cash means
+ * paid at the counter when the device is handed over, and asking the desk to
+ * type the price twice for every walk-in is how the field stops being filled.
+ * A deferred ticket has paid what was typed under الواصل, whatever its stage.
  *
  * ⚠️ **Profit is the repair less its part, on every ticket not cancelled**,
  * paid or not, and a part with no price typed counts as zero (the shop,
@@ -174,17 +175,12 @@ export function techMayMoveFrom(status: string): boolean {
   return status === "approved" || techMaySet(status);
 }
 
-/**
- * Whether moving a ticket to `status` settles what it still owes.
- *
- * The shop, 2026-11-17: a deferred (آجل) ticket handed back to its customer —
- * «تم التسليم» — is paid, so «الباقي» is filled the moment it gets there. A
- * cash ticket is paid in full already (see `repairMoney`), so there is
- * nothing to settle on one.
+/*
+ * ⚠️ `settlesOnStatus` is gone (2026-11-24). «تم التسليم» on an آجل ticket
+ * used to mark the rest as paid; the shop's rule now is the opposite — an
+ * آجل that still owes waits in «بانتظار الزبون» and becomes «مكتمل» only
+ * when the rest is paid. See `completionStatus` in `./repair-stage.ts`.
  */
-export function settlesOnStatus(status: string, terms: PaymentTerms): boolean {
-  return status === "completed" && terms === "deferred";
-}
 
 /* ── The price and the warranty ───────────────────────────────────────────── */
 
@@ -231,6 +227,7 @@ export function repairMoney({
   cost,
   collected,
   terms,
+  completed,
 }: {
   /** The ticket's total — `actual_cost`, the warranty already inside it. */
   price: number | null;
@@ -239,6 +236,12 @@ export function repairMoney({
   cost: number | null;
   collected: number | null;
   terms: PaymentTerms;
+  /**
+   * The ticket has reached «مكتمل» (it carries a `completedAt`). A نقد ticket
+   * pays its price then and not before (the shop, 2026-11-24: "only مكتمل
+   * affects accounting"). Required, so no caller forgets to say.
+   */
+  completed: boolean;
 }): RepairMoney {
   const p = Math.max(0, price ?? 0);
   // Clamped to the total, the way `repairBase` floors at zero: a warranty typed
@@ -251,7 +254,7 @@ export function repairMoney({
   // ticket at all. A part-payment is what «آجل» is for. Checked against the
   // live data before it changed: the one cash ticket that carried a partial
   // figure was cancelled, and a cancelled ticket carries no money anyway.
-  const paid = terms === "cash" ? p : Math.min(p, Math.max(0, collected ?? 0));
+  const paid = terms === "cash" ? (completed ? p : 0) : Math.min(p, Math.max(0, collected ?? 0));
   const remaining = Math.max(0, p - paid);
   return {
     price: p,
@@ -268,11 +271,9 @@ export function repairMoney({
 /**
  * The figures panel's cards, as the shop defined each of them on 2026-11-20.
  *
- * Three clocks: how many tickets and what they still owe belong to the day
- * they were opened, what a ticket came to belongs to the day it was paid in
- * full, and money belongs to the day it came in — see
- * `lib/data/desk-figures.ts`, which decides all three and calls `addToTotals`
- * once per ticket.
+ * Two clocks: what a ticket *is* belongs to the day it was opened, and money
+ * belongs to the day it came in — see `lib/data/desk-figures.ts`, which
+ * decides both and calls `addToTotals` once per ticket.
  *
  * ⚠️ **«واصل بالخزنة» is the warranty that came in plus «واصل نقد» plus
  * «واصل آجل»**, the shop's own sum — and it is every dinar actually in the
@@ -286,11 +287,20 @@ export function repairMoney({
 export type DeskTotals = {
   /** Every ticket opened in the period, cancelled ones included. */
   tickets: number;
-  /** قيد العمل — every status that is neither delivered nor cancelled. */
+  /** Of those, still on the bench or waiting for the customer at the period's end. */
   open: number;
-  /** تم التسليم. */
+  /**
+   * مكتمل — the tickets that became «مكتمل» in the period, and the ones opened
+   * in it that became «مكتمل» on a later day (the shop, 2026-11-25: a later day
+   * never takes a ticket away from the day it was opened). Money and profit
+   * follow only the first kind — see `completedLater`.
+   */
   completed: number;
-  /** ملغاة. */
+  /** Of `completed`: opened on an earlier day, completed — paid in full — in this one. */
+  completedEarlier: number;
+  /** Of `completed`: opened in this period, completed on a later day; its money is that day's. */
+  completedLater: number;
+  /** Of the tickets opened in the period, cancelled by its end. */
   cancelled: number;
   /** مبلغ الصيانة — the repair alone, the warranty kept out, cancelled tickets left out. */
   maintenance: number;
@@ -360,6 +370,8 @@ export function emptyTotals(): DeskTotals {
     tickets: 0,
     open: 0,
     completed: 0,
+    completedEarlier: 0,
+    completedLater: 0,
     cancelled: 0,
     maintenance: 0,
     revenue: 0,
@@ -391,132 +403,11 @@ export function emptyTotals(): DeskTotals {
   };
 }
 
-/**
- * One ticket into a running total.
- *
- * `counted` — the ticket was opened in the period, so it counts towards what
- * the tickets *are*. `paid` — how much of its money came in before the
- * period and within it; by default all of it, within (no period, or a list
- * the reader picked by hand). Cancelled tickets are counted and carry no money.
- *
- * `booked` — the ticket was paid in full within the period (the shop,
- * 2026-11-24): its repair amount, its warranty, its part and its profit count
- * here, as the ticket is now. An آجل ticket opened yesterday and settled today
- * counts in today's مبلغ الصيانة, أسعار الشراء and الربح — and not in
- * yesterday's, which never saw it paid. A later «راجع» changes those figures
- * on this day too; the day of the «راجع» moves only the till. Defaults to
- * `counted`, which is what a list the reader picked by hand wants.
- *
- * `remaining` — what it still owed at the period's end (الديون), and
- * `settled` — whether it was paid in full by then, which puts the money that
- * came in under «واصل نقد» rather than «واصل آجل». Both default to the ticket
- * as it is now. Read off the ledger, a past day keeps the debts it had.
- *
- * `refunds` — cancelling gives the money back on the day it happens
- * (20261121_repair_returns.sql), so a cancelled ticket's money still flows
- * through `paid`, as a refund. Before that file, a cancelled ticket carries none.
+/*
+ * ⚠️ `addToTotals` is gone (2026-11-24). Which tickets a figure counts, and on
+ * which day, is `computeFigures` in `./desk-figures.ts` — booked on the day a
+ * ticket became «مكتمل», money on the day it came in.
  */
-export function addToTotals(
-  totals: DeskTotals,
-  row: {
-    status: string;
-    price: number | null;
-    warrantyPrice?: number | null;
-    costPrice: number | null;
-    collected: number | null;
-    paymentTerms: PaymentTerms;
-  },
-  {
-    counted = true,
-    booked = counted,
-    paid,
-    refunds = false,
-    warranty = null,
-    remaining = null,
-    settled = null,
-  }: {
-    counted?: boolean;
-    booked?: boolean;
-    paid?: { before: number; within: number };
-    refunds?: boolean;
-    /**
-     * The warranty at the start and at the end of the period
-     * (`warrantySpan`), so a warranty added today is not split out of
-     * yesterday's takings. The ticket's warranty now when absent.
-     */
-    warranty?: { start: number; end: number } | null;
-    remaining?: number | null;
-    settled?: boolean | null;
-  } = {},
-): void {
-  const off = (status: string) => status === "cancelled" || status === "declined";
-  if (counted) {
-    totals.tickets += 1;
-    if (off(row.status)) totals.cancelled += 1;
-    else if (row.status === "completed") totals.completed += 1;
-    else totals.open += 1;
-  }
-
-  const money = repairMoney({
-    price: row.price,
-    warranty: row.warrantyPrice ?? null,
-    cost: row.costPrice,
-    collected: row.collected,
-    terms: row.paymentTerms,
-  });
-
-  // What the ticket came to, on the day it was paid in full.
-  if (booked && !off(row.status)) {
-    const day = money;
-    totals.maintenance += day.base;
-    totals.revenue += day.price;
-    // `money.warranty` rather than the raw column, so an unpriced ticket counts
-    // no warranty income and a warranty typed above the price counts only
-    // what the customer is charged.
-    if (day.warranty > 0) {
-      totals.warranty += day.warranty;
-      totals.warrantyTickets += 1;
-    }
-    // ⚠️ No purchase price typed counts as zero, and the profit goes on —
-    // the shop's rule of 2026-11-20. `missingCost` says how many, so the
-    // card can say the profit may be lower than it reads.
-    const cost = day.cost ?? 0;
-    totals.cost += cost;
-    if (day.cost == null && day.base > 0) totals.missingCost += 1;
-    totals.profit += day.base - cost;
-  }
-
-  // What it still owed at the period's end, and how it is paid.
-  if (counted && !off(row.status)) {
-    if (row.paymentTerms === "deferred") {
-      totals.deferred += 1;
-      if (row.collected == null) totals.missingCollected += 1;
-    }
-    const owed = remaining ?? money.remaining;
-    totals.outstanding += owed;
-    if (owed > 0) totals.owing += 1;
-  }
-
-  // A cancelled ticket's money moves only as a refund, dated by the ledger.
-  if (off(row.status) && (!refunds || !paid)) return;
-
-  // The money that came in within the period, the warranty's part taken first
-  // out of whatever the ticket had paid by then.
-  const flow = paid ?? { before: 0, within: money.collected };
-  if (flow.within === 0) return;
-  const warrantyBefore = Math.min(warranty?.start ?? money.warranty, Math.max(0, flow.before));
-  const warrantyNow = Math.min(warranty?.end ?? money.warranty, Math.max(0, flow.before + flow.within));
-  const warrantyIn = warrantyNow - warrantyBefore;
-  const repairIn = flow.within - warrantyIn;
-  // A deferred ticket paid in full is cash (the shop, 2026-11-20) — paid in
-  // full by the period's end, so a deposit taken on an earlier day stays آجل there.
-  if (settled ?? (row.paymentTerms === "cash" || money.remaining === 0)) totals.collectedCash += repairIn;
-  else totals.collectedDeferred += repairIn;
-  totals.tillWarranty += warrantyIn;
-  totals.till += flow.within;
-  // A refund from an earlier day is a «راجع» (2026-11-21), not a payment.
-  if (!counted && flow.within > 0) totals.paidFromEarlier += 1;
-}
 
 /* ── Who may do what ──────────────────────────────────────────────────────── */
 

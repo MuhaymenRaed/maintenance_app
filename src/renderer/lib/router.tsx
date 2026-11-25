@@ -110,6 +110,19 @@ export function navigate(href: string, { replace = false }: { replace?: boolean 
 }
 
 /**
+ * Where the settings are for this reader, and back again. A technician has
+ * the app's own page (`/settings`). A manager's are the desk's الإعدادات tab,
+ * where the app's own settings are drawn under the bench's (2026-11-24).
+ */
+export function toggleSettings(technician: boolean) {
+  if (technician || current.kind === "settings") {
+    navigate(current.kind === "settings" ? "/admin/repairs" : "/settings");
+    return;
+  }
+  navigate(current.query.tab === "settings" ? "/admin/repairs" : "/admin/repairs?tab=settings");
+}
+
+/**
  * One ticket, open on the board — from a Windows notification, the bell or the
  * sync panel. The board opens `?open=<id>` on arrival, as it does on the site
  * when an overview card or a staff alert links there.
@@ -227,6 +240,23 @@ export function startRouter(): () => void {
 
   const onPop = () => land(new URL(window.location.href));
 
+  /*
+   * ⚠️ The site's view writes its tab and list into the address with
+   * `history.replaceState` (`repair-desk-view.tsx`), and nothing else here
+   * hears that: the route kept the tab the reader had left, and the title
+   * bar's settings button, asking it, went the wrong way. So the route follows
+   * the address — without a new revision, which would re-read the bench for a
+   * change that is only the window's own.
+   */
+  const replace = window.history.replaceState.bind(window.history);
+  window.history.replaceState = (data: unknown, unused: string, url?: string | URL | null) => {
+    replace(data, unused, url);
+    const next = parse(new URL(window.location.href), revision);
+    if (next.path === current.path && JSON.stringify(next.query) === JSON.stringify(current.query)) return;
+    current = next;
+    emit();
+  };
+
   document.addEventListener("click", onClick, true);
   document.addEventListener("submit", onSubmit, true);
   window.addEventListener("popstate", onPop);
@@ -234,5 +264,6 @@ export function startRouter(): () => void {
     document.removeEventListener("click", onClick, true);
     document.removeEventListener("submit", onSubmit, true);
     window.removeEventListener("popstate", onPop);
+    window.history.replaceState = replace;
   };
 }
