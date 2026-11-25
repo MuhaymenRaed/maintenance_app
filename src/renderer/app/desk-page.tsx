@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import { AlertTriangle, CloudOff } from "lucide-react";
 import { RepairDeskView, type DeskTab, type RepairDeskViewData, type TicketList } from "@/components/admin/repair-desk-view";
@@ -56,6 +56,21 @@ export function DeskPage() {
   const { when, from, to, days } = route.query;
   const params = useMemo(() => ({ locale, when, from, to, days }), [locale, when, from, to, days]);
 
+  const asked = route.query.tab;
+  const tab = (DESK_TABS as readonly string[]).includes(asked ?? "") ? (asked as DeskTab) : null;
+  const askedList = route.query.list;
+  const liveList = (TICKET_LISTS as readonly string[]).includes(askedList ?? "") ? (askedList as TicketList) : null;
+  /*
+   * ⚠️ The route follows the view's own `replaceState` (`startRouter`), and
+   * the view writes `?list=` only while كشف التذاكر is open — so the list a
+   * reader chose there would be forgotten the moment they looked at another
+   * tab, where the site's view keeps it. It is remembered here, adjusted
+   * during render rather than copied in an effect.
+   */
+  const [ticketsList, setTicketsList] = useState<TicketList | null>(liveList);
+  if (tab === "tickets" && liveList !== ticketsList) setTicketsList(liveList);
+  const list = tab === "tickets" ? liveList : ticketsList;
+
   useEffect(() => {
     requestPage(params, true);
   }, [params, route.revision]);
@@ -69,16 +84,7 @@ export function DeskPage() {
 
   if (!data) return error ? <FirstRun reason="error" detail={error} /> : <FirstRun reason="loading" />;
   if (!data.ready) return <FirstRun reason={data.reason} />;
-  const asked = route.query.tab;
-  const askedList = route.query.list;
-  return (
-    <Desk
-      data={data}
-      tab={(DESK_TABS as readonly string[]).includes(asked ?? "") ? (asked as DeskTab) : null}
-      list={(TICKET_LISTS as readonly string[]).includes(askedList ?? "") ? (askedList as TicketList) : null}
-      openId={route.query.open ?? null}
-    />
-  );
+  return <Desk data={data} tab={tab} list={list} openId={route.query.open ?? null} />;
 }
 
 function Desk({
