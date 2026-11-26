@@ -119,11 +119,11 @@ export type ReportSourceRow = {
   /** When it became «مكتمل» — the day the figures book it on (2026-11-24). */
   completedAt: string | null;
   /**
-   * What the ticket's own day counted, when a later «راجع» changed it
-   * (2026-11-21). The row prints this, so yesterday's report still adds up to
-   * yesterday's totals after today's change.
+   * Not paid in full by the period's end (2026-11-24): its amount counts on
+   * the day it is, so the row prints «آجل» and no amount, and the report
+   * still adds up to the period's totals.
    */
-  booked?: { status: string; price: number | null; warrantyPrice: number | null; costPrice: number | null } | null;
+  unbooked?: boolean;
 };
 
 /** One report to print. */
@@ -192,6 +192,8 @@ type ReportRow = {
   /** Priced, with no purchase price typed: its part counted as zero. */
   noCost: boolean;
   cancelled: boolean;
+  /** Not paid in full by the period's end — no amount here. */
+  owing?: boolean;
   device: string;
   fault: string;
   day: string;
@@ -227,7 +229,6 @@ export function buildProfitReport(job: ReportJob, unassigned: string): BuiltRepo
   }
   const out: ReportRow[] = [];
   const kept = job.rows
-    .map((row) => (row.booked ? { ...row, ...row.booked } : row))
     .filter((row) => job.includeCancelled || (row.status !== "cancelled" && row.status !== "declined"))
     .slice()
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -242,7 +243,8 @@ export function buildProfitReport(job: ReportJob, unassigned: string): BuiltRepo
       terms: row.paymentTerms,
       completed: row.status === "completed",
     });
-    const priced = row.price != null && !cancelled;
+    const owing = !cancelled && Boolean(row.unbooked);
+    const priced = row.price != null && !cancelled && !owing;
     out.push({
       kind: "ticket",
       no: out.length + 1,
@@ -250,12 +252,13 @@ export function buildProfitReport(job: ReportJob, unassigned: string): BuiltRepo
       code: row.code,
       employee: row.holderName?.trim() || unassigned,
       amount: priced ? money.base : null,
-      warranty: cancelled ? 0 : money.warranty,
+      warranty: cancelled || owing ? 0 : money.warranty,
       // ⚠️ A part with no price typed counts as zero (the shop, 2026-11-20),
       // and the row says so with a mark the summary explains.
       profit: priced ? money.base - (money.cost ?? 0) : null,
       noCost: priced && money.cost == null && money.base > 0,
       cancelled,
+      owing,
       device: row.deviceModel,
       fault: [...row.issues, ...row.customFaults].filter(Boolean).join("، "),
       day: baghdadDay(Date.parse(row.createdAt)),
@@ -1506,7 +1509,13 @@ function ReportTable({ lines, startIndex }: { lines: readonly ReportRow[]; start
               </td>
               <td className={cn(CELL, "text-start font-bold")}>{line.employee}</td>
               <td className={cn(CELL, "text-center font-bold")} data-numeric>
-                {line.cancelled ? t("profitReportCancelledShort") : line.amount == null ? "—" : money(line.amount)}
+                {line.cancelled
+                  ? t("profitReportCancelledShort")
+                  : line.owing
+                    ? t("profitReportOwingShort")
+                    : line.amount == null
+                      ? "—"
+                      : money(line.amount)}
               </td>
               <td className={cn(CELL, "text-center")} data-numeric>
                 {line.warranty > 0 ? money(line.warranty) : "—"}

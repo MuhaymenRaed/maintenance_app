@@ -5,7 +5,7 @@ import { useTranslations } from "next-intl";
 import { ReportPrintDialog, useProfitReport, type ReportJob } from "@/components/admin/profit-report";
 import { useNewTicketWindows } from "@/components/admin/desk-ticket";
 import { LockedPanel, useGuardedAction } from "@/components/admin/desk-gate";
-import { bookedFields, computeFigures } from "@/lib/data/desk-figures";
+import { computeFigures } from "@/lib/data/desk-figures";
 import { moneyMoves } from "@/lib/data/desk-board";
 import { DeskHome } from "@/components/admin/maintenance/desk-home";
 import { DeskTabBar } from "@/components/admin/maintenance/tab-bar";
@@ -169,16 +169,14 @@ export function RepairDeskView({
   const context = useMemo(() => ({ desk: shared.deskName, period: shared.period, filters: [] }), [shared.deskName, shared.period]);
   const profitJob = useMemo<ReportJob>(
     () => ({
-      rows: (figures?.booked ?? []).map((row) => {
-        const booked = bookedFields(row, desk.returns);
-        return booked ? { ...row, booked } : row;
-      }),
+      // Each row as it is now: the day it was booked reads it that way (2026-11-26).
+      rows: figures?.booked ?? [],
       returns: shared.lists.returned.flatMap((row) => (row.returned ? [{ ...row, returned: row.returned }] : [])),
       context,
       totals: figures?.totals,
       includeCancelled: false,
     }),
-    [figures, desk.returns, shared.lists.returned, context],
+    [figures, shared.lists.returned, context],
   );
   const cashJob = useMemo<ReportJob>(
     () => ({ kind: "cash", rows: [], moves: cashMoveLines(moves, desk.rows), context, totals: figures?.totals }),

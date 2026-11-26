@@ -34,12 +34,15 @@ import { baghdadDay } from "./date-window.ts";
  *   its money row, and everything else by the day it was opened.
  *
  * ---------------------------------------------------------------------------
- * «راجع» — a past day stays as it was (the shop, 2026-11-21)
+ * «مرتجع» — the day a ticket was booked reads it as it is now
  * ---------------------------------------------------------------------------
  * A ticket from an earlier day whose price is brought down or up, or which
- * is cancelled, is shown on the day of the change under «راجع». The day a
- * ticket was opened counts it as it was at the end of that day —
- * `bookedState` — so a report printed yesterday reads the same today.
+ * is cancelled, is shown on the day of the change under «مرتجع». The day it
+ * was booked reads it **as it is now**: its amount, parts, profit and
+ * warranty, and which count it is in (the shop, 2026-11-24 on `main`, chosen
+ * again on 2026-11-26 over the frozen day of 2026-11-21). That day's till
+ * keeps the money that came in on it, so every day's till is what the drawer
+ * held, and a refund is counted once, on its own day.
  *
  * ⚠️ On the day of the change a «راجع» moves ONE figure: «واصل بالخزنة», by
  * the money actually handed back or taken (the shop, the same afternoon: "the
@@ -99,15 +102,6 @@ export function sameValue(a: TicketState, b: TicketState): boolean {
 }
 
 /**
- * The ticket as its own day counted it: its state before the first «راجع».
- * Null when it has none — the ticket as it is now.
- */
-export function bookedState(id: string, returns: ReturnBook): TicketState | null {
-  const first = returns?.[id]?.[0];
-  return first ? first.before : null;
-}
-
-/**
  * The ticket's state at a moment: the first «راجع» from then on says what it
  * was before it; none, and it is as it is now. Needs only the book from that
  * moment on, which is what the site reads.
@@ -137,25 +131,19 @@ export function currentState(row: FigureRow): TicketState {
 }
 
 /**
- * The ticket's booking, when it falls in the period: the state it ended its
- * completion day in, if that state is «مكتمل». A ticket completed and taken
- * back off the same day has no completion day at all (the trigger clears it).
+ * The ticket's booking, when it falls in the period: the ticket as it is now,
+ * if it is «مكتمل» (2026-11-26). A ticket completed and taken back off the same
+ * day has no completion day at all (the trigger clears it); one cancelled or
+ * reopened on a later day no longer counts on its booking day.
+ *
+ * `returns` is kept in the signature for the callers; the booked day no longer
+ * reads it.
  */
 export function bookedWithin(row: FigureRow, returns: ReturnBook, bounds: Bounds): TicketState | null {
+  void returns;
   if (!row.completedAt || !withinBounds(row.completedAt, bounds)) return null;
-  const state = bookedState(row.id, returns) ?? currentState(row);
+  const state = currentState(row);
   return state.status === "completed" ? state : null;
-}
-
-/** `bookedState` in the shape the filters take. */
-export function bookedFields(
-  row: FigureRow,
-  returns: ReturnBook,
-): { status: string; price: number | null; warrantyPrice: number | null; costPrice: number | null } | null {
-  const state = bookedState(row.id, returns);
-  // The purchase price is never a «راجع»: typed the day after the part
-  // arrives, it still belongs to the ticket's own profit.
-  return state ? { status: state.status, price: state.price, warrantyPrice: state.warranty, costPrice: row.costPrice } : null;
 }
 
 /** A ticket's «راجع» within the period, added up. */
@@ -584,9 +572,9 @@ type RowTally = {
   /** The stage now — what the debts read. */
   stage: ReturnType<typeof stageOf>;
   /**
-   * The stage at the period's end — what the counts of opened tickets read, so
-   * a ticket completed yesterday and cancelled today is not yesterday's
-   * cancellation.
+   * The stage the counts of opened tickets read: the stage now, the same as
+   * the booking (2026-11-26), so a ticket completed yesterday and cancelled
+   * today is among yesterday's cancellations and the day still adds up.
    */
   stageThen: ReturnType<typeof stageOf>;
   deferred: boolean;
@@ -642,7 +630,7 @@ function tallyRow(
   return {
     opened,
     stage,
-    stageThen: stageOf(stateAt(row, returns, bounds.until).status),
+    stageThen: stage,
     deferred: row.paymentTerms === "deferred",
     booked: bookedWithin(row, returns, bounds),
     completedLater: opened && row.completedAt != null && bounds.until !== null && row.completedAt >= bounds.until,

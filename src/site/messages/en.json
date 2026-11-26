@@ -3738,6 +3738,7 @@
     "profitReportNoPaperHint": "Nothing was sent. Load the paper in the paper printer, choose another printer in the printer settings, or download the report as a PDF.",
     "profitReportPaidEarlier": "{count, plural, one {The money includes one ticket from an earlier day paid in this period.} other {The money includes {n} tickets from earlier days paid in this period.}}",
     "profitReportCancelledShort": "Cancelled",
+    "profitReportOwingShort": "Owing",
     "deskBehind": "From the card",
     "deskBehindBanner": "{count, plural, =0 {No tickets behind “{card}” in this period.} one {One ticket behind “{card}” in this period.} other {# tickets behind “{card}” in this period.}}",
     "deskBehindBack": "Back to the figures",
