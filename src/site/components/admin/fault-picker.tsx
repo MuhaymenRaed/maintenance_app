@@ -6,8 +6,7 @@ import { Check, ListChecks, Loader2, Pencil, Plus, Search, Trash2, X } from "luc
 import { ChipMultiSelect } from "@/components/ui/chip-multi-select";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EntityDialog, input } from "@/components/admin/form-kit";
-import { addRepairIssue, editRepairIssue, updateRepairFaults } from "@/lib/actions/repair-desk";
-import { useEditConfirm } from "@/components/admin/edit-confirm";
+import { addRepairIssue, editRepairIssue } from "@/lib/actions/repair-desk";
 import { faultEdits, withFaultEdits } from "@/lib/repair/fault-edits";
 import type { RepairService } from "@/lib/data/repair-desk";
 import { normalizeSearch } from "@/lib/search";
@@ -380,105 +379,59 @@ export function FaultList({
 }
 
 /**
+ * The values a ticket's saved faults are drawn as in the picker: the listed
+ * codes, then the faults the counter once typed (`old:`).
+ */
+export function savedFaultValues(repair: Pick<DeskRow, "faults" | "customFaults">): string[] {
+  return [...repair.faults.map((fault) => fault.code), ...repair.customFaults.map(oldFaultValue)];
+}
+
+/**
  * A ticket's faults, changed after it was opened — in the ticket's own
  * window, by whoever runs it (`control === "full"`).
  *
  * The shop's words, 2026-11-16: a fault found on the bench is added to the
  * ticket "instead of creating an entire new ticket for that need". So the
- * chips are the editor: pick or type to add, press × to take one off, and
- * each change is saved as it is made — the way the rest of this window saves
- * a field on blur.
+ * chips are the editor: pick or type to add, press × to take one off.
  *
- * ⚠️ Never disabled while a save is going: three faults typed in a row are
- * three changes, and an adder that went grey after the first would drop the
- * reader's focus. Each save sends the whole set, and Server Actions run one
- * after another, so the last change is the one the database keeps. What is on
- * screen is that last change until its answer arrives — `draft` is cleared
- * only by the call that sent it (compared by reference), never by an earlier
- * one finishing late.
+ * ⚠️ **It saves nothing itself, since 2026-11-26.** It asked "save this
+ * change?" after every chip and saved each one at once; the shop asked for
+ * the whole window to be edited first and saved by one «حفظ التغييرات» with
+ * one review. So it is a controlled field: the window holds the draft
+ * (`lib/data/ticket-draft.ts`) and sends the set with everything else.
  */
 export function TicketFaults({
   repair,
   issues,
   recent,
-  onPatch,
+  values,
+  onChange,
 }: {
-  repair: Pick<DeskRow, "id" | "code" | "faults" | "customFaults" | "service">;
+  repair: Pick<DeskRow, "faults" | "service">;
   issues: readonly { code: string; name: string }[];
   recent: readonly RecentFault[];
-  /** What the database now holds, written onto the board's row. */
-  onPatch: (next: Pick<DeskRow, "faults" | "issueCodes" | "issues" | "customFaults">) => void;
+  /** What the window shows — the draft, or the ticket's own faults. */
+  values: readonly string[];
+  onChange: (next: string[]) => void;
 }) {
   const t = useTranslations("Admin");
-  const locale = useLocale();
-  const [pending, start] = useTransition();
-  const [draft, setDraft] = useState<string[] | null>(null);
-  const [state, setState] = useState<"idle" | "saved" | { error: string }>("idle");
-
-  const saved = useMemo(
-    () => [...repair.faults.map((fault) => fault.code), ...repair.customFaults.map(oldFaultValue)],
-    [repair.faults, repair.customFaults],
-  );
-  const shown = draft ?? saved;
-  /** Asked before the faults change — see `edit-confirm.tsx`. */
-  const edits = useEditConfirm();
-  const names = useMemo(() => {
-    const byCode = new Map<string, string>();
-    for (const issue of issues) byCode.set(issue.code, issue.name);
-    for (const fault of repair.faults) byCode.set(fault.code, fault.name);
-    return (values: readonly string[]) =>
-      values.map((value) => byCode.get(value) ?? faultText(value)).join("، ") || t("editEmpty");
-  }, [issues, repair.faults, t]);
+  const [refused, setRefused] = useState(false);
 
   function change(next: string[]) {
     const picked = splitFaults(next);
     // A ticket is about something: the last fault cannot be taken off.
     if (!picked.codes.length && !picked.names.length) {
-      setState({ error: "deskFaultKeepOne" });
+      setRefused(true);
       return;
     }
-    // Shown at once and saved only once confirmed; «تراجع» puts it back.
-    setDraft(next);
-    edits.request({
-      subject: repair.code,
-      field: t("editFaults"),
-      from: names(shown),
-      to: names(next),
-      run: () => save(next, picked),
-      revert: () => setDraft(null),
-    });
+    setRefused(false);
+    onChange(next);
   }
 
-  function save(next: string[], picked: ReturnType<typeof splitFaults>) {
-    setState("idle");
-    setDraft(next);
-    start(async () => {
-      const result = await updateRepairFaults(repair.id, {
-        codes: picked.codes,
-        newFaults: picked.names,
-        custom: picked.old,
-        locale,
-      });
-      setDraft((current) => (current === next ? null : current));
-      if (!result.ok) {
-        setState({ error: result.error });
-        return;
-      }
-      onPatch({
-        faults: result.faults,
-        issueCodes: result.faults.map((fault) => fault.code),
-        issues: result.faults.map((fault) => fault.name),
-        customFaults: result.custom,
-      });
-      setState("saved");
-    });
-  }
-
-  const error = typeof state === "object" ? state.error : null;
   return (
     <div className="space-y-1.5">
       <FaultPicker
-        values={shown}
+        values={[...values]}
         onChange={change}
         issues={issues}
         recent={recent}
@@ -486,21 +439,10 @@ export function TicketFaults({
         extra={repair.faults}
         manage={repair.service}
       />
-      {edits.dialog}
       <p className="flex min-h-4 items-center gap-1.5 text-[0.7rem] font-bold" aria-live="polite">
-        {pending ? (
-          <span className="inline-flex items-center gap-1.5 text-muted">
-            <Loader2 className="size-3 animate-spin" aria-hidden />
-            {t("deskFaultsSaving")}
-          </span>
-        ) : error ? (
+        {refused ? (
           <span role="alert" className="text-brand">
-            {t.has(error) ? t(error as "updateFailed") : t("updateFailed")}
-          </span>
-        ) : state === "saved" ? (
-          <span className="inline-flex items-center gap-1.5 text-success">
-            <Check className="size-3" aria-hidden />
-            {t("deskFaultsSaved")}
+            {t("deskFaultKeepOne")}
           </span>
         ) : (
           <span className="font-medium text-muted">{t("deskFaultsEditHint")}</span>

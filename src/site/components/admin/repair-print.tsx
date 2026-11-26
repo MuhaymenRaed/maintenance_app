@@ -12,7 +12,7 @@ import { MARK_DOT, MARK_MONO_PATH, MARK_PATH, MARK_VIEWBOX } from "@/lib/brand/m
 import { WORDMARK_AR_PATHS, WORDMARK_AR_VIEWBOX } from "@/lib/brand/wordmark";
 import { baghdadDay } from "@/lib/data/date-window";
 import { daysBetween, warrantyEnd } from "@/lib/data/repair-desk";
-import type { RepairPrintFacts } from "@/lib/data/repair-print-facts";
+import { receiptMoney, type RepairPrintFacts } from "@/lib/data/repair-print-facts";
 import { site } from "@/lib/data/site";
 import { formatPrice } from "@/lib/format";
 import { SHEET_PAGES, type SheetPage } from "@/lib/print/station-settings";
@@ -1149,26 +1149,42 @@ export function ReceiptSheet({ facts, printedAt }: { facts: RepairPrintFacts; pr
     { label: t("receiptPrintDate"), value: `${baghdadDay(printedAt)}  ${clock(printedAt)}` },
   ];
 
-  const money = [
+  /*
+   * ⚠️ **Two designs, by how the customer pays** (the shop, 2026-11-26 —
+   * `receiptMoney`). A cash customer's paper says «المبلغ» and nothing else:
+   * it used to print «المبلغ الواصل 0 · المبلغ الباقي 35,000» on every cash
+   * receipt, because a receipt is printed when the ticket is opened and a
+   * نقد ticket has paid nothing until it is «مكتمل». A deferred customer keeps
+   * both rows, and once paid in full reads «الواصل» = the amount, «الباقي» 0.
+   *
+   * Two rows where there were three: the column is `justify-center` and its
+   * height is the QR card's, so the panel stays the same size either way.
+   */
+  const paid = receiptMoney(facts);
+  const money: { label: string; value: string; numeric?: boolean; red?: boolean }[] = [
     {
       label: t("receiptDealing"),
-      value: t(facts.terms === "deferred" ? "printDeferred" : "printCash"),
+      value: t(paid.terms === "deferred" ? "printDeferred" : "printCash"),
       /* How this was settled is the row the counter is asked about. */
       red: true,
     },
-    { label: t("receiptCollected"), value: formatPrice(facts.collected), numeric: true },
-    {
-      label: t("receiptRemaining"),
-      value: formatPrice(facts.remaining),
-      numeric: true,
-      /*
-       * Red only while something is actually owed. A permanent red zero teaches
-       * the reader to ignore the colour — the lesson the ratings board's
-       * "unhappy" chip already carries — and the word beside it says which
-       * figure this is either way, so nothing is lost in mono.
-       */
-      red: facts.remaining > 0,
-    },
+    ...(paid.terms === "cash"
+      ? [{ label: t("receiptAmount"), value: formatPrice(paid.amount), numeric: true }]
+      : [
+          { label: t("receiptCollected"), value: formatPrice(paid.collected), numeric: true },
+          {
+            label: t("receiptRemaining"),
+            value: formatPrice(paid.remaining),
+            numeric: true,
+            /*
+             * Red only while something is actually owed. A permanent red zero
+             * teaches the reader to ignore the colour — the lesson the ratings
+             * board's "unhappy" chip already carries — and the word beside it
+             * says which figure this is either way, so nothing is lost in mono.
+             */
+            red: paid.remaining > 0,
+          },
+        ]),
   ];
 
   /*

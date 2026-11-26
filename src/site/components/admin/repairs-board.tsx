@@ -6,6 +6,7 @@ import { useLocale, useTranslations } from "next-intl";
 import {
   Activity,
   Banknote,
+  Check,
   CheckCircle2,
   ChevronDown,
   Cpu,
@@ -17,6 +18,8 @@ import {
   Pencil,
   PencilLine,
   RotateCcw,
+  Save,
+  Undo2,
   Phone,
   Printer,
   Receipt,
@@ -74,8 +77,8 @@ import {
   decideRepairRequest,
   setRepairHandedOver,
   updateRepairDetails,
+  updateRepairFaults,
   updateRepairFinance,
-  type RepairDetailsPatch,
 } from "@/lib/actions/repair-desk";
 import { groupByDay } from "@/lib/data/queue-window";
 import { completionStatus, settledStatus, stageOf, techStepOf } from "@/lib/data/repair-stage";
@@ -96,9 +99,18 @@ import { StatusHistory } from "@/components/admin/status-history";
 import { useStatusConfirm } from "@/components/admin/status-confirm";
 import { useDeskGate, useGuardedAction } from "@/components/admin/desk-gate";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { useEditConfirm } from "@/components/admin/edit-confirm";
-import { TicketFaults } from "@/components/admin/fault-picker";
-import type { RecentFault } from "@/lib/data/repair-faults";
+import { savedFaultValues, TicketFaults } from "@/components/admin/fault-picker";
+import { faultText, splitFaults, type RecentFault } from "@/lib/data/repair-faults";
+import {
+  changedKeys,
+  draftView,
+  planTicketSave,
+  STEP_FIELDS,
+  withoutFields,
+  type ChangeKey,
+  type TicketDraft,
+  type TicketFields,
+} from "@/lib/data/ticket-draft";
 import { windowStore } from "@/lib/windows/window-store";
 import { statusTone, TONE_VAR } from "@/lib/data/status-tone";
 import { formatPrice } from "@/lib/format";
@@ -1132,28 +1144,62 @@ function RepairDialog({
   const handles = repair.control !== "none";
   const stage = stageOf(repair.status);
 
-  // `quote_notes` is the column, and it has always been the one note the
-  // customer reads on their ticket — so it is what became of the device.
-  const [note, setNote] = useState(repair.quoteNotes ?? "");
-  const [base, setBase] = useState<number | null>(repair.basePrice);
-  const [warranty, setWarranty] = useState<number | null>(repair.warrantyPrice);
-  const [warrantyDays, setWarrantyDays] = useState<number | null>(repair.warrantyDays);
-  const [warrantyStart, setWarrantyStart] = useState(repair.warrantyStart ?? "");
-  const [costPrice, setCostPrice] = useState<number | null>(repair.costPrice);
-  const [collected, setCollected] = useState<number | null>(repair.collected);
-  // The customer and the device, corrected in place (2026-11-24).
-  const [name, setName] = useState(repair.customerName);
-  const [phone, setPhone] = useState(repair.customerPhone);
-  const [phone2, setPhone2] = useState(repair.customerPhone2 ?? "");
-  // The make may be changed first and saved with the model picked after it.
-  const [deviceBrand, setDeviceBrand] = useState(repair.brandCode ?? "");
+  /*
+   * ⚠️ **One draft, saved by «حفظ التغييرات»** (the shop, 2026-11-26: "let the
+   * admin do all the changes he needs then … saved by a button of حفظ
+   * التغييرات with a popup checking modal"). Every field used to ask "save
+   * this change?" on blur and save on its own. Now nothing is sent until the
+   * button and its review — see `lib/data/ticket-draft.ts`.
+   *
+   * The draft holds only what the reader touched; every other field reads the
+   * ticket as it is now, so a change made elsewhere shows through rather than
+   * being listed as an edit that would put the old value back.
+   */
+  const saved: TicketFields = {
+    customerName: repair.customerName,
+    customerPhone: repair.customerPhone,
+    customerPhone2: repair.customerPhone2,
+    brandCode: repair.brandCode,
+    deviceModel: repair.deviceModel,
+    // `quote_notes` is the column, and it has always been the one note the
+    // customer reads on their ticket — so it is what became of the device.
+    quoteNotes: repair.quoteNotes,
+    basePrice: repair.basePrice,
+    costPrice: repair.costPrice,
+    paymentTerms: repair.paymentTerms,
+    collected: repair.collected,
+    warrantyPrice: repair.warrantyPrice,
+    warrantyDays: repair.warrantyDays,
+    warrantyStart: repair.warrantyStart,
+    faults: savedFaultValues(repair),
+    holderId: repair.holderId,
+  };
+  const [draft, setDraft] = useState<TicketDraft>({});
+  const view = draftView(saved, draft);
+  const changes = changedKeys(saved, draft);
+  const dirty = changes.length > 0;
+  /** The review before saving is open. */
+  const [reviewing, setReviewing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  /** What the last press of «حفظ التغييرات» came to — said in the save bar. */
+  const [saveState, setSaveState] = useState<"saved" | { error: string } | null>(null);
+  function edit(patch: TicketDraft) {
+    setDraft((current) => ({ ...current, ...patch }));
+    setSaveState(null);
+  }
+
+  const base = view.basePrice;
+  const warranty = view.warrantyPrice;
+  const warrantyDays = view.warrantyDays;
+  const warrantyStart = view.warrantyStart ?? "";
+  const collected = view.collected;
   const total = repairTotal(base, warranty);
   const money = repairMoney({
     price: total,
     warranty,
-    cost: costPrice,
+    cost: view.costPrice,
     collected,
-    terms: repair.paymentTerms,
+    terms: view.paymentTerms,
     completed: repair.completedAt != null,
   });
   const [uploading, setUploading] = useState(false);
@@ -1164,18 +1210,11 @@ function RepairDialog({
   const rankLabel = (rank: DeskRank) => t(`rank_${rank}`);
   /** Asked before any stage moves — see `status-confirm.tsx`. */
   const confirm = useStatusConfirm();
-  /** Asked before any edit inside the ticket is saved — see `edit-confirm.tsx`. */
-  const edits = useEditConfirm();
   const shown = (value: number | null | undefined) => (value == null ? t("editEmpty") : formatPrice(value));
-  function askEdit(field: string, from: string, to: string, run: () => void, revert?: () => void) {
-    edits.request({ subject: repair.code, field, from, to, run, revert });
-  }
-  /** The fee is required; clearing it is refused rather than saved. */
+  /** The fee is required; saving without it is refused and said under the row. */
   const [priceMissing, setPriceMissing] = useState(false);
   /** Folded until asked for — the shop, 2026-11-17. A summary shows on the fold. */
   const [warrantyOpen, setWarrantyOpen] = useState(false);
-  /** «تسديد الباقي» asks once before it records money. */
-  const [payingRest, setPayingRest] = useState(false);
   const viewerName = holders.find((holder) => holder.id === viewerId)?.name ?? null;
 
   /** Where the money leaves the ticket once it lands — «تسديد الباقي» completes a waiting one. */
@@ -1196,6 +1235,8 @@ function RepairDialog({
    * same from the same money (`completionStatus`).
    */
   function moveStage(target: "accepted" | "completed" | "cancelled") {
+    // A stage is decided from the ticket as saved; edits wait for their button.
+    if (dirty) return;
     const status: RepairStatus = target === "accepted" ? "approved" : target;
     const landed: RepairStatus =
       status === "completed" ? completionStatus(repair.paymentTerms, money.remaining) : status;
@@ -1222,6 +1263,7 @@ function RepairDialog({
 
   /** A website request: accepted onto the bench, or refused. */
   function decide(accept: boolean) {
+    if (dirty) return;
     confirm.request({
       subject: repair.code,
       from: { key: repair.status, label: statusLabel },
@@ -1239,29 +1281,201 @@ function RepairDialog({
     );
   }
 
-  /** One corrected detail — confirmed, then saved, then on the row. */
-  function saveDetail<K extends keyof RepairDetailsPatch>(
-    field: string,
-    key: K,
-    value: RepairDetailsPatch[K],
-    before: string,
-    after: string,
-    row: Partial<RepairCard>,
-    revert: () => void,
-  ) {
-    askEdit(field, before || t("editEmpty"), after || t("editEmpty"), () =>
-      onApply(row, () => updateRepairDetails(repair.id, { [key]: value } as RepairDetailsPatch)),
-      revert,
+  /**
+   * «حفظ التغييرات»: checked first, so a refusal names the field before
+   * anything is sent, then the review.
+   */
+  function review() {
+    const result = planTicketSave(saved, draft);
+    if (!result.ok) {
+      if (result.error === "price_required") setPriceMissing(true);
+      setSaveState({ error: result.error });
+      return;
+    }
+    if (!result.changes.length) return;
+    setSaveState(null);
+    setReviewing(true);
+  }
+
+  /** Back to the ticket as it is saved. */
+  function discard() {
+    setDraft({});
+    setSaveState(null);
+    setPriceMissing(false);
+  }
+
+  /**
+   * The review confirmed: every change, call by call, in the order
+   * `planTicketSave` gives — the holder last, because handing the ticket up
+   * takes it out of an assistant's control.
+   *
+   * ⚠️ Each call that lands is written onto the row and taken out of the
+   * draft before the next is sent. A refusal therefore stops with what was
+   * saved shown as saved and only the rest still waiting under the button —
+   * never a whole batch drawn as failed after half of it reached the
+   * database, which is what one optimistic patch reverted as a whole would show.
+   */
+  async function saveChanges() {
+    const result = planTicketSave(saved, draft);
+    if (!result.ok) {
+      setReviewing(false);
+      setSaveState({ error: result.error });
+      return;
+    }
+    const { plan } = result;
+    setSaving(true);
+    const stop = (error?: string) => {
+      setSaving(false);
+      setReviewing(false);
+      setSaveState({ error: error ?? "updateFailed" });
+    };
+    const settled = (fields: readonly (keyof TicketFields)[]) =>
+      setDraft((current) => withoutFields(current, fields));
+
+    if (plan.details) {
+      const res = await updateRepairDetails(repair.id, plan.details);
+      if (!res.ok) return stop(res.error);
+      onPatch(plan.details);
+      settled(STEP_FIELDS.details);
+    }
+    if (plan.repair) {
+      const res = await updateRepair(repair.id, plan.repair);
+      if (!res.ok) return stop(res.error);
+      const priced = plan.repair.price !== undefined || plan.repair.warranty !== undefined;
+      onPatch({
+        ...(plan.repair.price !== undefined && { basePrice: plan.repair.price }),
+        ...(plan.repair.warranty !== undefined && { warrantyPrice: plan.repair.warranty }),
+        ...(plan.repair.warrantyDays !== undefined && { warrantyDays: plan.repair.warrantyDays }),
+        ...(plan.repair.warrantyStart !== undefined && { warrantyStart: plan.repair.warrantyStart }),
+        ...(plan.repair.quoteNotes !== undefined && { quoteNotes: plan.repair.quoteNotes }),
+        ...(priced && { actualCost: total, price: total }),
+      });
+      settled(STEP_FIELDS.repair);
+    }
+    if (plan.finance) {
+      const res = await updateRepairFinance(repair.id, plan.finance);
+      if (!res.ok) return stop(res.error);
+      onPatch({
+        ...(plan.finance.costPrice !== undefined && { costPrice: plan.finance.costPrice }),
+        ...(plan.finance.paymentTerms !== undefined && { paymentTerms: plan.finance.paymentTerms }),
+        ...(plan.finance.collected !== undefined && { collected: plan.finance.collected }),
+        // Paying the rest — or switching to نقد — completes a ticket that waited.
+        ...afterMoney({ terms: plan.finance.paymentTerms, collected: plan.finance.collected }),
+      });
+      settled(STEP_FIELDS.finance);
+    }
+    if (plan.faults) {
+      const picked = splitFaults(plan.faults);
+      const res = await updateRepairFaults(repair.id, {
+        codes: picked.codes,
+        newFaults: picked.names,
+        custom: picked.old,
+        locale,
+      });
+      if (!res.ok) return stop(res.error);
+      onPatch({
+        faults: res.faults,
+        issueCodes: res.faults.map((fault) => fault.code),
+        issues: res.faults.map((fault) => fault.name),
+        customFaults: res.custom,
+      });
+      settled(STEP_FIELDS.faults);
+    }
+    if (plan.holder) {
+      const holderId = plan.holder.holderId;
+      const res = await assignRepair(repair.id, holderId);
+      if (!res.ok) return stop(res.error);
+      const person = holders.find((holder) => holder.id === holderId);
+      onPatch({
+        holderId,
+        holderName: person?.name ?? null,
+        holderRank: person?.rank ?? null,
+        technicianName: person?.name ?? null,
+      });
+    }
+
+    // A field typed and typed back is in the draft and changes nothing.
+    setDraft({});
+    setSaving(false);
+    setReviewing(false);
+    setPriceMissing(false);
+    setSaveState("saved");
+  }
+
+  /** One line of the review: the field, and what it was and becomes. */
+  function changeLine(key: ChangeKey): { field: string; from: string; to: string } {
+    const empty = t("editEmpty");
+    const text = (value: string | null | undefined) => (value ?? "").trim() || empty;
+    switch (key) {
+      case "customerName":
+        return { field: t("counterName"), from: text(saved.customerName), to: text(view.customerName) };
+      case "customerPhone":
+        return { field: t("counterPhone"), from: text(saved.customerPhone), to: text(view.customerPhone) };
+      case "customerPhone2":
+        return { field: t("counterPhone2"), from: text(saved.customerPhone2), to: text(view.customerPhone2) };
+      case "device": {
+        // The make is named only when it changed: the model names it already.
+        const makeMoved = (saved.brandCode ?? "") !== (view.brandCode ?? "");
+        const device = (fields: TicketFields) =>
+          [makeMoved ? brands.find((item) => item.code === fields.brandCode)?.name : null, fields.deviceModel.trim()]
+            .filter(Boolean)
+            .join(" · ") || empty;
+        return { field: t("repairDevice"), from: device(saved), to: device(view) };
+      }
+      case "faults":
+        return { field: t("editFaults"), from: faultNames(saved.faults), to: faultNames(view.faults) };
+      case "holderId":
+        return { field: t("deskHolder"), from: holderName(saved.holderId), to: holderName(view.holderId) };
+      case "quoteNotes":
+        return { field: t("repairResult"), from: text(saved.quoteNotes), to: text(view.quoteNotes) };
+      case "basePrice":
+        return { field: t("priceMaintenance"), from: shown(saved.basePrice), to: shown(view.basePrice) };
+      case "costPrice":
+        return { field: t("priceCost"), from: shown(saved.costPrice), to: shown(view.costPrice) };
+      case "paymentTerms": {
+        const terms = (value: PaymentTerms) => t(value === "cash" ? "termsCash" : "termsDeferred");
+        return { field: t("financeTerms"), from: terms(saved.paymentTerms), to: terms(view.paymentTerms) };
+      }
+      case "collected":
+        return { field: t("financeCollected"), from: shown(saved.collected), to: shown(view.collected) };
+      case "warrantyPrice":
+        return { field: t("warrantyPrice"), from: shown(saved.warrantyPrice), to: shown(view.warrantyPrice) };
+      case "warrantyDays":
+        return {
+          field: t("warrantyDurationField"),
+          from: saved.warrantyDays == null ? empty : String(saved.warrantyDays),
+          to: view.warrantyDays == null ? empty : String(view.warrantyDays),
+        };
+      case "warrantyStart":
+        return {
+          field: t("warrantyFrom"),
+          from: saved.warrantyStart ? formatFieldValue("date", saved.warrantyStart) : empty,
+          to: view.warrantyStart ? formatFieldValue("date", view.warrantyStart) : empty,
+        };
+    }
+  }
+
+  /** Fault values named — the bench's list, then the ticket's own, then the typed text. */
+  function faultNames(values: readonly string[]) {
+    const byCode = new Map<string, string>();
+    for (const issue of issues) byCode.set(issue.code, issue.name);
+    for (const fault of repair.faults) byCode.set(fault.code, fault.name);
+    return values.map((value) => byCode.get(value) ?? faultText(value)).join("، ") || t("editEmpty");
+  }
+
+  function holderName(id: string | null) {
+    if (!id) return t("unassigned");
+    return (
+      holders.find((holder) => holder.id === id)?.name ??
+      (id === repair.holderId ? repair.holderName : null) ??
+      t("workColleague")
     );
   }
 
-  /** Fills «الباقي» in one press, instead of retyping «الواصل» as the total. */
+  /** Fills «الباقي» in one press, instead of retyping «الواصل» as the total — saved with the rest. */
   function payRest() {
     if (total == null) return;
-    setCollected(total);
-    onApply({ collected: total, ...afterMoney({ collected: total }) }, () =>
-      updateRepairFinance(repair.id, { collected: total }),
-    );
+    edit({ collected: total });
   }
 
   function addPhotos(files: FileList | null) {
@@ -1273,20 +1487,6 @@ function RepairDialog({
       if (urls.length === 0) return;
       onApply({ photosAfter: [...repair.photosAfter, ...urls] }, () => addRepairPhotos(repair.id, urls));
     })();
-  }
-
-  function assign(value: string) {
-    const holderId = value || null;
-    const person = holders.find((holder) => holder.id === holderId);
-    onApply(
-      {
-        holderId,
-        holderName: person?.name ?? null,
-        holderRank: person?.rank ?? null,
-        technicianName: person?.name ?? null,
-      },
-      () => assignRepair(repair.id, holderId),
-    );
   }
 
   // Whoever holds it stays in the list even if they have left this reader's
@@ -1334,12 +1534,19 @@ function RepairDialog({
             <div className="ms-auto flex flex-wrap items-center gap-2">
               {manages && (
                 <>
+                  {/* ⚠️ Not while edits wait: the papers read the ticket as
+                      saved, so a receipt printed now would carry the old
+                      price or name. */}
                   <button
                     type="button"
                     onClick={(event) => onPrint(event.currentTarget.ownerDocument)}
-                    disabled={printing}
+                    disabled={printing || dirty}
                     aria-busy={printing}
-                    className="press inline-flex items-center gap-2 rounded-control border border-line px-3.5 py-2 text-[0.78rem] font-extrabold text-ink transition-colors hover:border-brand hover:text-brand disabled:cursor-wait disabled:opacity-60"
+                    title={dirty ? t("ticketSaveFirst") : undefined}
+                    className={cn(
+                      "press inline-flex items-center gap-2 rounded-control border border-line px-3.5 py-2 text-[0.78rem] font-extrabold text-ink transition-colors hover:border-brand hover:text-brand disabled:opacity-50",
+                      printing ? "disabled:cursor-wait" : "disabled:cursor-not-allowed",
+                    )}
                   >
                     {printing ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Printer className="size-4" aria-hidden />}
                     {t("deskPrint")}
@@ -1347,7 +1554,9 @@ function RepairDialog({
                   <button
                     type="button"
                     onClick={(event) => onWarranty(event.currentTarget.ownerDocument)}
-                    className="press inline-flex items-center gap-2 rounded-control border border-line px-3.5 py-2 text-[0.78rem] font-extrabold text-ink transition-colors hover:border-info hover:text-info"
+                    disabled={dirty}
+                    title={dirty ? t("ticketSaveFirst") : undefined}
+                    className="press inline-flex items-center gap-2 rounded-control border border-line px-3.5 py-2 text-[0.78rem] font-extrabold text-ink transition-colors hover:border-info hover:text-info disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <ShieldCheck className="size-4" aria-hidden />
                     {t("printWarrantyPaper")}
@@ -1362,6 +1571,74 @@ function RepairDialog({
                 />
               )}
             </div>
+            {/* «حفظ التغييرات» — its own row, the footer's last, so it sits
+                under the thumb on a phone and is never pushed off by the
+                buttons above. */}
+            {handles && (
+              <div
+                className={cn(
+                  "flex basis-full flex-wrap items-center gap-2 rounded-card border px-3 py-2 transition-colors",
+                  dirty ? "border-warning/50 bg-warning/8" : "border-line bg-surface",
+                )}
+              >
+                {/* Its own row on a phone: beside two buttons it was squeezed to
+                    a word a line. */}
+                <p
+                  className="flex min-w-0 basis-full items-center gap-1.5 text-[0.76rem] font-extrabold sm:basis-auto sm:flex-1"
+                  aria-live="polite"
+                >
+                  {saving ? (
+                    <span className="inline-flex items-center gap-1.5 text-muted">
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                      {t("ticketSaving")}
+                    </span>
+                  ) : saveState && saveState !== "saved" ? (
+                    <span role="alert" className="text-brand">
+                      {t.has(saveState.error) ? t(saveState.error as "updateFailed") : t("updateFailed")}
+                    </span>
+                  ) : dirty ? (
+                    <span className="inline-flex items-center gap-1.5 text-warning">
+                      <span className="size-2 shrink-0 rounded-full bg-warning" aria-hidden />
+                      {t("ticketUnsaved", { count: changes.length, n: String(changes.length) })}
+                    </span>
+                  ) : saveState === "saved" ? (
+                    <span className="inline-flex items-center gap-1.5 text-success">
+                      <Check className="size-3.5" aria-hidden />
+                      {t("ticketSaved")}
+                    </span>
+                  ) : (
+                    <span className="font-medium text-muted">{t("ticketNoChanges")}</span>
+                  )}
+                </p>
+                <div className="flex w-full gap-2 sm:w-auto">
+                {dirty && !saving && (
+                  <button
+                    type="button"
+                    onClick={discard}
+                    className="press inline-flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-control border border-line bg-surface px-3 py-2 text-[0.78rem] font-extrabold text-muted transition-colors hover:border-ink/30 hover:text-ink sm:flex-none"
+                  >
+                    <Undo2 className="size-4" aria-hidden />
+                    {t("ticketDiscard")}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={review}
+                  disabled={!dirty || saving}
+                  className="press inline-flex flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-control bg-brand px-3 py-2 text-[0.82rem] font-black text-white shadow-brand-lift transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none sm:flex-none sm:px-4"
+                >
+                  {saving ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Save className="size-4" aria-hidden />}
+                  {t("ticketSave")}
+                  {/* The count, beside the press; on a phone the line above says it. */}
+                  {dirty && (
+                    <span className="hidden rounded-chip bg-white/25 px-1.5 text-[0.7rem] sm:inline-block" data-numeric>
+                      {changes.length}
+                    </span>
+                  )}
+                </button>
+                </div>
+              </div>
+            )}
           </>
         }
       >
@@ -1404,7 +1681,8 @@ function RepairDialog({
                   <button
                     type="button"
                     onClick={() => decide(true)}
-                    className="press inline-flex items-center justify-center gap-2 rounded-control bg-success px-4 py-3 text-[0.88rem] font-black text-white transition-opacity hover:opacity-90"
+                    disabled={dirty}
+                    className="press inline-flex items-center justify-center gap-2 rounded-control bg-success px-4 py-3 text-[0.88rem] font-black text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <CheckCircle2 className="size-5" aria-hidden />
                     {t("requestAccept")}
@@ -1412,12 +1690,16 @@ function RepairDialog({
                   <button
                     type="button"
                     onClick={() => decide(false)}
-                    className="press inline-flex items-center justify-center gap-2 rounded-control border border-brand/45 bg-surface px-4 py-3 text-[0.88rem] font-black text-brand transition-colors hover:bg-brand/8"
+                    disabled={dirty}
+                    className="press inline-flex items-center justify-center gap-2 rounded-control border border-brand/45 bg-surface px-4 py-3 text-[0.88rem] font-black text-brand transition-colors hover:bg-brand/8 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <XCircle className="size-5" aria-hidden />
                     {t("requestRefuse")}
                   </button>
                 </div>
+              )}
+              {full && dirty && (
+                <p className="text-[0.72rem] font-bold leading-relaxed text-warning">{t("ticketSaveFirst")}</p>
               )}
             </div>
           ) : (
@@ -1431,7 +1713,7 @@ function RepairDialog({
                     <button
                       key={key}
                       type="button"
-                      disabled={!full || stage === key}
+                      disabled={!full || stage === key || dirty}
                       onClick={() => moveStage(key)}
                       aria-pressed={current}
                       className={cn(
@@ -1439,7 +1721,7 @@ function RepairDialog({
                         current
                           ? cn("border-transparent", look.solid)
                           : "border-line bg-surface text-muted hover:border-ink/30 hover:text-ink",
-                        !full && !current && "opacity-50",
+                        (!full || dirty) && !current && "opacity-50",
                       )}
                     >
                       <Icon className="size-4.5" aria-hidden />
@@ -1448,8 +1730,15 @@ function RepairDialog({
                   );
                 })}
               </div>
-              <p className="text-[0.72rem] font-semibold leading-relaxed text-muted">
-                {stage === "waiting" ? t("stageWaitingNote") : t("stageHint")}
+              {/* A stage is decided from the ticket as saved, so it waits for
+                  «حفظ التغييرات» — said here, where the buttons went quiet. */}
+              <p
+                className={cn(
+                  "text-[0.72rem] leading-relaxed",
+                  full && dirty ? "font-bold text-warning" : "font-semibold text-muted",
+                )}
+              >
+                {full && dirty ? t("ticketSaveFirst") : stage === "waiting" ? t("stageWaitingNote") : t("stageHint")}
               </p>
             </>
           )}
@@ -1471,27 +1760,15 @@ function RepairDialog({
               <Grid cols={3}>
                 <Field label={t("counterName")}>
                   <input
-                    value={name}
-                    onChange={(event) => setName(event.target.value)}
-                    onBlur={() =>
-                      name.trim() !== repair.customerName &&
-                      saveDetail(t("counterName"), "customerName", name, repair.customerName, name.trim(), { customerName: name.trim() }, () =>
-                        setName(repair.customerName),
-                      )
-                    }
+                    value={view.customerName}
+                    onChange={(event) => edit({ customerName: event.target.value })}
                     className={text}
                   />
                 </Field>
                 <Field label={t("counterPhone")}>
                   <input
-                    value={phone}
-                    onChange={(event) => setPhone(event.target.value)}
-                    onBlur={() =>
-                      phone.trim() !== repair.customerPhone &&
-                      saveDetail(t("counterPhone"), "customerPhone", phone, repair.customerPhone, phone.trim(), { customerPhone: phone.trim() }, () =>
-                        setPhone(repair.customerPhone),
-                      )
-                    }
+                    value={view.customerPhone}
+                    onChange={(event) => edit({ customerPhone: event.target.value })}
                     inputMode="tel"
                     dir="ltr"
                     placeholder="07XXXXXXXXX"
@@ -1501,20 +1778,8 @@ function RepairDialog({
                 </Field>
                 <Field label={t("counterPhone2")}>
                   <input
-                    value={phone2}
-                    onChange={(event) => setPhone2(event.target.value)}
-                    onBlur={() =>
-                      phone2.trim() !== (repair.customerPhone2 ?? "") &&
-                      saveDetail(
-                        t("counterPhone2"),
-                        "customerPhone2",
-                        phone2.trim() || null,
-                        repair.customerPhone2 ?? "",
-                        phone2.trim(),
-                        { customerPhone2: phone2.trim() || null },
-                        () => setPhone2(repair.customerPhone2 ?? ""),
-                      )
-                    }
+                    value={view.customerPhone2 ?? ""}
+                    onChange={(event) => edit({ customerPhone2: event.target.value })}
                     inputMode="tel"
                     dir="ltr"
                     placeholder="07XXXXXXXXX"
@@ -1523,27 +1788,15 @@ function RepairDialog({
                   />
                 </Field>
               </Grid>
+              {/* Changing the make clears the model; the save refuses until one
+                  is picked, so the two always travel together. */}
               <DeviceFields
-                brandCode={deviceBrand}
-                model={repair.deviceModel}
+                brandCode={view.brandCode ?? ""}
+                model={view.deviceModel}
                 brands={brands}
                 stock={stock}
                 recent={recentDevices}
-                onChange={(next) => {
-                  setDeviceBrand(next.brandCode);
-                  if (next.model && next.model !== repair.deviceModel) {
-                    askEdit(
-                      t("counterModel"),
-                      repair.deviceModel,
-                      next.model,
-                      () =>
-                        onApply({ deviceModel: next.model, brandCode: next.brandCode || null }, () =>
-                          updateRepairDetails(repair.id, { deviceModel: next.model, brandCode: next.brandCode || null }),
-                        ),
-                      () => setDeviceBrand(repair.brandCode ?? ""),
-                    );
-                  }
-                }}
+                onChange={(next) => edit({ brandCode: next.brandCode || null, deviceModel: next.model })}
               />
             </>
           ) : (
@@ -1580,7 +1833,13 @@ function RepairDialog({
           {full && faultsEditable ? (
             <div className="min-w-0">
               <p className="mb-1 text-[0.72rem] font-bold text-muted">{t("repairIssues")}</p>
-              <TicketFaults repair={repair} issues={issues} recent={recentFaults} onPatch={onPatch} />
+              <TicketFaults
+                repair={repair}
+                issues={issues}
+                recent={recentFaults}
+                values={view.faults}
+                onChange={(next) => edit({ faults: next })}
+              />
             </div>
           ) : (
             (repair.issues.length > 0 || repair.customFaults.length > 0) && (
@@ -1600,7 +1859,12 @@ function RepairDialog({
           <Grid>
             <Field label={t("deskHolder")}>
               {full ? (
-                <SelectField value={repair.holderId ?? ""} onChange={assign} options={holderOptions} ariaLabel={t("deskHolder")} />
+                <SelectField
+                  value={view.holderId ?? ""}
+                  onChange={(value) => edit({ holderId: value || null })}
+                  options={holderOptions}
+                  ariaLabel={t("deskHolder")}
+                />
               ) : (
                 <HolderChip row={repair} viewerId={viewerId} />
               )}
@@ -1609,19 +1873,9 @@ function RepairDialog({
               {handles ? (
                 <textarea
                   rows={2}
-                  value={note}
+                  value={view.quoteNotes ?? ""}
                   placeholder={t("repairResultPlaceholder")}
-                  onChange={(event) => setNote(event.target.value)}
-                  onBlur={() =>
-                    note !== (repair.quoteNotes ?? "") &&
-                    askEdit(
-                      t("repairResult"),
-                      repair.quoteNotes || t("editEmpty"),
-                      note || t("editEmpty"),
-                      () => onApply({ quoteNotes: note }, () => updateRepair(repair.id, { quoteNotes: note })),
-                      () => setNote(repair.quoteNotes ?? ""),
-                    )
-                  }
+                  onChange={(event) => edit({ quoteNotes: event.target.value })}
                   className={cn(input, "resize-y")}
                 />
               ) : (
@@ -1681,46 +1935,21 @@ function RepairDialog({
         {/* ── 4. The money — the two figures one above the other, then how it is paid ── */}
         {(seesMoney || handles) && (
           <TicketCard icon={Banknote} title={t("financeTitle")} hint={seesMoney ? t("financeCardHint") : undefined} tone="success">
+            {/* ⚠️ Required: a fee can be changed, never emptied — refused by
+                «حفظ التغييرات» and said under the row (`planTicketSave`). */}
             <PriceRows
               base={base}
-              cost={costPrice}
+              cost={view.costPrice}
               warranty={warranty ?? 0}
               showCost={seesMoney && financeAvailable}
               missing={priceMissing}
               baseDisabled={!handles}
               costDisabled={!full}
               onBase={(next) => {
-                setBase(next);
+                edit({ basePrice: next });
                 if (next != null && next > 0) setPriceMissing(false);
               }}
-              onBaseCommit={() => {
-                // ⚠️ Required: a fee can be changed, never emptied.
-                if (base == null || base <= 0) {
-                  if (repair.basePrice != null && repair.basePrice > 0) setBase(repair.basePrice);
-                  setPriceMissing(true);
-                  return;
-                }
-                if (base !== repair.basePrice) {
-                  askEdit(
-                    t("priceMaintenance"),
-                    shown(repair.basePrice),
-                    shown(base),
-                    () => onApply({ basePrice: base, actualCost: total, price: total }, () => updateRepair(repair.id, { price: base })),
-                    () => setBase(repair.basePrice),
-                  );
-                }
-              }}
-              onCost={setCostPrice}
-              onCostCommit={() =>
-                costPrice !== repair.costPrice &&
-                askEdit(
-                  t("priceCost"),
-                  shown(repair.costPrice),
-                  shown(costPrice),
-                  () => onApply({ costPrice }, () => updateRepairFinance(repair.id, { costPrice })),
-                  () => setCostPrice(repair.costPrice),
-                )
-              }
+              onCost={(next) => edit({ costPrice: next })}
             />
 
             {seesMoney && !financeAvailable && (
@@ -1733,7 +1962,7 @@ function RepairDialog({
               <>
                 <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label={t("financeTerms")}>
                   {(["cash", "deferred"] as PaymentTerms[]).map((terms) => {
-                    const on = repair.paymentTerms === terms;
+                    const on = view.paymentTerms === terms;
                     return (
                       <button
                         key={terms}
@@ -1741,30 +1970,8 @@ function RepairDialog({
                         role="radio"
                         aria-checked={on}
                         disabled={!full}
-                        onClick={() => {
-                          if (on) return;
-                          askEdit(
-                            t("financeTerms"),
-                            t(repair.paymentTerms === "cash" ? "termsCash" : "termsDeferred"),
-                            t(terms === "cash" ? "termsCash" : "termsDeferred"),
-                            () => {
-                              // Cash is paid in full, so the figure goes with the switch.
-                              if (terms === "cash") setCollected(null);
-                              onApply(
-                                {
-                                  paymentTerms: terms,
-                                  ...(terms === "cash" ? { collected: null } : {}),
-                                  ...afterMoney({ terms, collected: terms === "cash" ? null : collected }),
-                                },
-                                () =>
-                                  updateRepairFinance(
-                                    repair.id,
-                                    terms === "cash" ? { paymentTerms: terms, collected: null } : { paymentTerms: terms },
-                                  ),
-                              );
-                            },
-                          );
-                        }}
+                        // Cash is paid in full, so «الواصل» goes with the switch when it is saved.
+                        onClick={() => !on && edit({ paymentTerms: terms })}
                         className={cn(
                           "press flex flex-col items-start gap-0.5 rounded-control border-2 px-3.5 py-2.5 text-start transition-colors disabled:cursor-not-allowed",
                           on
@@ -1785,24 +1992,14 @@ function RepairDialog({
                   })}
                 </div>
 
-                {repair.paymentTerms === "deferred" ? (
+                {view.paymentTerms === "deferred" ? (
                   /* ⚠️ Only on a deferred ticket — the shop, 2026-11-17. */
                   <div className="space-y-2.5 rounded-card border border-warning/35 bg-warning/5 p-3">
                     <Field label={t("financeCollected")}>
                       <MoneyInput
                         value={collected}
                         clearable
-                        onChange={(value) => setCollected(value)}
-                        onCommit={() =>
-                          collected !== repair.collected &&
-                          askEdit(
-                            t("financeCollected"),
-                            shown(repair.collected),
-                            shown(collected),
-                            () => onApply({ collected, ...afterMoney({ collected }) }, () => updateRepairFinance(repair.id, { collected })),
-                            () => setCollected(repair.collected),
-                          )
-                        }
+                        onChange={(value) => edit({ collected: value })}
                         min={0}
                         disabled={!full}
                       />
@@ -1811,7 +2008,7 @@ function RepairDialog({
                       {full && money.remaining > 0 && total != null && (
                         <button
                           type="button"
-                          onClick={() => setPayingRest(true)}
+                          onClick={payRest}
                           className="press inline-flex items-center gap-2 rounded-control bg-success px-3.5 py-2 text-[0.8rem] font-extrabold text-white transition-opacity hover:opacity-90"
                         >
                           <HandCoins className="size-4" aria-hidden />
@@ -1864,20 +2061,7 @@ function RepairDialog({
                               <MoneyInput
                                 value={warranty}
                                 clearable
-                                onChange={setWarranty}
-                                onCommit={() =>
-                                  warranty !== repair.warrantyPrice &&
-                                  askEdit(
-                                    t("warrantyPrice"),
-                                    shown(repair.warrantyPrice),
-                                    shown(warranty),
-                                    () =>
-                                      onApply({ warrantyPrice: warranty, actualCost: total, price: total }, () =>
-                                        updateRepair(repair.id, { warranty }),
-                                      ),
-                                    () => setWarranty(repair.warrantyPrice),
-                                  )
-                                }
+                                onChange={(value) => edit({ warrantyPrice: value })}
                                 min={0}
                                 disabled={!full}
                               />
@@ -1886,17 +2070,7 @@ function RepairDialog({
                               <NumberInput
                                 value={warrantyDays}
                                 clearable
-                                onChange={setWarrantyDays}
-                                onCommit={() =>
-                                  warrantyDays !== repair.warrantyDays &&
-                                  askEdit(
-                                    t("warrantyDurationField"),
-                                    repair.warrantyDays == null ? t("editEmpty") : String(repair.warrantyDays),
-                                    warrantyDays == null ? t("editEmpty") : String(warrantyDays),
-                                    () => onApply({ warrantyDays }, () => updateRepair(repair.id, { warrantyDays })),
-                                    () => setWarrantyDays(repair.warrantyDays),
-                                  )
-                                }
+                                onChange={(value) => edit({ warrantyDays: value })}
                                 min={1}
                                 max={3650}
                                 disabled={!full}
@@ -1906,20 +2080,7 @@ function RepairDialog({
                               <DateField
                                 type="date"
                                 value={warrantyStart}
-                                onChange={(event) => setWarrantyStart(event.target.value)}
-                                onBlur={() =>
-                                  warrantyStart !== (repair.warrantyStart ?? "") &&
-                                  askEdit(
-                                    t("warrantyFrom"),
-                                    repair.warrantyStart ? formatFieldValue("date", repair.warrantyStart) : t("editEmpty"),
-                                    warrantyStart ? formatFieldValue("date", warrantyStart) : t("editEmpty"),
-                                    () =>
-                                      onApply({ warrantyStart: warrantyStart || null }, () =>
-                                        updateRepair(repair.id, { warrantyStart: warrantyStart || null }),
-                                      ),
-                                    () => setWarrantyStart(repair.warrantyStart ?? ""),
-                                  )
-                                }
+                                onChange={(event) => edit({ warrantyStart: event.target.value || null })}
                                 disabled={!full}
                                 className={input}
                               />
@@ -1975,21 +2136,47 @@ function RepairDialog({
         )}
 
         {confirm.dialog}
-        {edits.dialog}
 
+        {/* The one question before anything is saved: every change, before
+            and after, as two cells each — written as one Arabic sentence, a
+            code, an arrow and two figures reorder into something nobody can
+            read. */}
         <ConfirmDialog
-          open={payingRest}
-          title={t("financePayRestTitle")}
-          body={t("financePayRestBody", { amount: formatPrice(money.remaining) })}
-          confirmLabel={t("financePayRestConfirm")}
-          cancelLabel={t("cancel")}
+          open={reviewing}
           tone="normal"
-          onCancel={() => setPayingRest(false)}
-          onConfirm={() => {
-            setPayingRest(false);
-            payRest();
-          }}
-        />
+          title={t("ticketReviewTitle")}
+          body={t("ticketReviewBody", { code: repair.code })}
+          confirmLabel={t("ticketSave")}
+          cancelLabel={t("ticketReviewBack")}
+          pending={saving}
+          onConfirm={() => void saveChanges()}
+          onCancel={() => !saving && setReviewing(false)}
+        >
+          <ul className="max-h-[45dvh] space-y-2.5 overflow-y-auto overscroll-contain pe-1">
+            {changes.map((key) => {
+              const line = changeLine(key);
+              return (
+                <li key={key}>
+                  <p className="mb-1 text-[0.74rem] font-black text-ink">{line.field}</p>
+                  <dl className="grid grid-cols-2 gap-2">
+                    <div className="rounded-card border border-line bg-subtle px-3 py-2">
+                      <dt className="text-[0.66rem] font-bold text-muted">{t("editBefore")}</dt>
+                      <dd className="mt-0.5 break-words text-[0.86rem] font-black text-muted">
+                        <bdi>{line.from}</bdi>
+                      </dd>
+                    </div>
+                    <div className="rounded-card border border-brand/30 bg-brand/6 px-3 py-2">
+                      <dt className="text-[0.66rem] font-bold text-brand">{t("editAfter")}</dt>
+                      <dd className="mt-0.5 break-words text-[0.86rem] font-black text-ink">
+                        <bdi>{line.to}</bdi>
+                      </dd>
+                    </div>
+                  </dl>
+                </li>
+              );
+            })}
+          </ul>
+        </ConfirmDialog>
       </EntityDialog>
     </>
   );

@@ -1,6 +1,6 @@
 {
-  "site": "B:\\Programming Projects\\Next JS\\Al_Isnad",
-  "syncedAt": "2026-11-26T05:39:39.762Z",
+  "site": "C:\\Users\\iq87_B\\AppData\\Local\\Temp\\claude\\61d6d61d1aaf00a5\\8a38fe62-83c1-45ca-9331-0414a0e784dc\\scratchpad\\site-clean",
+  "syncedAt": "2026-11-26T11:22:16.967Z",
   "files": [
     "components/account/status-pill.tsx",
     "components/admin/app-window.tsx",
@@ -8,7 +8,6 @@
     "components/admin/day-rule.tsx",
     "components/admin/desk-gate.tsx",
     "components/admin/desk-ticket.tsx",
-    "components/admin/edit-confirm.tsx",
     "components/admin/fault-picker.tsx",
     "components/admin/filter-chips.tsx",
     "components/admin/form-kit.tsx",
@@ -69,6 +68,7 @@
     "lib/data/site.ts",
     "lib/data/stat-money.ts",
     "lib/data/status-tone.ts",
+    "lib/data/ticket-draft.ts",
     "lib/data/whatsapp.ts",
     "lib/format.ts",
     "lib/hooks/use-popover-anchor.ts",

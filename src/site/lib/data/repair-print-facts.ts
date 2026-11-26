@@ -90,3 +90,30 @@ export function toRepairPrintFacts(ticket: TicketForPrint): RepairPrintFacts {
     warrantyStart: ticket.warrantyStart,
   };
 }
+
+/**
+ * The money panel of «وصل استلام جهاز», which has two designs (the shop,
+ * 2026-11-26).
+ *
+ * A **cash** customer pays at the counter, so the paper says what the repair
+ * costs and nothing else: «المبلغ». It used to print «المبلغ الواصل 0» and
+ * «المبلغ الباقي 35,000» on every cash receipt, because a نقد ticket has paid
+ * nothing until it is «مكتمل» (`repairMoney`, 2026-11-24) and a receipt is
+ * printed the moment the ticket is opened — a customer who paid in full was
+ * handed a paper saying they owed all of it.
+ *
+ * A **deferred** customer keeps both rows. Paid in full, it is still the
+ * deferred design: «الواصل» is the whole amount and «الباقي» is 0, which is
+ * what `repairMoney` gives for an آجل ticket whose «الواصل» reached its total.
+ */
+export type ReceiptMoney =
+  | { terms: "cash"; amount: number }
+  | { terms: "deferred"; collected: number; remaining: number };
+
+export function receiptMoney(
+  facts: Pick<RepairPrintFacts, "terms" | "amount" | "collected" | "remaining">,
+): ReceiptMoney {
+  return facts.terms === "deferred"
+    ? { terms: "deferred", collected: facts.collected, remaining: facts.remaining }
+    : { terms: "cash", amount: facts.amount };
+}

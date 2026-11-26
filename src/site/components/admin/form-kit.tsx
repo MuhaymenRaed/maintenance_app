@@ -303,8 +303,9 @@ type MoneyInputProps = (
  * through retyping, and committing that would put the old price back under
  * their fingers (the repair fee refuses an empty value and restores it).
  */
-// In a ticket every save asks first (`edit-confirm.tsx`), so a pause is what opens the
-// question: long enough not to interrupt a slow typist mid-figure.
+// Long enough not to interrupt a slow typist mid-figure. The repair ticket's
+// window no longer commits field by field — it keeps a draft and saves it with
+// «حفظ التغييرات» (2026-11-26) — so it passes no `onCommit` and never settles.
 const SETTLE_MS = 1200;
 function useSettledCommit(onCommit: (() => void) | undefined) {
   const latest = useRef(onCommit);
